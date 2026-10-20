@@ -4,7 +4,7 @@ const Module = require('module');
 const path = require('path');
 const [pluginPath, platform = 'darwin'] = process.argv.slice(2);
 Object.defineProperty(process, 'platform', {value: platform});
-const callbacks = {}, intervals = [], disposers = [], timers = new Map();
+const callbacks = {}, ribbons = [], intervals = [], disposers = [], timers = new Map();
 let timerId = 0, scans = 0;
 global.setTimeout = (fn, ms) => { timers.set(++timerId, {fn, ms}); return timerId; };
 global.clearTimeout = (id) => timers.delete(id);
@@ -17,7 +17,7 @@ class PluginStub {
   registerInterval() {}
   registerMarkdownCodeBlockProcessor() {}
   registerObsidianProtocolHandler() {}
-  addRibbonIcon() {}
+  addRibbonIcon(icon, title, cb) { ribbons.push({icon, title, cb}); }
   registerDomEvent(target, name, fn, options) {
     target.addEventListener(name, fn, options);
     disposers.push(() => target.removeEventListener(name, fn, options));
@@ -73,7 +73,12 @@ const plugin = new Plugin();
 plugin.app = {workspace, vault:{adapter:{getBasePath:()=>'/probe-vault'}, on(){}}};
 // Avoid the unrelated Windows process sweeper in this DOM probe.
 plugin.startOrphanSweep = () => {};
+const launched = [];
+plugin.openManager = async (client) => { launched.push(client); };
 plugin.onload();
+assert.deepEqual(ribbons.map((r) => r.title), ['New Codex manager', 'New Claude manager']);
+for (const r of ribbons) r.cb();
+assert.deepEqual(launched, ['codex', 'claude'], 'each ribbon launches its own client only');
 let defaults = 0;
 window.addEventListener('keydown', () => defaults++);
 const press = (fields = {}) => {

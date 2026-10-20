@@ -991,10 +991,6 @@ module.exports = class AgentTerminalFocus extends Plugin {
       addIcon('agent-claude', CLAUDE_ICON);
       this.addRibbonIcon('agent-openai', 'New Codex manager', () => this.openManager('codex'));
       this.addRibbonIcon('agent-claude', 'New Claude manager', () => this.openManager('claude'));
-      this.addRibbonIcon('users', 'Launch pair (open both)', async () => {
-        await this.openManager('claude');
-        await this.openManager('codex');
-      });
     }
 
     // An Obsidian restart brings back every manager tab from the saved workspace and starts a

@@ -630,7 +630,6 @@ Object.assign(out, {opened, fileOpened, linkOpened, windowOpened, ribbons: plugi
   await plugin.ribbons[1].cb();
   out.profile = viewState && viewState.state['terminal:terminal'].profile;
   out.notices = [...notices];
-  await plugin.ribbons[2].cb();  // Launch pair: two more tabs
   failNext = true;
   await plugin.ribbons[0].cb();  // a Terminal that refuses the view
   out.leaves = created.map((l) => ({pinned: l.pinned, detached: l.detached}));
@@ -676,13 +675,10 @@ def test_the_manager_plugin_on_each_os(platform: str):
         ["features/normal.md", False],
         ["inside.md", False],
     ]
-    assert out["ribbons"] == ["New Codex manager", "New Claude manager", "Launch pair (open both)"]
+    assert out["ribbons"] == ["New Codex manager", "New Claude manager"]
     assert out["notices"] == []
-    # Every opened manager tab is pinned: one button, then Launch
-    # pair's two. A refused view is detached and never pinned.
+    # An opened manager tab is pinned. A refused view is detached and never pinned.
     assert out["leaves"] == [
-        {"pinned": True, "detached": False},
-        {"pinned": True, "detached": False},
         {"pinned": True, "detached": False},
         {"pinned": False, "detached": True},
     ]
