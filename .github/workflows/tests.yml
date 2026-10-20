@@ -1,0 +1,216 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  # A manual run starts every job, and it is the only run that also includes the two
+  # report-only Windows jobs, which never run on a push or pull request (see below).
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - run: uv sync
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run pyright
+      # no -q here: pyproject's addopts already passes one, and two make -qq, which drops
+      # the pass/fail summary line from the log.
+      # The registry and the MCP config are local, untracked configuration (ADR-0012);
+      # the eval tests and corpus score work orders against a registry, so CI runs on the
+      # examples.
+      - run: cp agent.example.yaml agent.yaml
+      - run: cp .mcp.example.json .mcp.json
+      # What the runner actually gives us: the pytest parallelism below is a function of it.
+      - run: nproc
+      # `-n 4` is pyproject's default and was calibrated on 18 cores, where it is a quarter of
+      # the machine. A hosted runner is a fraction of that, and these tests spawn processes of
+      # their own: one verification costs three extra interpreters (guardian, command,
+      # watchdog), each ~0.6s of import before it does any work. Four workers doing that on a
+      # hosted runner blow the wall-clock budgets the dispatch tests assume, and the suite
+      # comes back with dozens of `blocked` where it wanted `done`. Raising those budgets
+      # would remove the hang the tests exist to catch, so the parallelism gives way instead.
+      - run: uv run pytest -n 2
+
+  # A fresh Windows clone, set up the way the README says, with nothing configured by hand
+  # This finds what the Linux job never could: tracked symlinks
+  # checked out as text files, CRLF shell scripts, an execution policy, a missing terminal
+  # Python. This job is the check that none of that comes back.
+  windows-setup:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # setup's gate needs a claude binary on PATH; no account is needed for that
+      - run: npm install -g @anthropic-ai/claude-code
+      # The native resolver gate tests Codex's npm shim and an offline app-server handshake.
+      # Pinned: protocol expectations were checked against this version (0.160.0, 2026-10-05).
+      - run: npm install -g @openai/codex@0.160.0
+      # Git Bash must see LF: .gitattributes pins it, and bash -n fails on a CRLF script
+      - run: bash -n setup.sh
+      # --check writes nothing and needs a synced project, so sync first. The gate (git, uv,
+      # python, node, claude) must pass; the Obsidian app is not part of the gate.
+      - run: uv sync
+      - run: .\setup.cmd --check
+      # The real setup through the launcher, non-interactive; its exit is judged below.
+      # GitHub's pwsh wrapper exits with the last native command's code, so each step that
+      # expects setup's exit 1 ends with an explicit `exit 0` once it has judged it.
+      - run: |
+          .\setup.cmd
+          "setup.cmd exited $LASTEXITCODE"
+          exit 0
+      # Setup's own report, as JSON. The runner has no Obsidian app and no Obsidian CLI (both
+      # required), so setup is incomplete for exactly those and nothing else: no failed
+      # configure step (a failed plugin download or terminal Python fails its step) and no
+      # other missing requirement. The order is setup's row order: the CLI, then the app.
+      - run: |
+          $r = uv run --no-sync agent --json setup | ConvertFrom-Json
+          $failed = @($r.configure | Where-Object { $_.state -eq 'failed' } | ForEach-Object { $_.step })
+          if ($failed.Count -gt 0) { throw "failed setup steps: $($failed -join ', ')" }
+          if ($r.missing.Count -gt 0) { throw "missing gate requirements: $($r.missing -join ', ')" }
+          if ((@($r.incomplete) -join ',') -ne 'obsidian,obsidian app') { throw "unexpected incomplete: $(@($r.incomplete) -join ', ')" }
+          exit 0
+      # the notes repo setup created beside the clone, and the links into it
+      - run: |
+          if (-not (Test-Path ..\Agent-notes\.git)) { throw "setup did not create ..\Agent-notes" }
+          bin\agent.cmd notes status
+      # every skill link resolves, every private path is linked, 0 FAIL
+      - run: bin\agent.cmd doctor
+      # the terminal plugin's private Python imports its packages
+      - run: .agent\terminal-python\Scripts\python.exe -c "import psutil, pywinctl, typing_extensions"
+      # the tests that exercise the Windows link paths
+      - run: uv run pytest -n 0 tests/test_skill_links.py tests/test_notes.py tests/test_obsidian.py tests/test_cli_encoding.py tests/test_hook_commands.py tests/test_installs.py tests/test_config_file.py tests/test_forge_per_repo.py
+      # Gating native safety regressions, separate from the temporary full-suite inventory.
+      - run: uv run pytest -n 0 tests/test_winproc.py tests/test_win_tree.py tests/test_win_procs.py tests/test_win_driver.py tests/test_win_transport.py tests/test_guard_paths_windows.py tests/test_win_lock.py tests/test_hook_entry.py tests/test_ci_windows.py tests/test_gitgate.py tests/test_codex_identity.py tests/test_codex_executable.py tests/test_lease_clear.py tests/test_plugin_lease_clear.py tests/test_telemetry_sink.py
+
+  # A fresh macOS clone through ./setup.sh, under the bash macOS ships (3.2). Linux CI
+  # runs bash 5, where `args[@]` on an empty array is fine but fails as an unbound variable
+  # under 3.2, so only a Mac run catches it.
+  macos-setup:
+    runs-on: macos-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # setup's gate needs a claude binary on PATH; no account is needed for that
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: /bin/bash --version
+      # --check writes nothing and needs a synced project, so sync first.
+      - run: uv sync
+      - run: /bin/bash ./setup.sh --check
+      # The real setup with no arguments, the call that failed. No terminal, so nothing asks.
+      # The runner has no Obsidian app or CLI, so setup exits 1 for those; judged below.
+      # The exit alone cannot tell the expected Obsidian exit 1 from the bash failure, so the
+      # step requires setup's own report and no bash error in the output.
+      - run: |
+          /bin/bash ./setup.sh > setup.out 2>&1 || echo "setup.sh exited $?"
+          cat setup.out
+          grep -q "^platform: Darwin" setup.out
+          ! grep -q "unbound variable" setup.out
+      - run: |
+          uv run --no-sync agent --json setup > setup.json || true
+          uv run --no-sync python - <<'EOF'
+          import json
+          r = json.load(open("setup.json"))
+          failed = [s["step"] for s in r["configure"] if s["state"] == "failed"]
+          assert not failed, f"failed setup steps: {failed}"
+          assert not r["missing"], f"missing gate requirements: {r['missing']}"
+          assert set(r.get("incomplete") or []) <= {"obsidian", "obsidian app"}, r.get("incomplete")
+          EOF
+      - run: test -d ../Agent-notes/.git
+      # every skill link resolves, every private path is linked, 0 FAIL
+      - run: bin/agent doctor
+      - run: uv run pytest -n 0 tests/test_setup_sh.py tests/test_gitgate.py tests/test_skill_links.py tests/test_notes.py
+
+  # The two report-only jobs run only when started by hand (`gh workflow run tests --ref
+  # <branch>`). Together they were
+  # about two thirds of a run's billed minutes (Windows minutes count double), and neither
+  # gates anything.
+  windows-discovery:
+    name: Windows full suite (report only)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: uv sync
+      - run: Copy-Item agent.example.yaml agent.yaml
+      - run: Copy-Item .mcp.example.json .mcp.json
+      # Child deadline leaves time for inventory construction and artifact upload.
+      # No failure is converted to success; only this job is explicitly non-gating.
+      - run: uv run python -m agent_cli.ci_pytest --output ci-results --timeout 2400
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-full-suite-inventory
+          path: ci-results/
+          if-no-files-found: error
+
+  windows-launchers:
+    name: Windows launcher measurements (report only)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: harness with spaces
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness with spaces
+          submodules: true
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: uv sync
+      # powershell.exe is Windows PowerShell 5.1.
+      # These command probes cannot establish client hook delivery or two-manager load.
+      - run: uv run python -m agent_cli.ci_launchers --output .agent/scratch/launcher-results --samples 30 --budget 2400
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-launcher-matrix
+          path: harness with spaces/.agent/scratch/launcher-results/
+          if-no-files-found: error

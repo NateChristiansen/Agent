@@ -1,0 +1,3 @@
+This tree was published with `agent export`: a squash of the harness with no private history.
+Setup reads this file to know the clone is a public export. Do not add it to the
+source checkout.

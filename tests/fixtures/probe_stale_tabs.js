@@ -1,0 +1,34 @@
+const assert = require('assert');
+const Module = require('module'), load = Module._load;
+Module._load = function(name, ...rest) {
+  if (name === 'obsidian') return {Plugin:class {}, Modal:class {}};
+  return load.call(this, name, ...rest);
+};
+const Plugin = require(require('path').resolve(process.argv[2]));
+const leaf = {view:{state:{userTitle:'ordinary'}},getDisplayText(){return this.view.state.userTitle;}};
+const entry = {key:'one', label:'✋ ordinary', stale_label:'✋? ordinary', match:'ordinary', stale_reads:3};
+const reads = new Plugin.StaleReads();
+let now=100000, paints=0;
+const poll = (stale) => {
+  now+=2000;
+  entry.valid_until = new Date(now + (stale ? -1 : 10000)).toISOString();
+  const result = Plugin.paintTabs([leaf], [entry], now, reads);
+  paints += result.painted;
+};
+for (let i=0; i<20; i++) poll(i%2===0);
+assert.equal(paints, 1);
+poll(true); poll(true);
+assert.equal(paints, 1);
+poll(true);
+assert.equal(paints, 2);
+assert.equal(leaf.view.state.userTitle, '✋? ordinary');
+const takeover = Plugin.paintTabs([leaf], [entry], now, new Plugin.StaleReads());
+assert.equal(takeover.painted, 0);
+assert.equal(leaf.view.state.userTitle, '✋? ordinary');
+poll(false);
+assert.equal(paints, 3);
+assert.equal(leaf.view.state.userTitle, '✋ ordinary');
+entry.owner_question=true;
+for (let i=0; i<20; i++) poll(i%2===0);
+assert.equal(paints, 3);
+console.log(JSON.stringify({alternatingPaints:1,confirmedStalePaints:1,recoveryPaints:1,ownerQuestionExtraPaints:0}));

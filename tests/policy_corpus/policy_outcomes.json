@@ -1,0 +1,225 @@
+{
+  "_comment": "Cases for src/agent_cli/dispatch.py:evaluate(root, d). `input` is the minimal `d` dict evaluate() reads (root is supplied by the test fixture, not part of `input`); `expect` checks only `state` and `auto_resume`, the two fields evaluate()'s decision table sets. `worktree` in every case points at a path that does not exist on disk, so evaluate()'s git cross-checks (_cross_check_commits/_synthesize, gated on Path(worktree).exists()) are no-ops and the case stays pure. Each case's `note` records its nuance.",
+  "cases": [
+    {
+      "name": "question_no_denials_never_auto_resumes",
+      "note": "a worker that returns `question` used to get one free auto-resumed re-read of the plan. That is exactly the guessing the harness's top rule forbids, and it cost real money twice. A plain question always goes to the owner now; evaluate() sets no auto_resume for it.",
+      "input": {
+        "id": "eval-01", "session_id": "sess-eval-01", "nonce": "eval-01-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-01", "base": "origin/main", "branch": "agent/eval-01",
+        "exit_code": 0, "timed_out": false,
+        "last_result": {
+          "total_cost_usd": 0.42, "num_turns": 6, "terminal_reason": null, "session_id": "sess-eval-01",
+          "permission_denials": [],
+          "structured_output": {
+            "nonce": "eval-01-nonce", "status": "question",
+            "summary": "need a decision on which pattern to follow: modal or inline",
+            "branch": "agent/eval-01", "commits": [], "files_touched": [],
+            "commands": [], "open_questions": ["mirror pattern A or pattern B?"],
+            "next_steps": [], "notes": ""
+          }
+        }
+      },
+      "expect": {"state": "question", "auto_resume": null}
+    },
+    {
+      "name": "question_demoted_to_blocked_by_permission_denials",
+      "note": "a question raised because a command was DENIED is a harness fault, not worker hesitation. evaluate() demotes it to `blocked` (still no auto_resume — only the owner can widen a permission) instead of treating it as an ordinary question. A `pnpm --filter x lint` denial is this shape.",
+      "input": {
+        "id": "eval-07", "session_id": "sess-eval-07", "nonce": "eval-07-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-07", "base": "origin/main", "branch": "agent/eval-07",
+        "exit_code": 0, "timed_out": false,
+        "last_result": {
+          "total_cost_usd": 0.96, "num_turns": 3, "terminal_reason": null, "session_id": "sess-eval-07",
+          "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": "pnpm --filter x lint"}}],
+          "structured_output": {
+            "nonce": "eval-07-nonce", "status": "question",
+            "summary": "pnpm lint was denied; need a wider rule before I can verify anything",
+            "branch": "agent/eval-07", "commits": [], "files_touched": [],
+            "commands": [], "open_questions": ["can dispatch.allowed_tools be widened for pnpm --filter?"],
+            "next_steps": [], "notes": ""
+          }
+        }
+      },
+      "expect": {"state": "blocked", "auto_resume": null}
+    },
+    {
+      "name": "timeout_proposes_one_auto_resume",
+      "note": "evaluate() always proposes auto_resume=\"timeout\" when timed_out is true — the cap that makes this happen only once per dispatch (`d[\"attempt\"] < d[\"max_attempts\"]`, MAX_ATTEMPTS=2) lives in run()'s loop, not in evaluate() itself, since evaluate() is pure and never reads max_attempts. See the second timeout case below and the README for why that split is deliberate.",
+      "input": {
+        "id": "eval-02", "session_id": "sess-eval-02", "nonce": "eval-02-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-02", "base": "origin/main", "branch": "agent/eval-02",
+        "exit_code": 1, "timed_out": true,
+        "last_result": null
+      },
+      "expect": {"state": "blocked", "auto_resume": "timeout"}
+    },
+    {
+      "name": "timeout_on_the_last_attempt_still_proposes_resume",
+      "note": "Same input shape at attempt 2 of 2 (the last one MAX_ATTEMPTS allows): evaluate() still returns auto_resume=\"timeout\". run() is what reads attempt<max_attempts and stops proposing after this one — evaluate() does not know it is the last attempt. Documented rather than asserted against run() here, since item 1 covers evaluate() in isolation; a run()-level test belongs to whichever item exercises the supervisor loop (tests/test_dispatch.py already does, e.g. its MAX_ATTEMPTS-bounded auto-resume tests).",
+      "input": {
+        "id": "eval-08", "session_id": "sess-eval-08", "nonce": "eval-08-nonce",
+        "state": "running", "attempt": 2, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-08", "base": "origin/main", "branch": "agent/eval-08",
+        "exit_code": 1, "timed_out": true,
+        "last_result": null
+      },
+      "expect": {"state": "blocked", "auto_resume": "timeout"}
+    },
+    {
+      "name": "budget_hit_is_blocked_not_auto_resumed",
+      "note": "a budget hit auto-raising itself behind the owner's back happened twice in six days and once answered a real design question for them. evaluate() never sets auto_resume for a budget hit, valid return or not; it always reads `blocked`.",
+      "input": {
+        "id": "eval-03", "session_id": "sess-eval-03", "nonce": "eval-03-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-03", "base": "origin/main", "branch": "agent/eval-03",
+        "exit_code": 1, "timed_out": false,
+        "last_result": {
+          "total_cost_usd": 5.02, "num_turns": 40, "terminal_reason": "budget_exhausted", "session_id": "sess-eval-03",
+          "permission_denials": [],
+          "structured_output": null
+        }
+      },
+      "expect": {"state": "blocked", "auto_resume": null}
+    },
+    {
+      "name": "max_turns_hit_is_blocked_not_auto_resumed",
+      "note": "`dispatch.max_turns` is the third bound on a runaway worker, beside the budget and the clock, and the only one that is not paid in full before it stops anything. The CLI reports it as the result subtype `error_max_turns`; evaluate() reads it the same way it reads a budget hit — off the envelope, never the exit code — and lands `blocked` with no auto_resume, because raising the cap or narrowing the task is the owner's call, exactly as it is for a budget hit.",
+      "input": {
+        "id": "eval-09", "session_id": "sess-eval-09", "nonce": "eval-09-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30, "max_turns": 200,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-09", "base": "origin/main", "branch": "agent/eval-09",
+        "exit_code": 1, "timed_out": false,
+        "last_result": {
+          "total_cost_usd": 1.11, "num_turns": 200, "subtype": "error_max_turns", "is_error": true, "session_id": "sess-eval-09",
+          "permission_denials": [],
+          "structured_output": null
+        }
+      },
+      "expect": {"state": "blocked", "auto_resume": null}
+    },
+    {
+      "name": "done_stays_done",
+      "note": "A clean, schema-valid `done` return with a matching nonce and session_id: evaluate() passes the worker's own status straight through.",
+      "input": {
+        "id": "eval-04", "session_id": "sess-eval-04", "nonce": "eval-04-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-04", "base": "origin/main", "branch": "agent/eval-04",
+        "exit_code": 0, "timed_out": false,
+        "last_result": {
+          "total_cost_usd": 1.10, "num_turns": 12, "terminal_reason": null, "session_id": "sess-eval-04",
+          "permission_denials": [],
+          "structured_output": {
+            "nonce": "eval-04-nonce", "status": "done",
+            "summary": "added the field and its tests",
+            "branch": "agent/eval-04",
+            "commits": [{"sha": "abc1234", "subject": "T-1: add field"}],
+            "files_touched": ["src/x.ts"],
+            "commands": [{"cmd": "pnpm test", "exit": 0}],
+            "open_questions": [], "next_steps": [], "notes": ""
+          }
+        }
+      },
+      "expect": {"state": "done", "auto_resume": null}
+    },
+    {
+      "name": "a_legacy_done_whose_reported_commands_miss_a_retired_check_stays_done",
+      "note": "The worker-reported required_checks gate is retired: workers no longer report commands, and the supervisor's own verification decides acceptance at finalize. A return in the earlier shape (branch, commits, files_touched, commands) is still collected, its retired fields dropped, and a regex its commands never matched no longer demotes it. `required_checks` stays on the case only to show it is ignored.",
+      "required_checks": ["pnpm .*\\btest\\b"],
+      "input": {
+        "id": "eval-10", "session_id": "sess-eval-10", "nonce": "eval-10-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-10", "base": "origin/main", "branch": "agent/eval-10",
+        "exit_code": 0, "timed_out": false,
+        "last_result": {
+          "total_cost_usd": 1.40, "num_turns": 14, "terminal_reason": null, "session_id": "sess-eval-10",
+          "permission_denials": [],
+          "structured_output": {
+            "nonce": "eval-10-nonce", "status": "done",
+            "summary": "added the column and wired it up",
+            "branch": "agent/eval-10",
+            "commits": [{"sha": "def5678", "subject": "T-2: add column"}],
+            "files_touched": ["src/y.ts"],
+            "commands": [{"cmd": "pnpm --filter web lint", "exit": 0}],
+            "open_questions": [], "next_steps": [], "notes": ""
+          }
+        }
+      },
+      "expect": {"state": "done", "auto_resume": null}
+    },
+    {
+      "name": "done_that_ran_every_required_check_stays_done",
+      "note": "The other direction of the same branch, so the case above cannot pass by the checks never being read: same repo, same required check, and a return whose `commands` ran it at exit 0. A required check satisfied by a non-zero exit does NOT count (`check_returns` asks for both), which is why the exit is asserted here rather than only the command text.",
+      "required_checks": ["pnpm .*\\btest\\b"],
+      "input": {
+        "id": "eval-11", "session_id": "sess-eval-11", "nonce": "eval-11-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-11", "base": "origin/main", "branch": "agent/eval-11",
+        "exit_code": 0, "timed_out": false,
+        "last_result": {
+          "total_cost_usd": 1.62, "num_turns": 16, "terminal_reason": null, "session_id": "sess-eval-11",
+          "permission_denials": [],
+          "structured_output": {
+            "nonce": "eval-11-nonce", "status": "done",
+            "summary": "added the column and wired it up",
+            "branch": "agent/eval-11",
+            "commits": [{"sha": "def5678", "subject": "T-2: add column"}],
+            "files_touched": ["src/y.ts"],
+            "commands": [{"cmd": "pnpm --filter web test", "exit": 0}],
+            "open_questions": [], "next_steps": [], "notes": ""
+          }
+        }
+      },
+      "expect": {"state": "done", "auto_resume": null}
+    },
+    {
+      "name": "blocked_stays_blocked",
+      "note": "A worker that self-reports `blocked` (no timeout, no budget hit, no denials) passes straight through, same as `done` and `question` do.",
+      "input": {
+        "id": "eval-05", "session_id": "sess-eval-05", "nonce": "eval-05-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-05", "base": "origin/main", "branch": "agent/eval-05",
+        "exit_code": 0, "timed_out": false,
+        "last_result": {
+          "total_cost_usd": 3.10, "num_turns": 20, "terminal_reason": null, "session_id": "sess-eval-05",
+          "permission_denials": [],
+          "structured_output": {
+            "nonce": "eval-05-nonce", "status": "blocked",
+            "summary": "the migration needs a column that does not exist yet",
+            "branch": "agent/eval-05",
+            "commits": [], "files_touched": [], "commands": [],
+            "open_questions": [], "next_steps": ["add the column, then resume"],
+            "notes": "blocked on schema"
+          }
+        }
+      },
+      "expect": {"state": "blocked", "auto_resume": null}
+    },
+    {
+      "name": "no_result_at_all_is_failed",
+      "note": "A transport failure with no envelope: the worker produced no result and the exit code is non-zero (a budget hit exits 1, not 2, so exit code alone was never a usable signal either — this case is the true 'nothing came back' failure, not a budget hit).",
+      "input": {
+        "id": "eval-06", "session_id": "sess-eval-06", "nonce": "eval-06-nonce",
+        "state": "running", "attempt": 1, "max_attempts": 2,
+        "budget_usd": 5.0, "timeout_minutes": 30,
+        "worktree": "/nonexistent/agent-eval-corpus/eval-06", "base": "origin/main", "branch": "agent/eval-06",
+        "exit_code": 1, "timed_out": false,
+        "last_result": null
+      },
+      "expect": {"state": "failed", "auto_resume": null}
+    }
+  ]
+}

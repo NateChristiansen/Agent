@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""The only entry `pair` starts on a device over the owner's own SSH login.
+
+It dispatches exactly `peer-net accept` and nothing else: any other argv exits 2. It is not a
+general CLI entry. On Windows, sshd runs it through `.agent\\peer-net\\accept.cmd`, and before it
+dispatches it re-derives that file's content from its own interpreter and repo path and checks
+it against the file and the stored hash, so a drifted file stops here. Same isolated recipe as
+`bin/peer-net-receive`: `-I`, then the harness and its venv packages on `sys.path`.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+ALLOWED = ["peer-net", "accept"]
+
+
+def _site_packages() -> list[str]:
+    venv = ROOT / ".venv"
+    if os.name == "nt":
+        return [str(venv / "Lib" / "site-packages")]
+    lib = venv / "lib"
+    return [str(p / "site-packages") for p in sorted(lib.glob("python*"))] if lib.is_dir() else []
+
+
+def main(argv: list[str]) -> int:
+    if argv != ALLOWED:
+        sys.stderr.write("peer-net-entry runs only `peer-net accept`\n")
+        return 2
+    sys.path[0:0] = [str(ROOT / "src"), *_site_packages()]
+    os.chdir(ROOT)
+    os.environ["AGENT_ROOT"] = str(ROOT)
+    from agent_cli.peer_net.errors import PeerNetError
+    from agent_cli.peer_net.remote import check_accept_cmd
+
+    if os.name == "nt":
+        try:
+            check_accept_cmd(ROOT, os.path.realpath(getattr(sys, "_base_executable", sys.executable)))
+        except PeerNetError as exc:
+            sys.stderr.write(f"refused: {exc.code} ({exc.detail})\n")
+            return 2
+    from agent_cli.cli import main as cli_main
+
+    return cli_main(ALLOWED)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

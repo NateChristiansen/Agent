@@ -1,0 +1,88 @@
+# ruff: noqa
+from __future__ import annotations
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
+from ..records.narrow import as_dict, as_str
+
+Kind = Literal["vault", "eval", "harness"]
+EVAL_PREFIXES = ("agent-eval-manager-", "agent-dogfood-")
+TEMP_PREFIXES = ("agent-codex-review-",)
+
+
+def _resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+@dataclass
+class Scope:
+    vault: Path
+    trees: tuple[Path, ...] = ()
+    problems: tuple[str, ...] = ()
+    _cache: dict[str, Kind | None] = field(default_factory=dict[str, "Kind | None"])
+
+    @classmethod
+    def for_root(cls, root: Path) -> Scope:
+        from .. import repos as repos_mod
+        from .. import worktree as worktree_mod
+        from ..core import AgentError
+
+        vault = _resolved(root)
+        trees = [worktree_mod.worktrees_dir(vault)]
+        problems: list[str] = []
+        try:
+            registry = repos_mod.load_registry(vault)
+        except AgentError as exc:
+            problems.append(f"product clones not scoped: {exc}")
+        else:
+            for repo in registry.repos:
+                clone = repo.abs_path(vault)
+                trees.append(clone)
+                trees.append(
+                    repo.abs_worktrees(vault)
+                    or clone.parent / repos_mod.WORKTREES_PARENT / repo.short.lower()
+                )
+        return cls(vault, tuple((_resolved(t) for t in trees)), tuple(problems))
+
+    def kind(self, cwd: object) -> Kind | None:
+        if not isinstance(cwd, str) or not cwd:
+            return None
+        if cwd not in self._cache:
+            self._cache[cwd] = self._kind(Path(cwd))
+        return self._cache[cwd]
+
+    def _kind(self, cwd: Path) -> Kind | None:
+        path = _resolved(cwd)
+        if path == self.vault or self.vault in path.parents:
+            return "vault"
+        if any((name.startswith(EVAL_PREFIXES) for name in path.parts)):
+            return "eval"
+        if any((name.startswith(TEMP_PREFIXES) for name in path.parts)):
+            return "harness"
+        if any((path == tree or tree in path.parents for tree in self.trees)):
+            return "harness"
+        if path.parent == self.vault.parent and path.name.startswith(f"{self.vault.name}-wt-"):
+            return "harness"
+        return None
+
+
+def dispatch_class(d: Mapping[str, object]) -> str:
+    if d.get("kind") == "probe":
+        return "probe"
+    return "reviewer" if d.get("row") == "review" else "worker"
+
+
+def dispatch_index(records: Iterable[Mapping[str, object]]) -> dict[str, str]:
+    index: dict[str, str] = {}
+    for d in records:
+        cls = dispatch_class(d)
+        ids = [d.get("session_id"), d.get("codex_thread_id")]
+        ids += [as_dict(attempt).get("session_id") for attempt in as_dict(d.get("cost_attempts")).values()]
+        for key in ids:
+            if text := as_str(key):
+                index[text] = cls
+    return index

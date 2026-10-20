@@ -1,0 +1,83 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook codex-start", "timeout": 600}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook codex-prompt-submit", "timeout": 600},
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook notes-sync", "timeout": 45}
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook protect-generated"}
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook codex-pre-bash", "timeout": 600}
+        ]
+      },
+      {
+        "matcher": "mcp__agent__.*",
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook mcp-stale"}
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode|request_user_input",
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook codex-activity"}
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook codex-activity"}
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook codex-post-tool", "timeout": 600}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook codex-stop", "timeout": 600},
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook notes-sync", "timeout": 45}
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook capture"}
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook capture"},
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook codex-activity"},
+          {"type": "command", "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook session-reap"}
+        ]
+      }
+    ]
+  }
+}

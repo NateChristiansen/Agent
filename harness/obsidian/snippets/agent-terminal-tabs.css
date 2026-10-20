@@ -1,0 +1,5 @@
+/* Terminal tabs prefer room for their status icon, feature and session suffix.
+   Obsidian's own flex layout still shrinks tabs in narrow panes. */
+.workspace-split.mod-root .workspace-tab-header[data-type="terminal:terminal"] {
+  --tab-width: 300px;
+}

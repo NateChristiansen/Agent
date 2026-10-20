@@ -1,0 +1,182 @@
+/* agent-callouts.css — one style per log entry kind.
+   Installed into .obsidian/snippets/ by `bin/agent obsidian setup`. Kinds match
+   src/agent_cli/log.py KINDS. --callout-color must be a CSS color (Obsidian 1.13 feeds it
+   to color-mix); an RGB triplet, which older docs and the vendored skill still show, renders
+   as no color at all. Icons are Lucide names. */
+
+.callout[data-callout="note"] {
+  --callout-color: #788291;
+  --callout-icon: lucide-pencil;
+}
+
+.callout[data-callout="decision"] {
+  --callout-color: #3b82f6;
+  --callout-icon: lucide-gavel;
+}
+
+.callout[data-callout="deviation"] {
+  --callout-color: #f59e0b;
+  --callout-icon: lucide-git-branch;
+}
+
+.callout[data-callout="surprise"] {
+  --callout-color: #a855f7;
+  --callout-icon: lucide-sparkles;
+}
+
+.callout[data-callout="measurement"] {
+  --callout-color: #14b8a6;
+  --callout-icon: lucide-ruler;
+}
+
+.callout[data-callout="dead-end"] {
+  --callout-color: #ef4444;
+  --callout-icon: lucide-ban;
+}
+
+.callout[data-callout="blocker"] {
+  --callout-color: #f97316;
+  --callout-icon: lucide-octagon-alert;
+}
+
+.callout[data-callout="dispatch"] {
+  --callout-color: #22c55e;
+  --callout-icon: lucide-send;
+}
+
+.callout[data-callout="handoff"] {
+  --callout-color: #0ea5e9;
+  --callout-icon: lucide-arrow-left-right;
+}
+
+/* File explorer: hide the folders that are never notes. The agent-hidden-files plugin decides
+   which dot folders are indexed at all; these rules only hide what is indexed. Search, graph,
+   and the switcher are excluded separately by app.json userIgnoreFilters. */
+.nav-folder:has(> .nav-folder-title[data-path="__pycache__"]),
+.nav-folder:has(> .nav-folder-title[data-path$="/__pycache__"]),
+.nav-folder:has(> .nav-folder-title[data-path=".claude/skills"]),
+.nav-file:has(> .nav-file-title[data-path=".python-version"]),
+.nav-file:has(> .nav-file-title[data-path="uv.lock"]),
+.nav-file:has(> .nav-file-title[data-path=".DS_Store"]) {
+  display: none;
+}
+
+/* Log entry titles are timestamps; keep them quiet and monospace. */
+.callout[data-callout] .callout-title-inner {
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  font-weight: var(--font-normal);
+  opacity: 0.85;
+}
+
+/* Dashboard (cssclass agent-dashboard): hide the properties block and the per-embed Bases
+   headers; the note is generated, so there is nothing to edit here. Obsidian's own rule is
+   `.markdown-preview-view.show-properties .metadata-container`, so outrank it. */
+.markdown-preview-view.agent-dashboard .metadata-container,
+.markdown-source-view.agent-dashboard .metadata-container,
+.agent-dashboard .metadata-container {
+  display: none !important;
+}
+
+.agent-dashboard .bases-embed .bases-header,
+.agent-dashboard .bases-embed .bases-toolbar {
+  display: none;
+}
+
+.agent-dashboard .bases-embed {
+  border: none;
+  padding: 0;
+  margin-bottom: var(--size-4-4);
+}
+
+.agent-dashboard .markdown-embed {
+  border: none;
+  padding: 0;
+}
+
+.agent-dashboard h2 {
+  margin-top: var(--size-4-8);
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: var(--size-2-2);
+}
+
+.agent-dashboard .agent-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--size-4-4);
+}
+
+.agent-dashboard .agent-feature-group {
+  margin: var(--size-4-8) 0;
+}
+
+.agent-dashboard .agent-feature-group h3 {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-normal);
+  margin-bottom: var(--size-4-4);
+}
+
+.agent-dashboard .agent-feature-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-4);
+  min-width: 0;
+}
+
+.agent-dashboard .agent-feature-card-title {
+  display: block;
+  font-size: var(--font-ui-large);
+  font-weight: var(--font-semibold);
+  line-height: var(--line-height-tight);
+  margin-bottom: var(--size-4-4);
+  overflow-wrap: anywhere;
+}
+
+.agent-dashboard .agent-feature-card-title a {
+  color: var(--text-normal);
+  text-decoration: none;
+}
+
+.agent-dashboard .agent-feature-card-title a:hover {
+  color: var(--text-accent);
+}
+
+.agent-dashboard .agent-feature-card-label {
+  color: var(--text-muted);
+  margin-top: var(--size-4-3);
+}
+
+.agent-dashboard .agent-feature-card-warning {
+  color: var(--text-warning);
+  margin-top: var(--size-4-2);
+}
+
+.agent-dashboard .agent-feature-card-cue {
+  color: var(--text-success);
+  margin-top: var(--size-4-2);
+}
+
+@media (max-width: 700px) {
+  .agent-dashboard .agent-feature-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.agent-dashboard .agent-index-entry {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: var(--size-4-3) 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-dashboard .agent-index-entry-title a {
+  font-weight: var(--font-semibold);
+  text-decoration: none;
+}
+
+.agent-dashboard .agent-index-entry-details,
+.agent-dashboard .agent-index-empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  overflow-wrap: anywhere;
+}

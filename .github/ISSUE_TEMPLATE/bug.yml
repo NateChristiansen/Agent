@@ -1,0 +1,61 @@
+name: Bug
+description: Something in the harness did not work.
+labels: [bug]
+body:
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Harness commit
+      description: Output of `git rev-parse HEAD` in the harness checkout.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 15, Windows 11
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client and version
+      description: Claude Code or Codex, with its version.
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Install role
+      description: Shown by doctor.
+      options:
+        - consumer
+        - source
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Output of `bin/agent doctor`.
+      render: text
+    validations:
+      required: true

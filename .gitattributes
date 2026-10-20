@@ -1,0 +1,11 @@
+* text=auto eol=lf
+# Line endings that survive a Windows clone. Git for Windows defaults to
+# core.autocrlf=true, which checks text files out with CRLF. Bash then reads `set -euo
+# pipefail\r` and fails on the first line, so the shell scripts are pinned to LF. The Windows
+# launchers are pinned to CRLF, which cmd.exe expects. The catch-all above checks every other
+# text file out as LF on both OSes. It must stay first: a later line wins,
+# so the CRLF pins below override it.
+*.sh text eol=lf
+bin/agent text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

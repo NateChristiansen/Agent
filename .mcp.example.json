@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/bin/agent",
+      "args": ["mcp", "--profile", "manager"],
+      "alwaysLoad": true
+    }
+  }
+}

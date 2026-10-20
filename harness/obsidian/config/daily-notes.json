@@ -1,0 +1,6 @@
+{
+  "folder": "journal",
+  "format": "YYYY/MM-MMMM/DD-dddd",
+  "template": "harness/obsidian/templates/daily",
+  "autorun": false
+}

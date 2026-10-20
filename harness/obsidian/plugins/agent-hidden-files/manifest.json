@@ -1,0 +1,9 @@
+{
+  "id": "agent-hidden-files",
+  "name": "Agent Hidden Files",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Show the agent dot folders (.agent, .agents, .claude, .codex, .github) in the file explorer without indexing node_modules or other hidden folders.",
+  "author": "Agent harness",
+  "isDesktopOnly": true
+}

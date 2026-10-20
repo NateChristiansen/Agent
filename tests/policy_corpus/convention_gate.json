@@ -1,0 +1,148 @@
+{
+  "cases": [
+    {
+      "name": "numbered_new_test_breaks_repo_rule",
+      "base_files": {
+        "tests/AGENTS.md": "New tests use names that describe the behavior, never test_1 numbering.\n"
+      },
+      "changed_files": {
+        "tests/test_flow.py": "def test_1():\n    pass\n"
+      },
+      "diff_rules": [
+        {
+          "paths": "tests/test_*.py",
+          "change": "added",
+          "forbid": "\\btest_[0-9]+\\b",
+          "doc": "tests/AGENTS.md",
+          "rule": "New tests use names that describe the behavior, never test_1 numbering."
+        }
+      ],
+      "conventions": [
+        {
+          "doc": "tests/AGENTS.md",
+          "quote": "New tests use names that describe the behavior, never test_1 numbering."
+        }
+      ],
+      "expect": {
+        "state": "blocked",
+        "violations": 1,
+        "noise": 0,
+        "comments": 0,
+        "answered": 1,
+        "next_step_contains": "tests/AGENTS.md"
+      }
+    },
+    {
+      "name": "given_comment_is_exempt",
+      "base_files": {
+        "tests/AGENTS.md": "Mark the steps of a test with Given, When, Then comments.\n"
+      },
+      "changed_files": {
+        "tests/test_flow.py": "# Given a user exists\ndef test_rejects_missing_token():\n    pass\n"
+      },
+      "conventions": [
+        {
+          "doc": "tests/AGENTS.md",
+          "quote": "Mark the steps of a test with Given, When, Then comments."
+        }
+      ],
+      "expect": {
+        "state": "done",
+        "violations": 0,
+        "noise": 0,
+        "comments": 1,
+        "answered": 1
+      }
+    },
+    {
+      "name": "comment_without_a_row_passes",
+      "base_files": {
+        "src/flow.py": "def flow():\n    return 1\n"
+      },
+      "changed_files": {
+        "src/flow.py": "# The empty case returns early so callers never see None.\ndef flow():\n    return 1\n"
+      },
+      "expect": {
+        "state": "done",
+        "violations": 0,
+        "noise": 0,
+        "comments": 1
+      }
+    },
+    {
+      "name": "id_citing_comment_blocks_done",
+      "base_files": {
+        "src/flow.py": "def flow():\n    return 1\n"
+      },
+      "changed_files": {
+        "src/flow.py": "# Added for feature 028 so the gate passes.\ndef flow():\n    return 1\n"
+      },
+      "expect": {
+        "state": "blocked",
+        "violations": 0,
+        "noise": 1,
+        "comments": 1,
+        "next_step_contains": "comment noise"
+      }
+    },
+    {
+      "name": "explained_comment_passes",
+      "base_files": {
+        "src/flow.py": "def flow():\n    return 1\n"
+      },
+      "changed_files": {
+        "src/flow.py": "# Keep the public shape stable for existing callers.\ndef flow():\n    return 1\n"
+      },
+      "comments": [
+        {
+          "path": "src/flow.py",
+          "line": 1,
+          "reason": "Existing callers import this name."
+        }
+      ],
+      "expect": {
+        "state": "done",
+        "violations": 0,
+        "noise": 0,
+        "comments": 1
+      }
+    },
+    {
+      "name": "unnamed_nested_doc_needs_no_row",
+      "base_files": {
+        "src/AGENTS.md": "Files in src use stable public names.\n"
+      },
+      "changed_files": {
+        "src/flow.py": "def flow():\n    return 1\n"
+      },
+      "expect": {
+        "state": "done",
+        "violations": 0,
+        "noise": 0,
+        "comments": 0
+      }
+    },
+    {
+      "name": "a_wrong_quote_no_longer_blocks",
+      "base_files": {
+        "src/AGENTS.md": "Files in src use stable public names.\n"
+      },
+      "changed_files": {
+        "src/flow.py": "def flow():\n    return 1\n"
+      },
+      "conventions": [
+        {
+          "doc": "src/AGENTS.md",
+          "quote": "Any public name is fine."
+        }
+      ],
+      "expect": {
+        "state": "done",
+        "violations": 0,
+        "noise": 0,
+        "comments": 0,
+        "bad_quotes": 1
+      }
+    }
+  ]
+}

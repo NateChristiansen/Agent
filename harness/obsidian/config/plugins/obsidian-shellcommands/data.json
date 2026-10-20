@@ -1,0 +1,583 @@
+{
+  "settings_version": "0.23.0",
+  "debug": false,
+  "obsidian_command_palette_prefix": "Execute: ",
+  "preview_variables_in_command_palette": true,
+  "show_autocomplete_menu": true,
+  "working_directory": "",
+  "default_shells": {},
+  "environment_variable_path_augmentations": {},
+  "show_installation_warnings": true,
+  "error_message_duration": 20,
+  "notification_message_duration": 10,
+  "execution_notification_mode": "disabled",
+  "output_channel_clipboard_also_outputs_to_notification": true,
+  "output_channel_notification_decorates_output": true,
+  "enable_events": true,
+  "approve_modals_by_pressing_enter_key": true,
+  "command_palette": {
+    "re_execute_last_shell_command": {
+      "enabled": true,
+      "prefix": "Re-execute: "
+    }
+  },
+  "max_visible_lines_in_shell_command_fields": false,
+  "shell_commands": [
+    {
+      "id": "agent-new-feature",
+      "platform_specific_commands": {
+        "default": "bin/agent feature new \"{{_slug}}\" --title \"{{_title}}\""
+      },
+      "shells": {},
+      "alias": "Agent: new feature",
+      "icon": "lucide-plus-square",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "modal",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "enabled",
+      "preactions": [
+        {
+          "type": "prompt",
+          "enabled": true,
+          "prompt_id": "agent-prompt-new-feature"
+        }
+      ],
+      "variable_default_values": {}
+    },
+    {
+      "id": "agent-log",
+      "platform_specific_commands": {
+        "default": "bin/agent log \"{{_feature}}\" --kind \"{{_kind}}\" \"{{_text}}\""
+      },
+      "shells": {},
+      "alias": "Agent: log entry",
+      "icon": "lucide-pencil-line",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "enabled",
+      "preactions": [
+        {
+          "type": "prompt",
+          "enabled": true,
+          "prompt_id": "agent-prompt-log"
+        }
+      ],
+      "variable_default_values": {}
+    },
+    {
+      "id": "agent-new-adr",
+      "platform_specific_commands": {
+        "default": "bin/agent adr new \"{{_slug}}\" --title \"{{_title}}\" --feature \"{{_feature}}\""
+      },
+      "shells": {},
+      "alias": "Agent: new ADR",
+      "icon": "lucide-gavel",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "modal",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "enabled",
+      "preactions": [
+        {
+          "type": "prompt",
+          "enabled": true,
+          "prompt_id": "agent-prompt-new-adr"
+        }
+      ],
+      "variable_default_values": {}
+    },
+    {
+      "id": "agent-close",
+      "platform_specific_commands": {
+        "default": "bin/agent feature close \"{{_feature}}\""
+      },
+      "shells": {},
+      "alias": "Agent: close feature",
+      "icon": "lucide-check-square",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "modal",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "enabled",
+      "preactions": [
+        {
+          "type": "prompt",
+          "enabled": true,
+          "prompt_id": "agent-prompt-close"
+        }
+      ],
+      "variable_default_values": {}
+    },
+    {
+      "id": "agent-status-render",
+      "platform_specific_commands": {
+        "default": "bin/agent status render"
+      },
+      "shells": {},
+      "alias": "Agent: render status",
+      "icon": "lucide-refresh-cw",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "enabled",
+      "preactions": [],
+      "variable_default_values": {}
+    },
+    {
+      "id": "agent-status",
+      "platform_specific_commands": {
+        "default": "bin/agent feature list"
+      },
+      "shells": {},
+      "alias": "Agent: list features",
+      "icon": "lucide-list-checks",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "modal",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "enabled",
+      "preactions": [],
+      "variable_default_values": {}
+    },
+    {
+      "id": "agent-doctor",
+      "platform_specific_commands": {
+        "default": "bin/agent doctor"
+      },
+      "shells": {},
+      "alias": "Agent: doctor",
+      "icon": "lucide-stethoscope",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "modal",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "enabled",
+      "preactions": [],
+      "variable_default_values": {}
+    },
+    {
+      "id": "agent-journal-collect",
+      "platform_specific_commands": {
+        "default": "bin/agent journal collect --write"
+      },
+      "shells": {},
+      "alias": "Agent: collect today's journal",
+      "icon": "lucide-book-open",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "enabled",
+      "preactions": [],
+      "variable_default_values": {}
+    },
+    {
+      "id": "agent-repos-status",
+      "platform_specific_commands": {
+        "default": "bin/agent repos status"
+      },
+      "shells": {},
+      "alias": "Agent: repos status",
+      "icon": "lucide-git-branch",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "modal",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "enabled",
+      "preactions": [],
+      "variable_default_values": {}
+    },
+    {
+      "id": "agent-worker-open",
+      "platform_specific_commands": {
+        "default": "bin/agent dispatch open {{_dispatch}}"
+      },
+      "shells": {},
+      "alias": "Agent: open worker",
+      "icon": "lucide-terminal",
+      "confirm_execution": false,
+      "ignore_error_codes": [],
+      "input_contents": {
+        "stdin": null
+      },
+      "output_handlers": {
+        "stdout": {
+          "handler": "ignore",
+          "convert_ansi_code": true
+        },
+        "stderr": {
+          "handler": "notification",
+          "convert_ansi_code": true
+        }
+      },
+      "output_wrappers": {
+        "stdout": null,
+        "stderr": null
+      },
+      "output_channel_order": "stdout-first",
+      "output_handling_mode": "buffered",
+      "execution_notification_mode": null,
+      "events": {},
+      "debounce": null,
+      "command_palette_availability": "unlisted",
+      "preactions": [],
+      "variable_default_values": {}
+    }
+  ],
+  "prompts": [
+    {
+      "id": "agent-prompt-new-feature",
+      "title": "New feature",
+      "description": "",
+      "preview_shell_command": true,
+      "execute_button_text": "Run",
+      "fields": [
+        {
+          "type": "single-line-text",
+          "label": "Slug",
+          "description": "",
+          "default_value": "",
+          "target_variable_id": "agent-var-slug",
+          "required": true
+        },
+        {
+          "type": "single-line-text",
+          "label": "Title",
+          "description": "",
+          "default_value": "",
+          "target_variable_id": "agent-var-title",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "agent-prompt-log",
+      "title": "Log entry",
+      "description": "",
+      "preview_shell_command": true,
+      "execute_button_text": "Run",
+      "fields": [
+        {
+          "type": "single-line-text",
+          "label": "Feature (1, slug, current)",
+          "description": "",
+          "default_value": "current",
+          "target_variable_id": "agent-var-feature",
+          "required": true
+        },
+        {
+          "type": "single-line-text",
+          "label": "Kind",
+          "description": "",
+          "default_value": "note",
+          "target_variable_id": "agent-var-kind",
+          "required": true
+        },
+        {
+          "type": "single-line-text",
+          "label": "Text",
+          "description": "",
+          "default_value": "",
+          "target_variable_id": "agent-var-text",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "agent-prompt-new-adr",
+      "title": "New ADR",
+      "description": "",
+      "preview_shell_command": true,
+      "execute_button_text": "Run",
+      "fields": [
+        {
+          "type": "single-line-text",
+          "label": "Slug",
+          "description": "",
+          "default_value": "",
+          "target_variable_id": "agent-var-slug",
+          "required": true
+        },
+        {
+          "type": "single-line-text",
+          "label": "Title",
+          "description": "",
+          "default_value": "",
+          "target_variable_id": "agent-var-title",
+          "required": true
+        },
+        {
+          "type": "single-line-text",
+          "label": "Feature",
+          "description": "",
+          "default_value": "current",
+          "target_variable_id": "agent-var-feature",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "agent-prompt-close",
+      "title": "Close feature",
+      "description": "",
+      "preview_shell_command": true,
+      "execute_button_text": "Run",
+      "fields": [
+        {
+          "type": "single-line-text",
+          "label": "Feature",
+          "description": "",
+          "default_value": "current",
+          "target_variable_id": "agent-var-feature",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "agent-prompt-use",
+      "title": "Map this session to a feature",
+      "description": "",
+      "preview_shell_command": true,
+      "execute_button_text": "Run",
+      "fields": [
+        {
+          "type": "single-line-text",
+          "label": "Feature",
+          "description": "",
+          "default_value": "",
+          "target_variable_id": "agent-var-feature",
+          "required": true
+        }
+      ]
+    }
+  ],
+  "builtin_variables": {},
+  "custom_variables": [
+    {
+      "id": "agent-var-slug",
+      "name": "slug",
+      "description": "kebab-case feature or ADR slug",
+      "default_value": null
+    },
+    {
+      "id": "agent-var-title",
+      "name": "title",
+      "description": "human title",
+      "default_value": null
+    },
+    {
+      "id": "agent-var-feature",
+      "name": "feature",
+      "description": "feature ref: 1, 001, slug, or current",
+      "default_value": null
+    },
+    {
+      "id": "agent-var-kind",
+      "name": "kind",
+      "description": "log kind: note decision deviation surprise measurement dead-end blocker",
+      "default_value": null
+    },
+    {
+      "id": "agent-var-text",
+      "name": "text",
+      "description": "log entry text",
+      "default_value": null
+    },
+    {
+      "id": "agent-var-dispatch",
+      "name": "dispatch",
+      "description": "dispatch id NNN-<tag>-SS or legacy NNN-SS, set by a Workers row's Open link",
+      "default_value": null
+    }
+  ],
+  "custom_variables_notify_changes_via": {
+    "obsidian_uri": false,
+    "output_assignment": true
+  },
+  "custom_shells": [],
+  "output_wrappers": []
+}

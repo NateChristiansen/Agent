@@ -1,0 +1,15 @@
+Third-party material in this repository
+
+vendor/caveman
+  A git submodule (https://github.com/JuliusBrussee/caveman).
+  License: MIT, Copyright (c) 2026 Julius Brussee, in vendor/caveman/LICENSE.
+  That license also names BSL-licensed Engine directories. They are not vendored here and
+  the harness does not use them.
+
+.agents/skills/obsidian-bases, .agents/skills/obsidian-markdown
+  Obsidian skills by Steph Ango (@kepano).
+  License: MIT, in .agents/skills/LICENSE-obsidian-skills.
+
+No other directory under vendor/ or .agents/skills/ carries its own license file.
+
+The harness itself is covered by LICENSE.

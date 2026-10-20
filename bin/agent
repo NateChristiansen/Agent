@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# bin/agent — zero-setup entry point for the agent CLI.
+# Hooks and the model call this; the caller's cwd is preserved and AGENT_ROOT
+# tells the CLI where the harness lives. Prefers the synced venv (fast start);
+# falls back to `uv run`, which syncs the environment on first use.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export AGENT_ROOT="$ROOT"
+if [ -x "$ROOT/.venv/bin/agent" ]; then
+  exec "$ROOT/.venv/bin/agent" "$@"
+fi
+# Git Bash on Windows has no .venv/bin. Once a venv exists, do not sync it here: the sync fails
+# with os error 32 while a live process holds a venv file. Setup syncs.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)
+    if [ -d "$ROOT/.venv" ]; then
+      exec uv run --no-sync --quiet --project "$ROOT" agent "$@"
+    fi
+    ;;
+esac
+exec uv run --quiet --project "$ROOT" agent "$@"

@@ -1,0 +1,30 @@
+# Timing flakes a failed land certificate may retry once, serially, on the record
+# (src/agent_cli/verify_retry.py).
+#
+# Only local main's committed copy counts, so an entry takes effect once it has landed. An entry
+# retries only while `owner_approval` reads "approved YYYY-MM-DD <where>" and `expires` has not
+# passed; a "pending" or expired entry gates like any other test, and doctor names it. Only
+# `timing-flake` is a disposition: an isolation leak or a real bug is fixed, never listed here.
+# `node` is the id pytest prints without the xdist group suffix (`@timing-0`).
+#
+# Seeded with two flakes proved by a same-tree fail and pass.
+
+version = 1
+
+[[quarantine]]
+node = "tests/test_telemetry_sink.py::test_eight_processes_append_concurrently_without_loss_or_tearing"
+disposition = "timing-flake"
+owner = "maintainers"
+reason = "lost 1 of 500 appends under load; the same tree passed minutes later"
+expires = 2026-11-13
+evidence = "a same-tree fail and pass"
+owner_approval = "approved 2026-10-16 in review"
+
+[[quarantine]]
+node = "tests/test_peer_net_pairing.py::test_a_revoke_while_the_pairing_stalls_is_not_reversed_by_resuming"
+disposition = "timing-flake"
+owner = "maintainers"
+reason = "End.recv(timeout=0.3) deadline missed under load; failed on two trees, one of which holds a pass record"
+expires = 2026-11-13
+evidence = "failed under load on two trees; a pass record exists on one"
+owner_approval = "approved 2026-10-16 in review"

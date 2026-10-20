@@ -1,0 +1,100 @@
+{"kind": "rhetorical", "ask": false, "text": "Why did the suite fail? Load. The machine sat at 29, so the timing tests tripped."}
+{"kind": "rhetorical", "ask": false, "text": "Landed the fix.\n\nThat leaves one question for later: does Codex keep the turn id across a resume?"}
+{"kind": "rhetorical", "ask": false, "text": "Who knew a byte-order mark could break a hook?"}
+{"kind": "rhetorical", "ask": false, "text": "What changed? The guard now runs before lease-yield, and a test pins the order."}
+{"kind": "rhetorical", "ask": false, "text": "Does it work? Yes: the replay fired once per turn."}
+{"kind": "rhetorical", "ask": false, "text": "Should I have caught this earlier? Probably, and the new test covers it now."}
+{"kind": "rhetorical", "ask": false, "text": "Is the cache the culprit? It is. Clearing it fixed all three runs."}
+{"kind": "rhetorical", "ask": false, "text": "Do you need a separate setup step? You don't; the installer handles it."}
+{"kind": "rhetorical", "ask": false, "text": "Should we retry? We should, because the error is transient. I retried and it passed."}
+{"kind": "rhetorical", "ask": false, "text": "Does this need your approval? It doesn't; I already verified the policy."}
+{"kind": "rhetorical", "ask": false, "text": "Should I keep the old flag? No, nothing reads it any more, so I removed it."}
+{"kind": "rhetorical", "ask": false, "text": "Can we drop the retry wrapper? We can, since the lock now serializes writes. It is gone."}
+{"kind": "code", "ask": false, "text": "````markdown\n```text\nShould I push main?\n```\n````"}
+{"kind": "code", "ask": false, "text": "~~~text\n```\nShould I push main?\n```\n~~~"}
+{"kind": "code", "ask": false, "text": "The documentation uses this example:\n\n``Should I push main?``"}
+{"kind": "code", "ask": false, "text": "The fixture prints this:\n\n~~~~\n~~~\nShould I push main?\n~~~~"}
+{"kind": "ask", "ask": true, "text": "The fixture prints this:\n\n```\nok\n````\n\nShould I push main?"}
+{"kind": "quoted", "ask": false, "text": "Your prompt was \"can you push?\", so I pushed `7c444ab` to origin."}
+{"kind": "quoted", "ask": false, "text": "The worker's last line was \"Should I also update the README?\""}
+{"kind": "quoted", "ask": false, "text": "Codex replied:\n\n> Should I keep the async ban for now?"}
+{"kind": "quoted", "ask": false, "text": "> The worker asked:\nShould I push main?"}
+{"kind": "status", "ask": false, "text": "- # Should I push main?"}
+{"kind": "status", "ask": false, "text": "- Status:\n  ## Should I push main?"}
+{"kind": "status", "ask": false, "text": "Landed.\n\n### Should I push main?"}
+{"kind": "ask", "ask": true, "text": "Should I push `main`?"}
+{"kind": "ask", "ask": true, "text": "Staging is green.\n\nShould I deploy to \"production\"?"}
+{"kind": "code", "ask": false, "text": "The example is:\n\n`\nShould I push main?\n`"}
+{"kind": "code", "ask": false, "text": "- ```text\n  Should I push main?\n  ```"}
+{"kind": "code", "ask": false, "text": "<pre>\nShould I push main?\n</pre>"}
+{"kind": "status", "ask": false, "text": "I asked Dr. Jane about it. She agreed with the plan."}
+{"kind": "ask", "ask": true, "text": "Should I not use e.g. GitHub or GitLab?"}
+{"kind": "ask", "ask": true, "text": "Should I not contact Dr. Jane or John?"}
+{"kind": "status", "ask": false, "text": "The checks took one min. Nothing needs you."}
+{"kind": "rhetorical", "ask": false, "text": "Should we wait... no. The checks already passed."}
+{"kind": "ask", "ask": true, "text": "Should I not ... push main?"}
+{"kind": "ask", "ask": true, "text": "The answer is no. Should I push main?"}
+{"kind": "code", "ask": false, "text": "Example: <tt>Example.\n\n</samp>\n\nShould I push main?"}
+{"kind": "code", "ask": false, "text": "Example: <code>Example. </kbd> Should I push main?"}
+{"kind": "ask", "ask": true, "text": "Should I push main? should I close feature 045?"}
+{"kind": "ask", "ask": true, "text": "Landed the docs. push main? if yes, I'll land 045 after."}
+{"kind": "code", "ask": false, "text": "Example: <samp title=\"a > b\">Should I push main?</samp>"}
+{"kind": "code", "ask": false, "text": "Example: <code>Example.\n\n<!-- </code> -->\n\nShould I push main?\n\n</code>"}
+{"kind": "ask", "ask": true, "text": "<!-- <code> -->\n\nShould I push main?"}
+{"kind": "ask", "ask": true, "text": "<div title=\"<code>\">\nExample.\n</div>\n\nShould I push main?"}
+{"kind": "code", "ask": false, "text": "Example: <kbd>Example sentence.\n\nShould I push main?</kbd>"}
+{"kind": "quoted", "ask": false, "text": "Example: “Example sentence.\nShould I push main?\nExample continues.”"}
+{"kind": "quoted", "ask": false, "text": "Example: «Example sentence.  \nShould I push main?»"}
+{"kind": "ask", "ask": true, "text": "Should I not\npush main?"}
+{"kind": "ask", "ask": true, "text": "Should I push main,\nor should I close feature 045?"}
+{"kind": "code", "ask": false, "text": "The fixture's prompt is <code>Should I push main?</code> in the template."}
+{"kind": "ask", "ask": true, "text": "Main went into release yesterday.\n\nShould I merge release into main?"}
+{"kind": "ask", "ask": true, "text": "Staging passed.\n\nShould I deploy the reviewed release artifact from branch main using the approved workflow to production now?"}
+{"kind": "ask", "ask": true, "text": "1. Should I push main now?\n2. Should I close feature 045?"}
+{"kind": "quoted", "ask": false, "text": "I asked the 045 manager “can you rebase onto main?” and it is rebasing now."}
+{"kind": "quoted", "ask": false, "text": "Codex asked: should the guard key on stop_hook_active? I answered no and linked the plan."}
+{"kind": "quoted", "ask": false, "text": "You asked whether we should push; it is pushed and the checks are green."}
+{"kind": "code", "ask": false, "text": "Run this on WIN-BOX:\n\n```powershell\n$answer = Read-Host 'Continue?'\n```"}
+{"kind": "code", "ask": false, "text": "The prompt text is `Proceed?` in `land.py`, unchanged since the last release."}
+{"kind": "code", "ask": false, "text": "The retry lives here:\n\n```python\n# should we retry here?\nif failed:\n    retry()\n```"}
+{"kind": "code", "ask": false, "text": "The hook reads it like this:\n\n    if ask: # do you want to block?\n        return block"}
+{"kind": "code", "ask": false, "text": "Docs for the Stop payload: https://code.claude.com/docs/en/hooks?event=Stop"}
+{"kind": "status", "ask": false, "text": "Landed 045 at `a1b2c3d`. Nothing needs you."}
+{"kind": "status", "ask": false, "text": "## What's next?\n\nTask 5 runs tomorrow, after the Windows pass."}
+{"kind": "status", "ask": false, "text": "Let me know if you want anything else."}
+{"kind": "status", "ask": false, "text": "All three workers are back.\n\nLet me know if you need more detail on any of them."}
+{"kind": "status", "ask": false, "text": "If you want, I can also draft the ADR."}
+{"kind": "status", "ask": false, "text": "No decision is waiting on your answer; the queue is clear."}
+{"kind": "status", "ask": false, "text": "| Task | Done? |\n|---|---|\n| 5 | yes |\n| 6 | no |"}
+{"kind": "status", "ask": false, "text": "Two things need you:\n- run `/mcp` to reconnect\n- restart the Codex manager after the land"}
+{"kind": "status", "ask": false, "text": "Next step is mine: I'll land 045 after the review agrees."}
+{"kind": "status", "ask": false, "text": "If this attempt fails too, the next step is your call:\n- land the branches one at a time\n- accept the flaky failures"}
+{"kind": "status", "ask": false, "text": "Your decision on the rewrite escape is pending in the 045 tab, not here."}
+{"kind": "ask", "ask": true, "text": "The relink landed at `ea3233b`.\n\nShould I push main now?"}
+{"kind": "ask", "ask": true, "text": "Want me to push now?"}
+{"kind": "ask", "ask": true, "text": "Which do you want first: landing 045, or the blocked 036 workers?"}
+{"kind": "ask", "ask": true, "text": "The preview is ready and every command is allowed.\n\nPush?"}
+{"kind": "ask", "ask": true, "text": "Land it now, or wait for the Windows pass?"}
+{"kind": "ask", "ask": true, "text": "Should I close 056 now? It has one follow-up left, logged in the plan."}
+{"kind": "ask", "ask": true, "text": "1. Should I push main to origin?\n2. Should I launch the S1 and S2 shards?"}
+{"kind": "ask", "ask": true, "text": "Should I push? If yes, I'll land 045 first."}
+{"kind": "ask", "ask": true, "text": "One final check remains. May I run the $1 probe with the fixture home?"}
+{"kind": "ask", "ask": true, "text": "Here is the probe output:\n\n```\nok?\n```\n\nShould I commit this?"}
+{"kind": "ask", "ask": true, "text": "Decision for you: should task 13 go to a worker, or should I make it here? It is small enough to make here."}
+{"kind": "ask", "ask": true, "text": "One question is still open: did you approve this session as the Mac counterpart for 059?"}
+{"kind": "ask", "ask": true, "text": "Which launch option do you want?\n\n- launch with the gaps as alpha notes\n- launch Mac-only\n- slip the date"}
+{"kind": "decision", "ask": true, "text": "Decide between rebasing 045 and landing it as is."}
+{"kind": "decision", "ask": true, "text": "Please choose one of the three cut lists above."}
+{"kind": "decision", "ask": true, "text": "Let me know which option you prefer."}
+{"kind": "decision", "ask": true, "text": "Both reviews agreed.\n\nI'm waiting on your go-ahead to push."}
+{"kind": "decision", "ask": true, "text": "Your call: ship with the alpha note, or slip a day."}
+{"kind": "decision", "ask": true, "text": "Open decisions for you:\n1. Push main.\n2. The launch cut list."}
+{"kind": "decision", "ask": true, "text": "Confirm whether the Windows box runs Codex 0.162.1."}
+{"kind": "decision", "ask": true, "text": "The approved plan keeps native trust, so this extra trust entry needs your approval."}
+{"kind": "miss", "ask": true, "miss": "the ask is not in the final paragraph", "text": "Should I push?\n\nThe suite took 12 minutes on the last run."}
+{"kind": "miss", "ask": true, "miss": "a question with no address to the owner reads as rhetorical", "text": "Is the Windows box on?"}
+{"kind": "miss", "ask": true, "miss": "a greeting is not a decision", "text": "Hi Nate. What are we working on today?"}
+{"kind": "miss", "ask": true, "miss": "an abbreviation's dot never ends a sentence, so a short action question loses the sentence start the short-action detector needs", "text": "The checks took one min. Push?"}
+{"kind": "miss", "ask": true, "miss": "an abbreviation's dot never ends a sentence, so a short action question loses the sentence start the short-action detector needs", "text": "The checks took one min. Land 045 now?"}
+{"kind": "miss", "ask": true, "miss": "an abbreviation's dot never ends a sentence, so the ask merges into a status holding reported speech and the reported-speech exclusion suppresses it", "text": "You asked about the U.S. Should I push main?"}
+{"kind": "miss", "ask": true, "miss": "an abbreviation's dot never ends a sentence, so the ask merges into a status holding reported speech and the reported-speech exclusion suppresses it", "text": "The owner asked about timing in min. Should I push main?"}

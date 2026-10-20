@@ -1,0 +1,370 @@
+{
+  "autoMemoryEnabled": false,
+  "attribution": { "commit": "", "pr": "", "sessionUrl": false },
+  "autoCompactWindow": 400000,
+  "outputStyle": "caveman-lite",
+  "plansDirectory": "./.agent/scratch/plans",
+  "enabledMcpjsonServers": ["agent"],
+  "statusLine": {
+    "type": "command",
+    "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent status line",
+    "refreshInterval": 15
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook start",
+            "timeout": 75,
+            "statusMessage": "Loading session feature..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook prompt-submit",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook notes-sync",
+            "timeout": 45
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook stop",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook notes-sync",
+            "timeout": 45
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook activity",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook capture",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook capture",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook activity",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook session-reap",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__agent__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook pre-mcp",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook protect-generated",
+            "timeout": 5,
+            "statusMessage": "Checking generated-file protection..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook pre-bash",
+            "timeout": 50,
+            "statusMessage": "Checking the shell command..."
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook pull-warn",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook pre-ask",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook peer-route",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook post-tool",
+            "timeout": 25
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook thrash-guard",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook thrash-guard",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "additionalDirectories": ["../repos"],
+    "allow": [
+      "mcp__agent__*",
+      "Edit",
+      "Write",
+      "WebSearch",
+      "WebFetch",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run --directory * pytest*)",
+      "Bash(uv run ruff:*)",
+      "Bash(uv run pyright:*)",
+      "Bash(uv sync:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr status:*)",
+      "Bash(gh api:*)",
+      "Bash(gh auth status:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(jq:*)",
+      "Bash(obsidian eval:*)",
+      "Bash(obsidian open:*)",
+      "Bash(git -C * status*)",
+      "Bash(git -C * log*)",
+      "Bash(git -C * diff*)",
+      "Bash(git -C * show*)",
+      "Bash(git -C * branch --show-current*)",
+      "Bash(git -C * branch --list*)",
+      "Bash(git -C * branch -a*)",
+      "Bash(git -C * branch -r*)",
+      "Bash(git -C * branch -v*)",
+      "Bash(git -C * rev-parse*)",
+      "Bash(git -C * ls-files*)",
+      "Bash(git -C * grep*)",
+      "Bash(git -C * worktree list*)",
+      "Bash(git grep:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git worktree list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(sed -n:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(cut:*)",
+      "Bash(tr:*)",
+      "Bash(diff:*)",
+      "Bash(stat:*)",
+      "Bash(file:*)",
+      "Bash(basename:*)",
+      "Bash(dirname:*)",
+      "Bash(realpath:*)",
+      "Bash(ps:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(git * push*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh pr ready:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(gh pr comment:*)",
+      "Bash(gh pr review:*)",
+      "Bash(gh api * -X *)",
+      "Bash(gh api * --method *)",
+      "Bash(gh api * -f *)",
+      "Bash(gh api * -F *)",
+      "Bash(gh api * --field *)",
+      "Bash(gh api * --raw-field *)",
+      "Bash(gh api * --input *)",
+      "Bash(gh api -X:*)",
+      "Bash(gh api --method:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh pr close:*)",
+      "Bash(glab mr create:*)",
+      "Bash(glab mr merge:*)",
+      "Bash(glab mr update:*)",
+      "Bash(glab mr note:*)",
+      "Bash(glab mr approve:*)",
+      "Bash(glab mr unapprove:*)",
+      "Bash(glab mr close:*)",
+      "Bash(glab issue create:*)",
+      "Bash(glab api * -X *)",
+      "Bash(glab api * --method *)",
+      "Bash(glab api * -f *)",
+      "Bash(glab api * -F *)",
+      "Bash(glab api * --field *)",
+      "Bash(glab api * --raw-field *)",
+      "Bash(glab api * --input *)",
+      "Bash(glab api -X:*)",
+      "Bash(glab api --method:*)",
+      "Edit(harness/owner/rules.md)",
+      "Edit(harness/voice.md)",
+      "Edit(.claude/settings.json)",
+      "Edit(.mcp.json)",
+      "Edit(bin/agent)",
+      "Edit(src/agent_cli/hooks/**)"
+    ],
+    "deny": [
+      "Bash(sed -i*)",
+      "Bash(sed * -i*)",
+      "Bash(sed * --in-place*)",
+      "Bash(sort -o*)",
+      "Bash(sort * -o*)",
+      "Bash(sort *--output*)",
+      "Bash(git branch -D*)",
+      "Bash(git branch * -D*)",
+      "Bash(git -C * branch -D*)",
+      "Bash(git -C * branch * -D*)",
+      "Edit(/STATUS.md)",
+      "Edit(/Dashboard.md)",
+      "Edit(/Index.md)",
+      "Edit(/bases/**)",
+      "Edit(/adrs/README.md)",
+      "Edit(/features/*/log.md)",
+      "Edit(/features/*/handoffs/**)",
+      "Edit(/features/*/records/**)",
+      "Edit(/initiatives/**/log.md)",
+      "Edit(/initiatives/**/handoffs/**)",
+      "Edit(/initiatives/**/records/**)",
+      "Edit(/records/**)",
+      "Edit(/.agent/peers/**)",
+      "Edit(/.agent/peer-net/**)",
+      "Edit(/.agent/dispatches/**)",
+      "Edit(/.agent/journal/**)",
+      "Edit(/.agent/leases/**)",
+      "Edit(/.agent/plan-reviews/**)",
+      "Edit(/.agent/raw/**)",
+      "Edit(/.agent/sessions/**)",
+      "Edit(/.agent/work-order-previews/**)",
+      "Edit(/.agent/status.json)",
+      "Edit(/.agent/live.json)",
+      "Edit(/.agent/default-feature)",
+      "Edit(/journal/*.collect.*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean*)",
+      "Bash(rm -r*)",
+      "Bash(rm -R*)",
+      "Bash(rm -f*)",
+      "Bash(rm --recursive*)",
+      "Bash(find * -delete*)",
+      "Bash(find * -exec*)",
+      "Bash(uv run bash*)",
+      "Bash(uv run sh*)",
+      "Bash(uv run zsh*)",
+      "Bash(uv run python*)",
+      "Bash(cat ~/.z*)",
+      "Bash(cat ~/.claude*)",
+      "Bash(claude --dangerously-skip-permissions*)"
+    ]
+  }
+}

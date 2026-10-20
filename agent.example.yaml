@@ -1,0 +1,60 @@
+# agent.yaml: shared settings. Only required values and example overrides are active.
+# Defaults live in code; full schema and worker_mcp profiles: harness/agent-yaml.md.
+# Keep clone paths relative, under sibling ../repos/; machine paths go in agent.local.yaml.
+# Provider: both = Claude and Codex; harness = manager/config behavior.
+
+# Identity and services
+# version: 1                      # File format; default 1; harness.
+# forge: github                   # Code host; default github; both.
+owner:                            # Owner identity; default unset; harness.
+  # Display name; default unset (Your Name is a placeholder); harness.
+  name: Your Name
+# worker_mcp: {}                  # Extra opt-in MCP profiles; default none; both.
+# peers: {defer_nonurgent_s: 300}  # Defer informational wakes; default 0 seconds; harness.
+# journal: {machine: mac}         # Journal writer label; default any machine; harness.
+# hooks: {thrash-guard: false}     # Removable hook switches; default all on; harness.
+# export: {identity: {name: Your Name, email: you@users.noreply.github.com}} # Public export author; default unset, export refuses; harness.
+
+# Repositories (setup removes this illustrative entry from a new config)
+# Managed repos; required list; harness.
+repos:
+  - name: example-service         # Repo name; required; both.
+    short: example                # Repo handle; default name; both.
+    path: ../repos/example-service # Clone path; required; both.
+    remote: git@github.com:your-org/example-service.git # Clone source; default local-only; both.
+    worktrees_dir: ../repos/_worktrees/example # Worker folder; default <clones>/_worktrees/<short>; both.
+    # default_branch: main        # Starting branch; default main; both.
+    # forge: gitlab               # Repo code host; default shared forge; both.
+    # harness: none               # Repo harness context; default empty; both.
+    # notes: Use npm.             # Repo instructions; default empty; both.
+    dispatch:                     # Worker settings; default {}; both.
+      # Model and worker limits
+      # model: sonnet             # Repo model pin; default rubric row, then client default; Claude only.
+      # effort: high              # Repo effort after explicit/parent; default vendor default; Claude only.
+      max_budget_usd: 5           # Spend cap; default $2, row band may raise it; both.
+      # timeout_minutes: 45       # Worker wall clock; default 45 minutes; both.
+      # max_turns: 200            # Worker turn cap; default 200; Claude only.
+      # max_tool_items: 400       # Completed tool item cap; default 400; Codex only.
+      # max_concurrent: 3         # Running worker slots; default 3; both.
+      # max_concurrent_verify: 1  # Verification lanes; default 1; both.
+      # max_pending_verify: 2     # Verification backlog cap; default max(2, twice lanes); both.
+      # verify_wait_timeout_s: 1800 # Verification queue wait; default 1800 seconds; both.
+
+      # Setup and checks: illustrative only; replace with measured commands and bounds.
+      # setup: [npm ci]           # Fresh-tree setup commands; default []; both.
+      # probes: [node --version]  # Preflight permission probes (not executed); default []; both.
+      verify:                     # Supervisor checks; default unconfigured, blocks non-exempt work; both.
+        - command: npm test       # Executed check; required per entry; both.
+          timeout_seconds: 120    # Check time bound; required per entry, seconds; both.
+      verify_timeout_seconds: 180 # Total check time bound; required with verify, seconds; both.
+      # diff_rules: []            # Doc-backed diff restrictions; default []; both.
+
+      # Permissions, environment and branches
+      allowed_tools: ["Bash(npm test:*)"] # Extra permission grants; default []; both.
+      # permission_mode: acceptEdits # Client permission mode; default acceptEdits; Claude only.
+      # extra_args: []            # Extra client flags; default []; Claude only.
+      # codex_network_access: false # Sandbox network grant; default false; Codex only.
+      # repo_mcp: [docs-search]   # Product MCP selections; default none (also null/[]); both.
+      # env: {}                   # Set environment values; default {}; both.
+      # env_allow: [NODE_*]       # Inherit named variables/prefixes; default []; both.
+      # branch_template: "feature/{slug}{suffix}" # Branch shape; default shown, suffix required; both.

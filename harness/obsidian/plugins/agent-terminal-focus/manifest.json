@@ -1,0 +1,9 @@
+{
+  "id": "agent-terminal-focus",
+  "name": "Agent Terminal",
+  "version": "0.6.1",
+  "minAppVersion": "1.0.0",
+  "description": "A live dashboard and health strip, terminal tab labels, and ribbon buttons for Claude and Codex managers.",
+  "author": "Agent harness",
+  "isDesktopOnly": true
+}

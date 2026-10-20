@@ -1,0 +1,485 @@
+# Which tests a changed path selects for a dispatch attempt's scoped check
+# (src/agent_cli/dispatch/test_select.py). The supervisor reads this file from
+# the attempt's base commit. A change to it runs the structural checks (tests/test_select.py) when
+# it only adds mappings; a candidate that removes or narrows one is ignored and the base table
+# applies. A file the diff adds may use the candidate's mapping for itself.
+#
+# Version 2 (ADR-0045): a dispatch never runs the whole suite; the landing certificate does, once,
+# for the exact candidate. Selection is the union of every changed test file, the tests each
+# `[[broad]]` or `[[bundle]]` rule maps a changed path to, the `tests/test_<name>*.py` files named
+# after a changed module, the tests importing a changed module (not for broad paths, which every
+# test imports), and, for a changed file that is not Python, every test that mentions it. A path
+# nothing maps, or a deleted one, adds the `[[fallback]]` set. Patterns are matched with
+# PurePosixPath.full_match (`*` within a segment, `**` across).
+#
+# Adding a production module? Add its pattern to a bundle (or a broad rule) in the same change;
+# tests/test_select.py fails while a source module maps to nothing.
+
+version = 2
+
+[[bundle]]
+name = "dispatch-client-version"
+paths = ["src/agent_cli/dispatch/client_version.py"]
+tests = [
+  "tests/test_dispatch_client_version.py", "tests/test_dispatch_launch.py", "tests/test_codex_dispatch.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "vault-work-orders"
+paths = ["src/agent_cli/dispatch/orders.py"]
+tests = [
+  "tests/test_dispatch_orders.py", "tests/test_dispatch_cli.py", "tests/test_dispatch_launch.py",
+  "tests/test_notes_writer.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "closed-feature-cleanup"
+paths = ["src/agent_cli/tidy.py", "src/agent_cli/cli/tidy.py"]
+tests = [
+  "tests/test_tidy.py", "tests/test_tidy_inventory.py", "tests/test_worktree.py", "tests/test_feature_close_retro.py",
+  "tests/test_dispatch_alloc.py", "tests/test_cli_parser_reuse.py", "tests/test_mcp_wording.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[fallback]]
+name = "fast-core"
+# Fast tests over the CLI, ops, features and the selector itself, for paths nothing else maps.
+# Every rule that maps a source module also names DOCS_CHECKS, and so does this fallback, so the
+# docs-lint and the `.agent` subtree scan (about 4 s together) run for any source change.
+tests = [
+  "tests/test_select.py", "tests/test_cli_parser_reuse.py", "tests/test_ops_cases.py",
+  "tests/test_features.py", "tests/test_tasks.py", "tests/test_status.py", "tests/test_mcp_wording.py",
+  "tests/test_file_sizes.py", "tests/test_git_discovery.py", "tests/test_seeded_isolation.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[broad]]
+reason = "shared-fixture"
+paths = [
+  "tests/conftest.py", "tests/harness_root.py", "tests/isolation.py", "tests/*_helpers.py",
+  "tests/*_fixture.py", "tests/*_fixtures.py", "tests/obsidian_guard.py",
+  "tests/fixtures/**", "tests/seeded.py", "tests/timing_groups.py", "tests/origin_guard.py",
+]
+tests = [
+  "tests/test_seeded_isolation.py", "tests/test_fixture_cost.py", "tests/test_obsidian_guard.py",
+  "tests/test_codex_candidate_runtime.py",
+  "tests/test_select.py", "tests/test_ops_cases.py", "tests/test_dispatch_launch.py", "tests/test_land.py",
+]
+
+[[broad]]
+reason = "core"
+paths = [
+  "src/agent_cli/__init__.py", "src/agent_cli/**/__init__.py", "src/agent_cli/core.py",
+  "src/agent_cli/entry.py", "src/agent_cli/config_file.py", "src/agent_cli/repos.py",
+  "src/agent_cli/repos_validate.py", "src/agent_cli/worktree.py", "src/agent_cli/git_discovery.py",
+  "src/agent_cli/frontmatter.py", "src/agent_cli/ops/_shared.py", "src/agent_cli/session_identity.py",
+  "src/agent_cli/cli/subparsers.py",
+]
+tests = [
+  "tests/test_config*.py", "tests/test_repos*.py", "tests/test_worktree*.py", "tests/test_git_discovery.py",
+  "tests/test_session_identity*.py", "tests/test_cli*.py", "tests/test_ops_cases.py", "tests/test_adrs.py",
+  "tests/test_features.py", "tests/test_tasks.py", "tests/test_status.py", "tests/test_doctor.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[broad]]
+reason = "dependency-config"
+paths = [
+  "pyproject.toml", "uv.lock", ".python-version", "agent.example.yaml", ".mcp.example.json",
+  ".gitattributes", ".gitignore", ".gitmodules", "vendor/**", ".caveman.json", ".harness-export",
+]
+tests = [
+  "tests/test_setup*.py", "tests/test_doctor.py", "tests/test_select.py",
+  "tests/test_file_sizes.py", "tests/test_config*.py",
+]
+
+[[broad]]
+reason = "launcher"
+paths = [
+  "bin/**", "setup.sh", "setup.ps1", "setup.cmd", ".github/**", "src/agent_cli/ci_launchers.py",
+  "src/agent_cli/ci_pytest.py", "src/agent_cli/launch_flags.py", "src/agent_cli/launcher.py",
+  "src/agent_cli/__main__.py",
+]
+tests = [
+  "tests/test_ci_*.py", "tests/test_dispatch_launch_flags.py", "tests/test_launcher.py", "tests/test_setup*.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[broad]]
+reason = "hooks-permissions"
+paths = [
+  "src/agent_cli/hooks/**", ".claude/**", ".codex/**", "src/agent_cli/permissions.py", "src/agent_cli/quote_mask.py",
+  "src/agent_cli/powershell_policy.py", "src/agent_cli/hook_freshness.py",
+  "src/agent_cli/dispatch/rules.py", "src/agent_cli/dispatch/codex_permissions.py",
+  "src/agent_cli/dispatch/codex_hooks.py",
+  "src/agent_cli/dispatch/readonly_policy.py", "src/agent_cli/dispatch/comment_noise.py",
+  "src/agent_cli/dispatch/powershell_spelling.py",
+  "src/agent_cli/harness_role.py",
+]
+tests = [
+  "tests/test_ending_matrix.py",
+  "tests/test_attention_matrix.py",
+  "tests/test_hook*.py", "tests/test_*guard*.py", "tests/test_permissions.py", "tests/test_powershell_policy.py",
+  "tests/test_worker_*.py", "tests/test_codex_hooks.py", "tests/test_codex_dispatch.py",
+  "tests/test_dispatch_permissions.py", "tests/test_consumer_mode.py", "tests/test_conventions_comments.py",
+  "tests/test_mcp_grant_contract_cases.py", "tests/test_policy_corpus.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[broad]]
+reason = "verification-runtime"
+# A second pass over the real process inventory: its failures are intermittent under churn.
+extra = ["uv run pytest tests/test_dispatch_inventory_real.py tests/test_procs_snapshot_churn.py"]
+paths = [
+  "src/agent_cli/dispatch/verification*.py", "src/agent_cli/dispatch/lane.py",
+  "src/agent_cli/dispatch/reverify.py", "src/agent_cli/dispatch/holdings.py",
+  "src/agent_cli/dispatch/ownership.py", "src/agent_cli/dispatch/no_diff.py",
+  "src/agent_cli/dispatch/test_select.py",
+  "src/agent_cli/dispatch/certify.py", "src/agent_cli/procs.py", "src/agent_cli/proc_tags.py",
+  "src/agent_cli/proc_errors.py",
+  "src/agent_cli/win*.py", "src/agent_cli/telemetry/**", "src/agent_cli/verify_record.py",
+  "src/agent_cli/verify_run.py", "src/agent_cli/verify_retry.py", "src/agent_cli/land*.py",
+  "src/agent_cli/cli/land.py", "tests/quarantine.toml", "src/agent_cli/main_sync.py",
+]
+tests = [
+  "tests/test_verification*.py", "tests/test_dispatch_verif*.py", "tests/test_dispatch_verify_lane.py",
+  "tests/test_dispatch_reverify.py", "tests/test_dispatch_holdings.py", "tests/test_dispatch_no_diff.py",
+  "tests/test_select*.py", "tests/test_certify_attempt.py", "tests/test_procs*.py", "tests/test_telemetry*.py",
+  "tests/test_verify_record*.py", "tests/test_record_*.py", "tests/test_land*.py", "tests/test_same_tree_replay.py",
+  "tests/test_owner_question_events.py", "tests/test_attention_events.py",
+  "tests/test_win*.py", "tests/test_utf8_decoding.py", "tests/test_main_sync.py", "tests/test_main_guard.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[broad]]
+reason = "mcp"
+paths = ["src/agent_cli/mcp/**", "src/agent_cli/mcp_servers.py"]
+tests = ["tests/test_ending_matrix.py", "tests/test_attention_matrix.py", "tests/test_mcp*.py", "tests/test_cli_route*.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py"]
+
+# The dispatch area is split by concern: one bundle over `dispatch/**` selected about 130
+# test files for any change there, so a two-key settings change ran 3,088 tests before review.
+# Every module still maps; each area names its own tests, and importers and `test_<name>*` files
+# are added on top. The landing certificate still runs the whole suite.
+[[bundle]]
+name = "dispatch"
+paths = [
+  "src/agent_cli/dispatch/*.py", "src/agent_cli/ops/dispatch*.py", "src/agent_cli/cli/dispatch.py",
+  "src/agent_cli/prices.py", "src/agent_cli/worker_mcp.py", "src/agent_cli/cli/worker_mcp.py",
+  "src/agent_cli/maintenance.py", "src/agent_cli/append_log.py",
+]
+tests = [
+  "tests/test_dispatch_launch*.py", "tests/test_dispatch_mcp_launch.py", "tests/test_dispatch_resume*.py",
+  "tests/test_dispatch_verification_preflight.py", "tests/test_dispatch_spend.py", "tests/test_ops_behaviour.py",
+  "tests/test_maintenance.py", "tests/test_policy_corpus.py", "tests/test_dispatch_attempt_limit.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "dispatch-codex"
+paths = ["src/agent_cli/dispatch/codex_*.py", "src/agent_cli/codex_*.py", "src/agent_cli/dispatch/isolated_transport.py"]
+tests = [
+  "tests/test_codex_*.py", "tests/test_isolated_transport.py", "tests/test_dispatch_question_freshness.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "dispatch-verification"
+paths = ["src/agent_cli/dispatch/verification*.py", "src/agent_cli/dispatch/lane.py", "src/agent_cli/dispatch/reverify.py"]
+tests = [
+  "tests/test_verification_*.py", "tests/test_dispatch_verification*.py", "tests/test_dispatch_reverify*.py",
+  "tests/test_lane_timeout_reverify.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "dispatch-results"
+paths = [
+  "src/agent_cli/dispatch/handoffs.py", "src/agent_cli/dispatch/evaluate.py", "src/agent_cli/dispatch/terminal.py",
+  "src/agent_cli/dispatch/conventions.py", "src/agent_cli/dispatch/return_schema.py", "src/agent_cli/dispatch/normalize.py",
+]
+tests = [
+  "tests/test_handoff*.py", "tests/test_convention*.py", "tests/test_dispatch_spend.py",
+  "tests/test_policy_corpus.py", "tests/test_sdk_permission_denials.py", "tests/test_journal_denials.py",
+  "tests/test_dispatch_return_*.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "dispatch-rows"
+paths = ["src/agent_cli/dispatch/rubric.py", "harness/dispatch-rubric.md"]
+tests = [
+  "tests/test_rubric.py", "tests/test_dispatch_rubric_launch.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "features-notes"
+paths = [
+  "src/agent_cli/features.py", "src/agent_cli/feature_tree.py", "src/agent_cli/notes*.py",
+  "src/agent_cli/task_check.py", "src/agent_cli/blocked.py", "src/agent_cli/links.py", "src/agent_cli/log.py",
+  "src/agent_cli/lessons.py", "src/agent_cli/task_md.py",
+  "src/agent_cli/lesson_upstream.py", "src/agent_cli/adrs.py", "src/agent_cli/tickets.py", "src/agent_cli/status.py",
+  "src/agent_cli/vault/**", "src/agent_cli/documents.py", "src/agent_cli/evidence.py",
+  "src/agent_cli/journal/**", "src/agent_cli/capture.py",
+  "src/agent_cli/scratch.py", "src/agent_cli/templates.py",
+  "src/agent_cli/ops/features.py", "src/agent_cli/ops/feature_close.py", "src/agent_cli/ops/notes.py",
+  "src/agent_cli/ops/adrs.py",
+  "src/agent_cli/ops/lessons.py", "src/agent_cli/ops/status.py", "src/agent_cli/cli/feature.py",
+  "src/agent_cli/cli/notes*.py", "src/agent_cli/cli/log.py", "src/agent_cli/cli/lesson.py",
+  "src/agent_cli/cli/adr.py", "src/agent_cli/cli/status.py", "src/agent_cli/cli/journal.py",
+  "src/agent_cli/cli/scratch.py",
+]
+tests = [
+  "tests/test_ending_matrix.py",
+  "tests/test_attention_matrix.py",
+  "tests/test_features.py", "tests/test_feature_tree.py", "tests/test_notes*.py",
+  "tests/test_feature_blocked.py", "tests/test_links.py", "tests/test_log.py", "tests/test_lessons.py", "tests/test_lesson_upstream.py",
+  "tests/test_adrs.py", "tests/test_hooks_notes_sync.py",
+  "tests/test_status*.py", "tests/test_tasks.py", "tests/test_task_views.py", "tests/test_task_check*.py",
+  "tests/test_journal*.py", "tests/test_evidence.py",
+  "tests/test_documents.py", "tests/test_sessions_capture.py",
+  "tests/test_capture_session_start.py", "tests/test_scratch.py",
+  "tests/test_setup*.py", "tests/test_doctor*.py", "tests/test_ops_behaviour.py",
+  "tests/test_ops_cases.py", "tests/test_live*.py", "tests/test_managers.py",
+  "tests/test_naming_collision.py", "tests/test_subagent_boundaries.py",
+  "tests/test_obsidian*.py", "tests/test_review_fixes.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "peers"
+paths = [
+  "src/agent_cli/peers.py", "src/agent_cli/peer_net/**",
+  "src/agent_cli/ops/peer*.py", "src/agent_cli/cli/peer*.py",
+]
+tests = [
+  "tests/test_attention_matrix.py",
+  "tests/test_peer*.py", "tests/test_ops_behaviour.py",
+  "tests/test_ops_cases.py", "tests/test_doctor.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "plan-review"
+# The fresh cross-client plan reviewer: the launch, its records, and the gate and
+# plan-mode exemption that read them.
+paths = ["src/agent_cli/plan_review.py", "src/agent_cli/ops/plan_review.py"]
+tests = [
+  "tests/test_plan_review*.py", "tests/test_peer_route.py", "tests/test_hooks_malformed_records.py",
+  "tests/test_ops_malformed_records.py", "tests/test_mcp_wording.py", "tests/test_docs_refs.py",
+  "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "leases-sessions"
+paths = [
+  "src/agent_cli/leases.py", "src/agent_cli/lease_keys.py", "src/agent_cli/lease_clear.py",
+  "src/agent_cli/session_liveness.py", "src/agent_cli/sessions.py", "src/agent_cli/ops/sessions.py",
+  "src/agent_cli/cli/lease.py", "src/agent_cli/cli/session.py",
+]
+tests = [
+  "tests/test_attention_matrix.py",
+  "tests/test_lease*.py", "tests/test_session*.py", "tests/test_patch_lease.py",
+  "tests/test_plugin_lease_clear.py", "tests/test_ops_behaviour.py", "tests/test_ops_cases.py",
+  "tests/test_dispatch_slots.py", "tests/test_managers.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "obsidian-tabs"
+paths = [
+  "src/agent_cli/obsidian*.py", "src/agent_cli/tab_*.py", "src/agent_cli/installs.py",
+]
+tests = [
+  "tests/test_attention_matrix.py",
+  "tests/test_obsidian*.py", "tests/test_tab_drain*.py", "tests/test_plugin_*.py",
+  "tests/test_codex_*tab*.py", "tests/test_live*.py", "tests/test_installs.py", "tests/test_setup*.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "setup-doctor"
+paths = [
+  "src/agent_cli/setup.py", "src/agent_cli/setup_guidance.py", "src/agent_cli/doctor/**",
+  "src/agent_cli/skill_links.py", "src/agent_cli/cli/infra.py", "src/agent_cli/ops/infra.py",
+  "src/agent_cli/setup_tools.py", "src/agent_cli/codex_profile.py",
+]
+tests = [
+  "tests/test_setup*.py", "tests/test_doctor*.py", "tests/test_skill_links.py",
+  "tests/test_installs.py", "tests/test_manager_settings.py", "tests/test_homepage_config.py",
+  "tests/test_hook_commands.py", "tests/test_ops_behaviour.py", "tests/test_journal_denials.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "export-git"
+paths = [
+  "src/agent_cli/push_*.py", "src/agent_cli/export.py",
+  "src/agent_cli/gitgate.py", "src/agent_cli/cli/git.py",
+  "src/agent_cli/ops/harness.py", "src/agent_cli/cli/verify.py",
+]
+tests = [
+  "tests/test_push*.py", "tests/test_gitgate.py", "tests/test_mcp_harness.py",
+  "tests/test_verify_record*.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "format-compat-base"
+paths = ["scripts/freeze_format_compat_base.py", "tests/fixtures/format_compat_base/**"]
+tests = ["tests/test_freeze_format_compat_base.py", "tests/test_format_compat.py"]
+
+[[bundle]]
+name = "repos-worktrees"
+paths = [
+  "src/agent_cli/worktree_grants.py", "src/agent_cli/forge.py", "src/agent_cli/cli/worktree.py",
+  "src/agent_cli/cli/repos.py", "src/agent_cli/ops/worktree.py", "src/agent_cli/ops/repos.py",
+]
+tests = [
+  "tests/test_worktree*.py", "tests/test_repos.py", "tests/test_forge*.py", "tests/test_split_repos.py",
+  "tests/test_ops_behaviour.py", "tests/test_ops_cases.py", "tests/test_config_file.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "onboarding-repo"
+paths = ["tests/onboarding_repo.py"]
+tests = ["tests/test_onboarding_repo.py"]
+
+[[bundle]]
+name = "sdk-denial-cases"
+# test_journal_denials imports its denial cases from here
+paths = ["tests/test_sdk_permission_denials.py"]
+tests = ["tests/test_journal_denials.py"]
+
+[[bundle]]
+name = "symlink-helper"
+paths = ["tests/symlinks.py"]
+tests = [
+  "tests/test_convention_rows.py", "tests/test_setup_notes.py",
+  "tests/test_split_repos.py",
+]
+
+[[bundle]]
+name = "procs"
+paths = ["src/agent_cli/cli/procs.py"]
+tests = ["tests/test_procs.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py"]
+
+[[bundle]]
+name = "records"
+paths = ["src/agent_cli/records/**"]
+tests = [
+  "tests/test_records_narrow.py", "tests/test_dispatch_malformed_records.py", "tests/test_dispatch_spend.py",
+  "tests/test_dispatch_usage.py", "tests/test_dispatch_ledger.py", "tests/test_dispatch_watch.py",
+  "tests/test_dispatch_telemetry.py", "tests/test_conventions.py",
+  "tests/test_convention_rows.py", "tests/test_dispatch_verification_presentation.py",
+  "tests/test_hooks_malformed_records.py", "tests/test_hook_entry.py",
+  "tests/test_hooks_guards.py", "tests/test_hooks_stop.py", "tests/test_hooks_session.py",
+  "tests/test_activity_background_notices.py", "tests/test_activity_tab_waits.py", "tests/test_scan_notice.py",
+  "tests/test_prompt_hooks.py", "tests/test_hooks_notes_sync.py", "tests/test_session_naming.py",
+  "tests/test_patch_lease.py", "tests/test_peer_route.py",
+  "tests/test_hooks_commit_guard.py", "tests/test_hooks_repo_guards.py", "tests/test_cli_route.py",
+  "tests/test_runtime_malformed_records.py", "tests/test_codex_ended_tab.py",
+  "tests/test_codex_reset_reconcile.py",
+  "tests/test_hook_fixes.py", "tests/test_dispatch_runtime_records.py",
+  "tests/test_ops_malformed_records.py", "tests/test_journal_vault_malformed_records.py",
+  "tests/test_journal_tokens.py", "tests/test_telemetry_health.py", "tests/test_managers.py", "tests/test_live.py",
+  "tests/test_peer_wake_policy.py", "tests/test_status_line.py",
+  "tests/test_config_malformed_records.py",
+  "tests/test_doctor_malformed_records.py", "tests/test_mcp_malformed_records.py",
+  "tests/test_worker_mcp.py", "tests/test_repos.py", "tests/test_verification_config.py",
+  "tests/test_config_file.py", "tests/test_features.py",
+  "tests/test_adrs.py", "tests/test_obsidian.py", "tests/test_homepage_config.py", "tests/test_mcp_servers.py",
+  "tests/test_worktree_grants.py", "tests/test_maintenance.py", "tests/test_consumer_mode.py",
+  "tests/test_push_records.py", "tests/test_documents.py",
+  "tests/test_dispatch_launch_flags.py", "tests/test_setup.py", "tests/test_sdk_permission_denials.py",
+  "tests/test_journal_denials.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "docs"
+paths = [
+  "harness/**", "adrs/**", ".agents/**", "AGENTS.md", "README.md", "LICENSE",
+  "docs/**", ".claude/**/*.md", "CONTRIBUTING.md", "SECURITY.md",
+]
+tests = [
+  "tests/test_doctor_instructions.py", "tests/test_skill_links.py", "tests/test_adrs.py", "tests/test_file_sizes.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "docs-refs"
+# The client hook wiring. Source modules select both checks through the rule that
+# maps each of them (see the fallback's comment), so a new module still shows up as unmapped.
+paths = [".claude/settings.json", ".codex/hooks.json"]
+tests = ["tests/test_docs_refs.py", "tests/test_prose_rules.py"]
+
+[[bundle]]
+name = "mcp-grant-contract"
+# The Codex hook reads the shared classifier over `rules.dispatch_rules`; the forge rule sets print
+# lint's text. Repo and profile selections share one refusal and redaction, down to permission
+# events and telemetry. A profile's MCP rules meet the same grant contract before a dispatch
+# launches; claude's own denials are stored through `shown_tool` and `shown`.
+paths = [
+  "src/agent_cli/permissions.py", "src/agent_cli/dispatch/codex_permissions.py",
+  "src/agent_cli/dispatch/rules.py", "src/agent_cli/dispatch/settings.py",
+  "src/agent_cli/hooks/decision_log.py", "src/agent_cli/worker_mcp.py", "src/agent_cli/dispatch/mcp_policy.py",
+]
+tests = [
+  "tests/test_doctor_repo_mcp.py", "tests/test_permissions.py", "tests/test_doctor_malformed_records.py",
+  "tests/test_forge.py", "tests/test_dispatch_mcp_selection.py", "tests/test_denial_provenance.py",
+  "tests/test_worker_mcp.py", "tests/test_mcp_grant_contract.py", "tests/test_mcp_grant_contract_cases.py",
+  "tests/test_sdk_permission_denials.py", "tests/test_journal_denials.py", "tests/test_docs_refs.py",
+  "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "native-mcp-grants"
+# The opt-in runner for the native grant acceptance cells; its offline checks.
+paths = [
+  "tests/native_mcp_grants.py", "tests/fixtures/mcp_grants_server.py", "src/agent_cli/dispatch/lifecycle.py",
+  "src/agent_cli/dispatch/codex_normalize.py",
+]
+tests = ["tests/test_native_mcp_grants.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py"]
+
+[[bundle]]
+name = "codex-policy"
+# One effective Codex policy feeds preview, preflight, capability scoring and the transport.
+paths = ["src/agent_cli/dispatch/codex_policy.py"]
+tests = [
+  "tests/test_codex_policy.py", "tests/test_codex_capability.py", "tests/test_dispatch_preflight.py",
+  "tests/test_codex_candidate_runtime.py", "tests/test_dispatch_question_freshness.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "label-claims"
+paths = ["src/agent_cli/dispatch/label_claims.py"]
+tests = [
+  "tests/test_dispatch_label_claims.py", "tests/test_dispatch_machine.py",
+  "tests/test_dispatch_two_machines.py", "tests/test_dispatch_ledger.py", "tests/test_docs_refs.py",
+  "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "branch-heads"
+paths = ["src/agent_cli/dispatch/branch_heads.py"]
+tests = [
+  "tests/test_dispatch_branch_heads.py", "tests/test_dispatch_alloc_life.py", "tests/test_dispatch_resume.py",
+  "tests/test_parity_entry_points.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "usage"
+# Per-machine usage records: collector, schema validator, multi-machine aggregator, and the
+# background job that writes and publishes them.
+paths = ["src/agent_cli/usage/**", "src/agent_cli/cli/telemetry.py"]
+tests = [
+  "tests/test_usage_schema.py", "tests/test_usage_collect.py", "tests/test_usage_aggregate.py",
+  "tests/test_usage_publish.py", "tests/test_usage_job.py", "tests/test_hooks_notes_sync.py",
+  "tests/test_telemetry_summary.py", "tests/test_live_pane.py", "tests/test_live.py", "tests/test_tab_plugin.py",
+  "tests/test_hooks_session.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "live-health-summary"
+paths = ["src/agent_cli/telemetry/summary.py", "src/agent_cli/telemetry/dashboard.py"]
+tests = [
+  "tests/test_telemetry_summary.py", "tests/test_usage_publish.py", "tests/test_usage_job.py",
+  "tests/test_live.py", "tests/test_live_pane.py", "tests/test_tab_plugin.py", "tests/test_mcp_harness.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]

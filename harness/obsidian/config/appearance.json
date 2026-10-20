@@ -1,0 +1,6 @@
+{
+  "enabledCssSnippets": [
+    "agent-callouts",
+    "agent-terminal-tabs"
+  ]
+}

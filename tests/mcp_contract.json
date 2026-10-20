@@ -1,0 +1,2144 @@
+{
+ "allow": [],
+ "tools": {
+  "manager": {
+   "adr_new": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "scope": {
+      "required": false,
+      "schema": {
+       "enum": [
+        "notes",
+        "harness"
+       ],
+       "type": "string"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "slug": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "status": {
+      "required": false,
+      "schema": {
+       "enum": [
+        "proposed",
+        "accepted",
+        "superseded",
+        "deprecated"
+       ],
+       "type": "string"
+      }
+     },
+     "supersedes": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "title": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "dispatch": {
+    "params": {
+     "action": {
+      "required": true,
+      "schema": {
+       "enum": [
+        "new",
+        "list",
+        "show",
+        "spans",
+        "resume",
+        "cancel",
+        "abandon",
+        "ack",
+        "say",
+        "collect",
+        "collect-files",
+        "reverify",
+        "cleanup",
+        "watch",
+        "ledger",
+        "plan-review",
+        "consume"
+       ],
+       "type": "string"
+      }
+     },
+     "again": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "allow_unmatched": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "answer": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "base": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "branch": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "budget_reason": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "budget_usd": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "by": {
+      "required": false,
+      "schema": {
+       "enum": [
+        "pr",
+        "feature",
+        "week"
+       ],
+       "type": "string"
+      }
+     },
+     "choice_reason": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "dispatch_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "dry_run": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "effort": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "escalate_from": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "feature": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "force": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "include_all": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "just_go": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "lines": {
+      "required": false,
+      "schema": {
+       "type": "integer"
+      }
+     },
+     "mcp": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "message": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "model": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "no_checks": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "paths": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "preview_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "prompt": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "provider": {
+      "required": false,
+      "schema": {
+       "enum": [
+        "claude",
+        "codex"
+       ],
+       "type": "string"
+      }
+     },
+     "refresh": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "repo": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "row": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "target": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "tasks": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "integer"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "timeout_minutes": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "verbose": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "wait": {
+      "required": false,
+      "schema": {
+       "type": "number"
+      }
+     },
+     "writes": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "dispatch_read": {
+    "params": {
+     "action": {
+      "required": true,
+      "schema": {
+       "enum": [
+        "show",
+        "watch",
+        "list"
+       ],
+       "type": "string"
+      }
+     },
+     "detail": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "dispatch_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "feature": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "include_all": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "lines": {
+      "required": false,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "feature_close": {
+    "params": {
+     "feature": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "note": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "status": {
+      "required": false,
+      "schema": {
+       "enum": [
+        "done",
+        "abandoned"
+       ],
+       "type": "string"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "feature_list": {
+    "params": {
+     "include_closed": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "status": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "enum": [
+           "proposed",
+           "active",
+           "blocked",
+           "done",
+           "abandoned"
+          ],
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "feature_new": {
+    "params": {
+     "repos": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "slug": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "status": {
+      "required": false,
+      "schema": {
+       "enum": [
+        "proposed",
+        "active",
+        "blocked"
+       ],
+       "type": "string"
+      }
+     },
+     "tags": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "tickets": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "title": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "use": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "feature_set": {
+    "params": {
+     "add_adr": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "integer"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "add_repo": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "add_tag": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "add_ticket": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "feature": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "reason": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "remove_adr": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "integer"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "remove_repo": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "remove_tag": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "remove_ticket": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "status": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "proposed",
+          "active",
+          "blocked",
+          "done",
+          "abandoned"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "title": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "feature_show": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "feature_use": {
+    "params": {
+     "feature": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "switch": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "harness": {
+    "params": {
+     "abort": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "action": {
+      "required": true,
+      "schema": {
+       "enum": [
+        "link",
+        "doctor",
+        "tidy",
+        "notes_root",
+        "notes_status",
+        "notes_publish",
+        "notes_document",
+        "notes_write",
+        "journal_collect",
+        "journal_missing",
+        "journal_write",
+        "scratch_path",
+        "worktree_new",
+        "worktree_list",
+        "worktree_remove",
+        "procs_list",
+        "verify_record",
+        "verify_show",
+        "land",
+        "telemetry_summary"
+       ],
+       "type": "string"
+      }
+     },
+     "apply": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "base": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "batch": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "create": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "date": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "expect_absent": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "expect_sha256": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "feature": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "file": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "force": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "from_file": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "message": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "name": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "no_reuse": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "origins": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "recover": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "ref": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "since": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "status": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "strategy": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "squash",
+          "merge",
+          "ff"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "sync": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "target": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "until": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "wait": {
+      "required": false,
+      "schema": {
+       "type": "number"
+      }
+     },
+     "write": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "lease": {
+    "params": {
+     "action": {
+      "required": true,
+      "schema": {
+       "enum": [
+        "take",
+        "release",
+        "list",
+        "wait",
+        "clear"
+       ],
+       "type": "string"
+      }
+     },
+     "area": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "ask": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "confirm": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "holder": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "note": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "timeout": {
+      "required": false,
+      "schema": {
+       "type": "number"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "lesson": {
+    "params": {
+     "action": {
+      "required": true,
+      "schema": {
+       "enum": [
+        "add",
+        "list",
+        "resolve",
+        "draft_check"
+       ],
+       "type": "string"
+      }
+     },
+     "body_file": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "disposition": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "task",
+          "mechanism",
+          "prose",
+          "practice",
+          "dropped",
+          "upstream",
+          "config",
+          "repo"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "entry_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "evidence": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "home": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "kind": {
+      "required": false,
+      "schema": {
+       "enum": [
+        "lesson",
+        "practice"
+       ],
+       "type": "string"
+      }
+     },
+     "note": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "scope": {
+      "required": false,
+      "schema": {
+       "enum": [
+        "harness",
+        "private",
+        "all"
+       ],
+       "type": "string"
+      }
+     },
+     "source": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "title": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "log": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "kind": {
+      "required": true,
+      "schema": {
+       "enum": [
+        "note",
+        "decision",
+        "deviation",
+        "surprise",
+        "measurement",
+        "dead-end",
+        "blocker"
+       ],
+       "type": "string"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "text": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "owner_question": {
+    "params": {
+     "resolution": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "answered",
+          "withdrawn",
+          "replaced"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "summary": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "peer": {
+    "params": {
+     "action": {
+      "required": true,
+      "schema": {
+       "enum": [
+        "send",
+        "inbox",
+        "list"
+       ],
+       "type": "string"
+      }
+     },
+     "expect_reply": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "message": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "peek": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "reply_timeout": {
+      "required": false,
+      "schema": {
+       "type": "number"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "to": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "raw_preserve": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "repos_list": {
+    "params": {},
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "repos_status": {
+    "params": {
+     "fetch": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "name": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "repos_sync": {
+    "params": {
+     "fetch": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "harness": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "name": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "no_clone": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "pull": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "repos_validate": {
+    "params": {},
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "session_get": {
+    "params": {
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "status_render": {
+    "params": {},
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "task_add": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "text": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "task_check": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "task_done": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "note": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "task": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "task_list": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "open_only": {
+      "required": false,
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "task_supersede": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "link": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "reason": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "task": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   },
+   "task_undo": {
+    "params": {
+     "feature": {
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     "session_id": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "task": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   }
+  },
+  "worker": {
+   "log": {
+    "params": {
+     "kind": {
+      "required": true,
+      "schema": {
+       "enum": [
+        "dead-end",
+        "surprise",
+        "measurement",
+        "blocker"
+       ],
+       "type": "string"
+      }
+     },
+     "text": {
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    },
+    "root": {
+     "type": "object",
+     "undeclared_required": []
+    }
+   }
+  }
+ }
+}

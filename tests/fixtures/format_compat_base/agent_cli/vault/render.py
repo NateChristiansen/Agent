@@ -1,0 +1,41 @@
+# ruff: noqa
+from __future__ import annotations
+from pathlib import Path
+from ..core import GENERATED_VIEWS, write_if_changed
+from .bases import (
+    ADRS_BASE,
+    ADRS_BASE_YAML,
+    DOCS_BASE,
+    DOCS_BASE_YAML,
+    FEATURES_BASE,
+    FEATURES_BASE_YAML,
+    HANDOFFS_BASE,
+    HANDOFFS_BASE_YAML,
+    JOURNAL_BASE,
+    JOURNAL_BASE_YAML,
+)
+from .dashboard import render_dashboard, render_index
+
+DASHBOARD = GENERATED_VIEWS["dashboard"]
+INDEX = GENERATED_VIEWS["index"]
+GENERATED = (FEATURES_BASE, ADRS_BASE, JOURNAL_BASE, HANDOFFS_BASE, DOCS_BASE, DASHBOARD, INDEX)
+
+
+def render(root: Path, open_count: int, adr_count: int) -> list[Path]:
+    written: list[Path] = []
+    for rel, text in (
+        (FEATURES_BASE, FEATURES_BASE_YAML),
+        (ADRS_BASE, ADRS_BASE_YAML),
+        (JOURNAL_BASE, JOURNAL_BASE_YAML),
+        (HANDOFFS_BASE, HANDOFFS_BASE_YAML),
+        (DOCS_BASE, DOCS_BASE_YAML),
+    ):
+        path = root / rel
+        if not path.exists() or path.read_text(encoding="utf-8") != text:
+            write_if_changed(path, text)
+        written.append(path)
+    write_if_changed(root / DASHBOARD, render_dashboard(root))
+    written.append(root / DASHBOARD)
+    write_if_changed(root / INDEX, render_index(root))
+    written.append(root / INDEX)
+    return written

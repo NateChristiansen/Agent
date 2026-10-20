@@ -1,0 +1,66 @@
+# clones live in ../repos (a sibling), never here: a repos/ inside this repo would put the
+# manager's CLAUDE.md above every worker. Ignored anyway in case one gets created by mistake.
+repos/
+
+# runtime state (session mappings, status.json), raw session captures included
+# (.agent/raw/ -- used to be features/*/raw/ and a top-level raw/)
+.agent/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# claude code local overrides
+.claude/settings.local.json
+# Subagent worktrees Claude Code creates inside the repo (`isolation: worktree`). Each holds a
+# full checkout, AGENTS.md included, so unignored they showed as untracked and their copies
+# were counted by repo-wide scans (2026-10-03).
+/.claude/worktrees/
+
+# skill links: setup makes them (src/agent_cli/skill_links.py), symlinks on macOS and Linux and
+# junctions on Windows. They used to be tracked symlinks, which Git for Windows checks out as
+# plain files by default (core.symlinks=false), breaking every skill.
+/.claude/skills/
+/.agents/skills/caveman
+
+# generated per-clone Codex sandbox root for the private notes repo
+.codex/config.toml
+
+# obsidian: this repo is a vault (harness/obsidian.md). Nothing under .obsidian/ is tracked.
+# Obsidian rewrites its own config (a theme choice lands in appearance.json), and
+# a tracked file it rewrites dirties the checkout and conflicts with the owner's next pull. The
+# curated config lives as seeds under harness/obsidian/config/, and `bin/agent obsidian setup`
+# copies a seed only where the file is missing, then enforces the keys the harness owns in
+# code. Plugin builds are downloaded at the versions pinned in PLUGIN_SOURCES
+# (src/agent_cli/obsidian.py); three are copyleft, so the repo never carries them.
+.obsidian/
+
+# the private set (ADR-0012): the owner's notes live in a second repo and `agent setup
+# --notes` links them in; without --notes they are created from the tracked examples. Either
+# way they are not the harness's to track. Tracked copies in a clone that predates the split
+# stay tracked until the swap removes them. Anchored to the root: an unanchored `journal/`
+# also hid `src/agent_cli/journal/` from the first public snapshot (2026-09-15). No trailing
+# slash on the directory entries: `agent setup --notes` links them in as symlinks, and a
+# trailing-slash pattern only matches a real directory, never a symlink to one (they showed
+# as untracked in a fresh clone's `git status` otherwise).
+/features
+/decisions
+/journal
+/usage
+/notes
+/harness/owner
+/harness/voice.md
+/harness/evals/corpus/work-orders
+/agent.yaml
+# the config's old name: no reader any more, still private
+/repos.yaml
+# this machine's overrides of agent.yaml (config_file.py): never linked, never shared
+/agent.local.yaml
+/.mcp.json
+/STATUS.md
+/Dashboard.md
+/Index.md
+/bases

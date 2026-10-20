@@ -1,0 +1,441 @@
+# ruff: noqa
+from __future__ import annotations
+import os
+import secrets
+import subprocess
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Literal
+from ..core import AgentError
+from ..repos import VerificationConfig, verification_config
+from . import verification_process as procs
+from . import verification_status
+from .verification_evidence import Binding, CommandOutcome, Evidence, config_digest
+from .verification_status import RunStatus, load_status
+from .verification_store import Store
+
+LOG_LIMIT = 65536
+observe_tree = procs.observe_tree
+
+
+@dataclass(frozen=True)
+class Prepared:
+    root: Path
+    worktree: Path
+    binding: Binding
+    config: VerificationConfig
+    environment: dict[str, str] = field(repr=False)
+    launch_base: str | None = None
+    tools: dict[str, str] = field(default_factory=dict[str, str])
+
+
+@dataclass
+class Handle:
+    root: Path
+    binding: Binding
+    process: subprocess.Popen[bytes]
+    timeout_seconds: float
+
+
+_cleanup_record = verification_status.cleanup_record
+
+
+def prepare(
+    root: Path,
+    worktree: Path,
+    *,
+    dispatch_id: str,
+    attempt: int,
+    final_sha: str,
+    config: VerificationConfig,
+    environment: dict[str, str] | None = None,
+    launch_base: str | None = None,
+    telemetry_sink: Path | None = None,
+    telemetry_parent: str | None = None,
+    run_id: str | None = None,
+) -> Prepared:
+    if os.name not in {"posix", "nt"}:
+        raise AgentError("verification runner requires POSIX process groups or Windows jobs")
+    tools = procs.platform_tools()
+    worktree = worktree.resolve(strict=True)
+    if not worktree.is_dir():
+        raise ValueError("verification worktree must be a directory")
+    binding = Binding(dispatch_id, attempt, final_sha, config_digest(config), run_id or secrets.token_hex(16))
+    env = dict(procs.BASE_ENV if environment is None else environment)
+    if any((not k or "=" in k or "\x00" in k + v for k, v in env.items())):
+        raise ValueError("verification environment must contain valid explicit string entries")
+    env.update(AGENT_ROOT=str(root.resolve()), AGENT_DISPATCH_ID=dispatch_id)
+    env["AGENT_VERIFY_RUN_ID"] = binding.run_id
+    if telemetry_sink is not None and telemetry_parent:
+        env.update(AGENT_TELEMETRY_SINK=str(telemetry_sink), AGENT_TELEMETRY_PARENT=telemetry_parent)
+    store = Store(root, binding, create=True)
+    life = {
+        "phase": "created",
+        "creator_pid": os.getpid(),
+        "guardian_pid": None,
+        "command_pid": None,
+        "watchdog_pid": None,
+        "command_index": None,
+        "cleanup_confirmed": False,
+        "finished": False,
+        "reason": "pending",
+        "started": time.monotonic(),
+    }
+    try:
+        store.evidence(Evidence(1, binding, "running", None, None, (), 0))
+        store.lifecycle(life)
+        return Prepared(
+            root.resolve(), worktree.resolve(strict=True), binding, config, env, launch_base, tools
+        )
+    finally:
+        store.close()
+
+
+def launch_prepared(prepared: Prepared) -> Handle:
+    store = Store(prepared.root, prepared.binding)
+    process = None
+    try:
+        with store.lock():
+            life = store.load_lifecycle()
+            if life["phase"] != "created" or life["guardian_pid"] is not None or _cancelled(store):
+                raise AgentError("prepared verification is cancelled, launched, or no longer current")
+            if config_digest(prepared.config) != prepared.binding.config_digest:
+                raise ValueError("prepared verifier configuration changed")
+            life = {k: v for k, v in life.items() if k not in {"binding", "schema_version"}}
+            life["started"] = time.monotonic()
+            process = procs.launch("guardian", env=prepared.environment, cwd=prepared.root)
+            life["guardian_pid"] = process.pid
+            store.lifecycle(life)
+            procs.send(
+                process,
+                {
+                    "root": str(prepared.root),
+                    "worktree": str(prepared.worktree),
+                    "binding": asdict(prepared.binding),
+                    "config": asdict(prepared.config),
+                    "environment": prepared.environment,
+                    "launch_base": prepared.launch_base,
+                    **prepared.tools,
+                },
+            )
+        return Handle(prepared.root, prepared.binding, process, prepared.config.timeout_seconds)
+    except BaseException:
+        if process is not None:
+            procs.close_control(process)
+            process.wait(timeout=5)
+        raise
+    finally:
+        store.close()
+
+
+def start(root: Path, worktree: Path, **kwargs: Any) -> Handle:
+    return launch_prepared(prepare(root, worktree, **kwargs))
+
+
+def request_cancel(root: Path, binding: Binding) -> None:
+    store = Store(root, binding)
+    try:
+        try:
+            store.write("cancel.json", {"binding": asdict(binding)}, immutable=True)
+        except FileExistsError:
+            if store.read("cancel.json") != {"binding": asdict(binding)}:
+                raise ValueError("stale verification cancellation") from None
+    finally:
+        store.close()
+
+
+def recover(root: Path, binding: Binding) -> RunStatus:
+    store = Store(root, binding)
+    try:
+        with store.lock():
+            status = load_status(root, binding)
+            cancelled_preparation = (
+                status.lifecycle["phase"] == "created"
+                and status.lifecycle["guardian_pid"] is None
+                and _cancelled(store)
+            )
+            if status.active and (not cancelled_preparation):
+                return status
+            if store.read("terminal.json") is None:
+                prior = status.evidence
+                store.evidence(
+                    Evidence(
+                        1,
+                        binding,
+                        "cancelled" if cancelled_preparation else "interrupted",
+                        prior.before if prior else None,
+                        None,
+                        prior.commands if prior else (),
+                        max(0, time.monotonic() - status.lifecycle["started"]),
+                    )
+                )
+                life = {k: v for k, v in status.lifecycle.items() if k not in {"schema_version", "binding"}}
+                cleaned = status.cleanup_confirmed or (life["guardian_pid"] is None and (not status.active))
+                if cancelled_preparation:
+                    cleaned = True
+                life.update(
+                    phase="finished",
+                    finished=True,
+                    cleanup_confirmed=cleaned,
+                    reason="cancelled" if cancelled_preparation else "guardian_interrupted",
+                )
+                store.lifecycle(life)
+            elif status.cleanup_confirmed and (not status.lifecycle["cleanup_confirmed"]):
+                life = {k: v for k, v in status.lifecycle.items() if k not in {"schema_version", "binding"}}
+                life["cleanup_confirmed"] = True
+                store.lifecycle(life)
+    finally:
+        store.close()
+    return load_status(root, binding)
+
+
+def wait(handle: Handle) -> RunStatus:
+    try:
+        handle.process.wait(timeout=handle.timeout_seconds + 15)
+    except subprocess.TimeoutExpired:
+        request_cancel(handle.root, handle.binding)
+        procs.close_control(handle.process)
+        handle.process.kill()
+        handle.process.wait(timeout=3)
+    finally:
+        procs.close_control(handle.process)
+    deadline = time.monotonic() + procs.CLEANUP_SECONDS + 3
+    while time.monotonic() < deadline:
+        status = load_status(handle.root, handle.binding)
+        if status.cleanup_confirmed:
+            break
+        time.sleep(procs.POLL)
+    return recover(handle.root, handle.binding)
+
+
+def run(root: Path, worktree: Path, **kwargs: Any) -> RunStatus:
+    return wait(start(root, worktree, **kwargs))
+
+
+def _cancelled(store: Store) -> bool:
+    raw = store.read("cancel.json")
+    if raw is None:
+        return False
+    if raw != {"binding": asdict(store.binding)}:
+        raise ValueError("invalid verifier cancellation binding")
+    return True
+
+
+def _exit_outcome(deadline: float, returncode: int) -> tuple[Literal["exited", "timeout"], int | None]:
+    if time.monotonic() >= deadline:
+        return ("timeout", None)
+    return ("exited", returncode)
+
+
+def _drain(stream: Any, log: Any, deadline: float) -> None:
+    fd = stream.fileno()
+    while log.tell() < LOG_LIMIT and time.monotonic() < deadline:
+        if not procs.readable(fd, 0):
+            return
+        chunk = os.read(fd, 8192)
+        if not chunk:
+            return
+        log.write(chunk[: LOG_LIMIT - log.tell()])
+        log.flush()
+
+
+def _command(
+    store: Store,
+    life: dict[str, Any],
+    request: dict[str, Any],
+    index: int,
+    command: str,
+    timeout: float,
+    total_deadline: float,
+    log: Any,
+) -> CommandOutcome:
+    started = time.monotonic()
+    deadline = min(started + timeout, total_deadline)
+    child = watchdog = None
+    outcome: Literal["exited", "timeout", "cancelled", "error"] = "error"
+    code: int | None = None
+    try:
+        life.update(
+            phase="preparing",
+            command_index=index,
+            command_pid=None,
+            watchdog_pid=None,
+            cleanup_confirmed=False,
+        )
+        store.lifecycle(life)
+        child = procs.launch(
+            "command", env=request["environment"], cwd=Path(request["worktree"]), stdout=subprocess.PIPE
+        )
+        life["command_pid"] = child.pid
+        store.lifecycle(life)
+        shell = {"shell": request["shell"]} if "shell" in request else {}
+        procs.send(child, {"command": command, "env": request["environment"], **shell})
+        watchdog = procs.launch("watchdog", env=procs.BASE_ENV, cwd=store.root, stdout=subprocess.PIPE)
+        life["watchdog_pid"] = watchdog.pid
+        procs.send(
+            watchdog,
+            {
+                "root": str(store.root),
+                "binding": asdict(store.binding),
+                "index": index,
+                "pgid": child.pid,
+                "deadline": deadline,
+            },
+        )
+        assert watchdog.stdout is not None
+        while not procs.readable(watchdog.stdout, procs.POLL):
+            if time.monotonic() >= deadline or _cancelled(store) or procs.parent_gone():
+                raise AgentError("verification interrupted before command activation")
+        if os.read(watchdog.stdout.fileno(), 32) != b"ready\n" or time.monotonic() >= deadline:
+            raise AgentError("verification watchdog did not become ready before deadline")
+        life["phase"] = "running"
+        store.lifecycle(life)
+        assert child.stdin is not None
+        child.stdin.write(b"go\n")
+        child.stdin.flush()
+        assert child.stdout is not None
+        while True:
+            if _cancelled(store):
+                outcome = "cancelled"
+                break
+            if procs.parent_gone():
+                life["reason"] = "parent_interrupted"
+                break
+            if time.monotonic() >= deadline:
+                outcome = "timeout"
+                break
+            if watchdog.poll() is not None:
+                cleanup = _cleanup_record(store, life)
+                outcome = "timeout" if cleanup and cleanup["reason"] == "timeout" else "error"
+                break
+            if procs.readable(child.stdout, procs.POLL):
+                chunk = os.read(child.stdout.fileno(), 8192)
+                if chunk and log.tell() < LOG_LIMIT:
+                    log.write(chunk[: LOG_LIMIT - log.tell()])
+                    log.flush()
+            if child.poll() is not None:
+                outcome, code = _exit_outcome(deadline, child.returncode)
+                _drain(child.stdout, log, deadline)
+                break
+    except Exception:
+        outcome, code = ("error", None)
+    finally:
+        life["phase"] = "cleanup"
+        store.lifecycle(life)
+        if child is not None:
+            procs.close_control(child)
+        cleaned = False
+        if watchdog is not None:
+            procs.close_control(watchdog)
+            try:
+                watchdog.wait(timeout=procs.CLEANUP_SECONDS + 3)
+            except subprocess.TimeoutExpired:
+                watchdog.kill()
+                watchdog.wait(timeout=2)
+            if watchdog.stdout:
+                watchdog.stdout.close()
+            cleanup = _cleanup_record(store, life)
+            cleaned = watchdog.returncode == 0 and bool(cleanup and cleanup["cleanup_confirmed"])
+        if child is not None:
+            if not cleaned:
+                procs.kill_group(child.pid)
+            child.wait(timeout=3)
+            if child.stdout:
+                child.stdout.close()
+            procs.release(child.pid)
+        life["cleanup_confirmed"] = cleaned
+        if not cleaned:
+            outcome, code = ("error", None)
+            life["reason"] = "cleanup_unconfirmed"
+        store.lifecycle(life)
+    return CommandOutcome(index, outcome, code, time.monotonic() - started)
+
+
+def guardian_main() -> None:
+    request = procs.read_request()
+    binding = Binding(**request["binding"])
+    store = Store(Path(request["root"]), binding)
+    life = {k: v for k, v in store.load_lifecycle().items() if k not in {"schema_version", "binding"}}
+    config = verification_config(
+        {
+            "verify": request["config"]["commands"],
+            "verify_timeout_seconds": request["config"]["timeout_seconds"],
+        }
+    )
+    if config is None or config_digest(config) != binding.config_digest:
+        raise ValueError("verification configuration binding mismatch")
+    started = life["started"]
+    deadline = started + config.timeout_seconds
+    before = after = None
+    results: list[CommandOutcome] = []
+    state: Literal["interrupted", "cancelled", "complete"] = "interrupted"
+    try:
+        life.update(phase="observing", reason="observing", cleanup_confirmed=True)
+        store.lifecycle(life)
+        before = observe_tree(
+            Path(request["worktree"]),
+            timeout=min(5, deadline - time.monotonic()),
+            guardian_group=True,
+            launch_base=request.get("launch_base"),
+            git=request.get("git"),
+        )
+        store.evidence(Evidence(1, binding, "running", before, None, (), time.monotonic() - started))
+        if not before.clean_at(binding.final_sha):
+            life["reason"] = "initial_tree_changed"
+        else:
+            with os.fdopen(procs.open_output_log(store), "wb") as log:
+                for index, command in enumerate(config.commands):
+                    if _cancelled(store) or procs.parent_gone():
+                        state = "cancelled" if _cancelled(store) else "interrupted"
+                        life["reason"] = "cancelled" if state == "cancelled" else "parent_interrupted"
+                        break
+                    result = _command(
+                        store, life, request, index, command.command, command.timeout_seconds, deadline, log
+                    )
+                    results.append(result)
+                    store.evidence(
+                        Evidence(
+                            1, binding, "running", before, None, tuple(results), time.monotonic() - started
+                        )
+                    )
+                    if result.outcome != "exited" or result.exit_code != 0:
+                        state = "cancelled" if result.outcome == "cancelled" else "interrupted"
+                        if life["reason"] not in {"parent_interrupted", "cleanup_unconfirmed"}:
+                            life["reason"] = (
+                                "command_failed"
+                                if result.outcome == "exited"
+                                else "cancelled"
+                                if result.outcome == "cancelled"
+                                else "command_" + result.outcome
+                            )
+                        break
+                else:
+                    state = "complete"
+                    life["reason"] = "commands_complete"
+            after = observe_tree(
+                Path(request["worktree"]),
+                timeout=min(5, deadline - time.monotonic()),
+                guardian_group=True,
+                launch_base=request.get("launch_base"),
+                git=request.get("git"),
+            )
+    except procs.UnsupportedTree:
+        state = "interrupted"
+        life["reason"] = "unsupported_tree"
+    except Exception:
+        state = "interrupted"
+        if life["reason"] not in {"cleanup_unconfirmed", "parent_interrupted"}:
+            life["reason"] = "runner_error"
+    finally:
+        if _cancelled(store):
+            state = "cancelled"
+        elif procs.parent_gone():
+            state = "interrupted"
+            life["reason"] = "parent_interrupted"
+        store.evidence(
+            Evidence(1, binding, state, before, after, tuple(results), max(0, time.monotonic() - started))
+        )
+        life.update(phase="finished", finished=True)
+        store.lifecycle(life)
+        store.close()

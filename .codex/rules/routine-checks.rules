@@ -1,0 +1,34 @@
+# Proposed project rule file: <repo>/.codex/rules/routine-checks.rules.
+# Preserve the existing user-layer bin/agent allow rule; this file adds only these families.
+
+prefix_rule(
+    pattern = ["uv", "run", "pytest"],
+    decision = "allow",
+    justification = "Run this trusted project's test suite with the existing uv cache.",
+    match = ["uv run pytest", "uv run pytest tests/test_documents.py -q"],
+    not_match = ["uv run python -c pass", "uv run --directory elsewhere pytest", "uv sync"],
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "ruff"],
+    decision = "allow",
+    justification = "Run this trusted project's lint and formatting checks with the existing uv cache.",
+    match = ["uv run ruff check src tests", "uv run ruff format --check src tests", "uv run ruff format src/agent_cli/documents.py"],
+    not_match = ["uv run bash", "uv run python", "uv tool run ruff"],
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "pyright"],
+    decision = "allow",
+    justification = "Run this trusted project's type checks with the existing uv cache.",
+    match = ["uv run pyright", "uv run pyright src/agent_cli/documents.py"],
+    not_match = ["uv run sh", "uv run zsh", "uv publish"],
+)
+
+prefix_rule(
+    pattern = ["git", "add"],
+    decision = "allow",
+    justification = "Stage files for a reviewed local commit without a repeated sandbox approval.",
+    match = ["git add AGENTS.md", "git add src/agent_cli/notes.py tests/test_setup_notes.py"],
+    not_match = ["git commit -m docs", "git push", "git -C ../Agent-notes add journal/day.md"],
+)

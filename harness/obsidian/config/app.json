@@ -1,0 +1,22 @@
+{
+  "alwaysUpdateLinks": false,
+  "useMarkdownLinks": false,
+  "attachmentFolderPath": "./",
+  "newFileLocation": "folder",
+  "newFileFolderPath": "notes",
+  "userIgnoreFilters": [
+    ".git/",
+    ".venv/",
+    ".agent/",
+    "raw/",
+    "repos/",
+    ".pytest_cache/",
+    "src/",
+    "tests/",
+    "vendor/",
+    ".ruff_cache/"
+  ],
+  "showUnsupportedFiles": true,
+  "readableLineLength": true,
+  "defaultViewMode": "preview"
+}
