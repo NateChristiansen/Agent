@@ -4,7 +4,6 @@ calls has its tags read again by pid. Fake `ps` output, no real processes."""
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -31,14 +30,15 @@ def _fake_ps(monkeypatch: pytest.MonkeyPatch, root: Path, alive: set[int]) -> li
     monkeypatch.setattr(procs, "_ps", ps)
     monkeypatch.setattr(procs, "_alive", lambda pid: pid in alive)
     monkeypatch.setattr(procs, "snapshot", REAL_SNAPSHOT)
+    # The `ps -E` snapshot is under test; Linux reads tags from /proc and Windows uses psutil.
+    monkeypatch.setattr(procs.sys, "platform", "darwin")
+    if not hasattr(os, "getpgrp"):
+        monkeypatch.setattr(os, "getpgrp", lambda: 1, raising=False)
     return calls
 
 
 def test_a_late_process_is_read_by_pid_and_a_vanished_one_voids_nothing(tmp_path: Path, monkeypatch):
     calls = _fake_ps(monkeypatch, tmp_path, alive={MANAGER, LATE})
-    if sys.platform == "win32":
-        monkeypatch.setattr(procs.sys, "platform", "darwin")  # the POSIX `ps` snapshot is under test
-        monkeypatch.setattr(os, "getpgrp", lambda: 1, raising=False)
     rows = {p.pid: p for p in procs.snapshot()}
     assert ["-p", f"{LATE},{GONE}"] == calls[2][-2:]
     assert rows[LATE].dispatch == "001-mac-01" and not rows[LATE].tag_error

@@ -267,7 +267,7 @@ def test_partial_eof_refuses_the_frame_and_future_calls_with_the_same_cause(tmp_
 
 def test_calls_after_an_ordinary_close_fail_immediately(tmp_path: Path) -> None:
     async def check() -> None:
-        rpc = CodexAppServer(tmp_path)
+        rpc = CodexAppServer(tmp_path, command=_server(tmp_path))
         rpc._closed_error = AgentError("Codex app-server closed its output")
         with pytest.raises(AgentError, match="closed its output"):
             await asyncio.wait_for(rpc.call("late", {}), 0.1)

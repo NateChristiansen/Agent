@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_cli import dispatch, leases, procs
+from agent_cli import dispatch, leases, proc_tags, procs
 from agent_cli.core import AgentError
 from agent_cli.dispatch import allocation, guards, lifecycle, notice_delivery, state, supervisor
 from agent_cli.dispatch import verification_gate as gate
@@ -210,10 +210,10 @@ def test_a_failure_before_handoff_closes_the_allocation(droot: Path, monkeypatch
     assert dispatch.load(droot, dispatch_id)["record_revision"] == revision
 
 
-def _inventory(monkeypatch: pytest.MonkeyPatch, mode: str, droot: Path, pid: int) -> None:
+def _inventory(monkeypatch: pytest.MonkeyPatch, mode: str, droot: Path, pid: int, proc: Path) -> None:
     """`procs.snapshot` as `mode` describes it: the spawned process found by its tags, no rows,
-    a raised inventory, or the real POSIX snapshot whose `ps -E` tag read returned nothing or
-    only the manager's row."""
+    a raised inventory, or the real POSIX snapshot whose tag read returned nothing or only the
+    manager's row."""
     if mode == "found":
         rows = [_proc(os.getpid()), _proc(pid, dispatch="001-mac-01", root=str(droot))]
         monkeypatch.setattr(procs, "snapshot", lambda: rows)
@@ -223,20 +223,27 @@ def _inventory(monkeypatch: pytest.MonkeyPatch, mode: str, droot: Path, pid: int
         monkeypatch.setattr(procs, "snapshot", lambda: 1 / 0)
     else:
         tagged = "" if mode == "untagged" else f"{os.getpid()} python\n"
-        _real_ps(monkeypatch, tagged, [os.getpid(), pid])
+        _real_ps(monkeypatch, tagged, [os.getpid(), pid], proc)
 
 
-def _real_ps(monkeypatch: pytest.MonkeyPatch, tagged: str, pids: list[int]) -> None:
+def _real_ps(monkeypatch: pytest.MonkeyPatch, tagged: str, pids: list[int], proc: Path) -> None:
     """The production POSIX snapshot over `ps` output: `tagged` for the `-E` read, and a
-    command row for each of `pids`."""
+    command row for each of `pids`. Linux reads tags from `/proc` instead, so there `proc`
+    stands in for it, with an untagged environ for each pid `tagged` lists."""
     lines = "".join(f"{p} 1 {p} 00:01 python\n" for p in pids)
     monkeypatch.setattr(procs, "_ps", lambda args: tagged if "-E" in args else lines)
+    if sys.platform.startswith("linux"):
+        for line in tagged.splitlines():
+            environ = proc / line.split()[0] / "environ"
+            environ.parent.mkdir(parents=True, exist_ok=True)
+            environ.write_bytes(b"")
+        monkeypatch.setattr(procs, "linux_tags", lambda pids: proc_tags.linux_tags(pids, proc))
     monkeypatch.setattr(procs, "snapshot", REAL_SNAPSHOT)
 
 
 @pytest.mark.parametrize("mode", ["found", "empty", "raises", "untagged", "partial"])
 def test_an_uncertain_supervisor_start_stays_held_until_a_trustworthy_inventory(
-    droot: Path, monkeypatch, mode
+    droot: Path, tmp_path: Path, monkeypatch, mode
 ):
     sleeper = subprocess.Popen(["sleep", "30"])
 
@@ -250,7 +257,7 @@ def test_an_uncertain_supervisor_start_stays_held_until_a_trustworthy_inventory(
             state.save(droot, dispatch.load(droot, dispatch_id))
 
     monkeypatch.setattr(supervisor, "popen", Spawned)
-    _inventory(monkeypatch, mode, droot, sleeper.pid)
+    _inventory(monkeypatch, mode, droot, sleeper.pid, tmp_path / "proc")
     try:
         with pytest.raises(AgentError, match="stale dispatch record"):
             _new_fast(droot, watch=False)
@@ -283,7 +290,7 @@ def test_an_uncertain_supervisor_start_stays_held_until_a_trustworthy_inventory(
         sleeper.kill()
         sleeper.wait()
     if mode == "partial" and sys.platform != "win32":
-        _real_ps(monkeypatch, f"{os.getpid()} python\n", [os.getpid()])
+        _real_ps(monkeypatch, f"{os.getpid()} python\n", [os.getpid()], tmp_path / "proc")
     else:
         monkeypatch.setattr(procs, "snapshot", lambda: [_proc(os.getpid())])
     [row] = dispatch.collect(droot, dispatch_id=dispatch_id)

@@ -88,7 +88,8 @@ def test_a_claude_workers_own_git_call_passes_the_ownership_check(tmp_path: Path
     """`trust_worktree` covers Codex, whose Windows sandbox runs as
     another account. A Claude worker runs git as the owner who created the worktree, so it needs
     no entry. `GIT_TEST_ASSUME_DIFFERENT_OWNER` shows the check is live in this git, so the pass
-    is the owner match and not a check that never ran."""
+    is the owner match and not a check that never ran. The machine's own config stays out: one
+    `safe.directory = *` there, as a hosted CI runner may set, would trust every directory."""
     from types import SimpleNamespace
 
     from agent_cli.dispatch import options
@@ -103,10 +104,17 @@ def test_a_claude_workers_own_git_call_passes_the_ownership_check(tmp_path: Path
     repo: Any = SimpleNamespace(env_allow=[], dispatch={})
     env = options.worker_env(tmp_path, {"id": "001-01", "feature": 1}, repo)
     assert "safe.directory" not in env.get("GIT_CONFIG_PARAMETERS", "")
+    no_config = tmp_path / "empty.gitconfig"
+    no_config.touch()
+    machine = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(no_config)}
 
     def status(extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["git", "status", "--short"], cwd=worktree, env={**env, **extra}, capture_output=True, text=True
+            ["git", "status", "--short"],
+            cwd=worktree,
+            env={**env, **machine, **extra},
+            capture_output=True,
+            text=True,
         )
 
     assert status({}).returncode == 0, status({}).stderr
