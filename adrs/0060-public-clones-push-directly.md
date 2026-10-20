@@ -1,7 +1,7 @@
 ---
 id: 60
 title: Public clones push directly; export is the one-time flip
-status: proposed
+status: accepted
 date: 2026-10-12
 supersedes: null
 superseded_by: null
@@ -18,11 +18,11 @@ ADR-0026 made `agent export` the only public route. The source checkout held pri
 
 ## Decision
 
-After the public start, the owner's clones of the public repo push `main` directly to it, and `agent export` is not run again for ordinary work. A direct push passes the same pre-push hook as before, minus the export-only refusal. Where the registry lists the checkout, that hook requires each pushed tip to carry a full pass record (ADR-0041) or a notes-only record chained to one (ADR-0047). It then runs the private-terms scrub when terms are configured. `push-guard` and Claude's push ask rule still apply.
+After the public start, the owner's clones of the public repo push `main` directly to it, and `agent export` is not run again for ordinary work. A direct push passes the same pre-push hook as before, minus the export-only refusal. Where the registry lists the checkout, that hook requires each pushed tip to carry a full pass record (ADR-0041); a notes-only record never certifies a push (ADR-0062). It then runs the private-terms scrub when terms are configured. `push-guard` and Claude's push ask rule still apply.
 
 The gate fails closed on a clone of the private source repo. When `agent.exportOnly` is unset, no marker is tracked at HEAD and the checkout's harness role is `source`, setup sets `agent.exportOnly=true`, so a push is refused and the export route is the only way out. A tracked marker sets false. Only a readable consumer role leaves the setting unset; consumer pushes are already refused. A missing or unparseable `agent.local.yaml` reads as `source`, so it fails closed: the setting becomes true.
 
-Settle preserves an existing value, so a public clone preset to true stays refused. The owner's maintainer clones need harness role `source`; setup defaults to `consumer`, and a consumer clone of the public repo is left unset.
+Settle preserves an existing value, so a public clone preset to true stays refused. The owner's maintainer clones need harness role `source`. Setup defaults to `consumer`; a consumer clone of the public repo also settles false, because the marker is checked before the role, and the consumer gate still refuses its pushes.
 
 Known limit: the marker is a tracked-path convention, not proof of ancestry. A private history that tracks `.harness-export` would settle false. No export path writes the marker into the source tree.
 
