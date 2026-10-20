@@ -359,9 +359,13 @@ def test_the_hook_finds_a_windows_venv_runner(tmp_path: Path) -> None:
 def test_the_real_gate_hooks_run_on_windows(name: str, tmp_path: Path) -> None:
     """The stub tests above cannot run on Windows (a `#!` script named python.exe is not a PE
     file), so this runs each generated hook with Git's own sh against this checkout, whose
-    `.venv/Scripts/python.exe` is real. Nothing is staged, and the export-only flag is unset in
-    CI, so both gates pass."""
+    `.venv/Scripts/python.exe` is real. Nothing is staged, so pre-commit passes. Whether
+    pre-push passes depends on the checkout: setup declares a fresh clone a consumer, and the
+    record gate refuses every consumer push. So the hook must reach the verdict the gates give
+    when called directly."""
     import shutil
+
+    from agent_cli import push_records
 
     checkout = Path(__file__).resolve().parents[1]
     if not (checkout / ".venv/Scripts/python.exe").is_file():
@@ -370,11 +374,15 @@ def test_the_real_gate_hooks_run_on_windows(name: str, tmp_path: Path) -> None:
     hook = tmp_path / name
     hook.write_text(gitgate.script(name), encoding="utf-8", newline="\n")
     env = {**os.environ, gitgate.ALLOW_PUSH_ENV: "1"}
+    expected: list[str] = []
+    if name == "pre-push":
+        expected = gitgate.pre_push(checkout, env) or push_records.problems(checkout, [])
     proc = subprocess.run(
         [sh, str(hook)], cwd=checkout, input="", capture_output=True, text=True, env=env, timeout=120
     )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == (1 if expected else 0), proc.stdout + proc.stderr
     assert "gate unavailable" not in proc.stderr
+    assert all(line in proc.stderr for line in expected), proc.stderr
 
 
 def test_the_hook_fails_closed_without_the_checkouts_venv(tmp_path: Path) -> None:
