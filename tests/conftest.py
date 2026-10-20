@@ -64,6 +64,31 @@ def _no_real_notifications():
     yield
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _hermetic_git_identity(tmp_path_factory: pytest.TempPathFactory):
+    """Git finds an author and committer in a throwaway global config, not the machine's.
+
+    `land` runs `commit-tree` with the committer left to git, so a runner with no global identity
+    failed 57 tests. A global file sits below repo config and `-c`, so a test that sets its own
+    identity still wins; one that sets `GIT_CONFIG_GLOBAL` itself still gets exactly that. The
+    variable is in `os.environ`, so `land` subprocesses inherit it.
+    """
+    config = tmp_path_factory.mktemp("gitconfig") / "config"
+    config.write_text("[user]\n\tname = Test Suite\n\temail = suite@example.invalid\n", encoding="utf-8")
+    saved = {k: os.environ.pop(k, None) for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL")}
+    saved |= {k: os.environ.pop(k, None) for k in ("GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")}
+    previous = os.environ.get("GIT_CONFIG_GLOBAL")
+    os.environ["GIT_CONFIG_GLOBAL"] = str(config)
+    yield
+    if previous is None:
+        os.environ.pop("GIT_CONFIG_GLOBAL", None)
+    else:
+        os.environ["GIT_CONFIG_GLOBAL"] = previous
+    for key, value in saved.items():
+        if value is not None:
+            os.environ[key] = value
+
+
 @pytest.fixture(autouse=True)
 def _no_host_session_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """A test starts without the caller's Claude or Codex session unless it sets one itself.
