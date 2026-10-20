@@ -14,7 +14,7 @@ cd Agent
 ./setup.sh
 ```
 
-Setup offers to install missing tools, asks where to keep your notes and what to call you, and configures the vault. On Windows, run `setup.cmd` instead, from PowerShell, cmd or Explorer. Run from Git Bash, `./setup.sh` skips its questions.
+Setup offers to install missing tools, asks where to keep your notes, what to call you and what to call this machine, and configures the vault. On Windows, run `setup.cmd` instead, from PowerShell, cmd or Explorer. Run from Git Bash, `./setup.sh` skips its questions.
 
 Open the `Agent` folder as a vault in Obsidian, then use your agent's manager launcher on the ribbon to open a conversation. Ask it to add your repo: “Add my repo at ~/code/api.” Once it is configured, describe your first piece of work: “Fix the flaky login test.” The manager asks for what it needs and proposes a plan for your approval.
 

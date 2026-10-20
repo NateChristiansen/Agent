@@ -11,8 +11,6 @@ The Dashboard brings current work into one live pane, followed by Journal and Lo
 - **Workers** shows state, latest activity, goal, and cost or tokens when available.
 - **Open features** and **Open tasks** show the current plans and tasks, updating as the manager marks work complete.
 
-Use **Open live dashboard** in the command palette to keep the pane in its own tab beside a plan or conversation.
-
 A stale warning means the displayed state has expired. The manager can check the run. Results without a live manager include a **resume feature manager** action.
 
 ## Find plans and history

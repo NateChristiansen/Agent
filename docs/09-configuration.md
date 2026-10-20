@@ -50,7 +50,7 @@ These hooks can be turned off under `hooks` in shared `agent.yaml` or this machi
 
 - `thrash-guard` nudges the manager when commands, edits, or errors repeat.
 - `peer-route` directs messages to managers through the harness inbox.
-- `plan-gate` checks that a plan has been reviewed before it reaches you for approval.
+- `plan-gate` checks that a plan has been reviewed before it reaches you for approval. It runs for Claude managers only.
 - `mcp-stale` warns when changed tool definitions need a reconnect.
 - `pull-warn` warns before reading a registered repo that has not been pulled in the session.
 - `journal-pending` reminds the manager about milestones awaiting a journal entry.

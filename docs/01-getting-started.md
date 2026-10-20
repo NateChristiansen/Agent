@@ -35,7 +35,7 @@ setup.cmd
 
 In PowerShell, type `.\setup.cmd`. You can also double-click `setup.cmd` in Explorer. Run from Git Bash, `./setup.sh` skips its questions and fills in placeholders.
 
-Setup asks where to keep your notes repo and what name to use for you. Press Enter at the notes prompt to create `../Agent-notes`, or give another path. This repo holds your configuration, feature plans, decisions, and journal; setup connects those records to the harness vault. Managers run in the main harness folder, and your product repos can live anywhere outside it. The default location for new product clones is `../repos/`.
+Setup asks where to keep your notes repo, what name to use for you, and a short name for this machine. Press Enter at the notes prompt to create `../Agent-notes`, or give another path. This repo holds your configuration, feature plans, decisions, and journal; setup connects those records to the harness vault. Managers run in the main harness folder, and your product repos can live anywhere outside it. The default location for new product clones is `../repos/`.
 
 Read the end of the setup report. It says **Setup is complete.** or **Setup is incomplete.**, with any remaining steps. Complete those steps before starting work. You can rerun setup after installing a missing tool or updating the harness.
 

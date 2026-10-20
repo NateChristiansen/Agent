@@ -243,8 +243,8 @@ def git_hooks(root: Path) -> dict[str, Any]:
         return setup_step("git hooks", "failed", detail)
     changed = any(state in ("installed", "updated") for state in result.values())
     state = "done" if changed else "already"
-    # agent.exportOnly gates the pre-push refusal once a notes repo is linked. A plain public
-    # clone gets `false` here; a checkout with private history is left for the owner.
+    # agent.exportOnly=true makes the pre-push hook refuse. A clone that tracks `.harness-export`
+    # gets `false` here; a source-role checkout without it gets `true`.
     export_state, export_detail = gitgate.settle_export_only(root)
     if export_state == "done":
         state = "done"

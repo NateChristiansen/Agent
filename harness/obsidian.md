@@ -70,8 +70,7 @@ undiscovered.
 
 ## Live dashboard and health
 
-The `agent-live` code block embeds the live pane in `Dashboard.md`. The command palette's
-**Agent Terminal Focus: Open live dashboard** opens the same pane in its own tab. Both read
+The `agent-live` code block embeds the live pane in `Dashboard.md`. It reads
 `.agent/live.json` and `.agent/status.json` on a file event, with a 2 s poll as fallback for hidden files and missed
 events. Rows stay keyed by feature and id. Changed cells patch in place; ages tick without
 rebuilding rows. Activity timestamps cannot reorder managers. Deadline fields still control

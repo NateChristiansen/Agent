@@ -22,7 +22,7 @@ Paths below are relative to `src/agent_cli/` unless stated otherwise.
 | `notes.py`, `notes_writer.py`, `notes_sync.py` | Private-vault links, renderer ownership and notes synchronization. |
 | `status.py`, `vault/`, `obsidian_tabs.py`, `tab_drain.py` | Generated views, live snapshots and fallback tab painting. |
 | `journal/`, `usage/`, `telemetry/` | Daily-note blocks, usage collection and append-only measurements. |
-| `setup.py`, `doctor/`, `gitgate.py`, `push_records.py`, `export.py` | Installation, health checks and public commit/push gates. |
+| `setup.py`, `doctor/`, `gitgate.py`, `push_records.py`, `export.py` | Installation, health checks and commit/push gates; `export.py` builds the one-time public export. |
 
 Facades preserve public imports. Patch a name where its implementation looks it up; a re-export
 is a separate binding. Lazy imports keep provider SDK initialization off frequent hook paths.

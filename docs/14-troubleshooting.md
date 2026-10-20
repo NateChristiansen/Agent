@@ -66,7 +66,7 @@ A finished worker may still be waiting for verification. The manager checks whet
 
 ## Repair a stale vault view
 
-For an unknown or stale live pane, check that Obsidian's command line interface and Agent Terminal Focus are enabled. Use **Open live dashboard** to compare the separate pane. The manager can inspect recorded render and tab-paint failures.
+For an unknown or stale live pane, check that Obsidian's command line interface and the Agent Terminal plugin are enabled. The manager can inspect recorded render and tab-paint failures.
 
 The manager can refresh status to rebuild generated views. After restarting Obsidian, open managers from the ribbon and name the work to continue.
 

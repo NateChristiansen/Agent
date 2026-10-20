@@ -16,6 +16,8 @@ Worker verification runs through Git Bash. If it is missing, the launch preview 
 
 For SSH server setup and its elevation requirements, follow [pairing two machines](11-pairing-two-machines.md#prepare-the-ssh-servers).
 
+If you replace a paired checkout with a new clone at the same path, move the old `.agent\peer-net` folder into the new checkout with `Move-Item` on the same drive. An ordinary copy can inherit broader permissions, and pairing then refuses the store.
+
 ## Check your first run
 
 Setup and configuration checks leave these parts of your Windows workflow to be confirmed in a live run:
