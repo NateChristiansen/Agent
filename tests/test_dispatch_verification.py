@@ -18,9 +18,10 @@ import pytest
 
 from agent_cli import dispatch, features, leases, repos
 from agent_cli.core import AgentError
-from agent_cli.dispatch import lifecycle, recovery, terminal, verification
+from agent_cli.dispatch import lane, lifecycle, recovery, terminal, verification, verification_status
 from agent_cli.dispatch import verification_gate as gate
 from agent_cli.dispatch import verification_process as procs
+from agent_cli.dispatch.state import file as state_file
 from agent_cli.dispatch.state import load, save
 from agent_cli.dispatch.verification_store import Store
 from dispatch_helpers import DEAD_PID, _new, _set_alpha_dispatch, droot, envelope  # noqa: F401
@@ -100,15 +101,100 @@ def finish(root: Path, d: dict[str, Any]) -> dict[str, Any]:
 BARRIER_S = 60
 
 
-def wait_for(predicate, timeout=BARRIER_S, ended=lambda: None):
+LOG_TAIL = 2000
+
+
+def diagnose(root: Path, dispatch_id: str) -> str:
+    """Dispatch state, assessment, lane holders and the verifier's own evidence, read now so a
+    failure keeps them after the temporary checkout is gone."""
+    lines: list[str] = []
+
+    def part(label: str, produce) -> None:
+        try:
+            lines.append(f"{label}: {produce()}")
+        except Exception as exc:  # noqa: BLE001 — a diagnostic never hides the failure it explains
+            lines.append(f"{label}: unavailable ({type(exc).__name__}: {exc})")
+
+    loaded: list[dict[str, Any]] = []
+    keys = ("state", "stop_reason", "attempt", "terminal_committed", "error", "verification_wait")
+
+    def record() -> dict[str, Any]:
+        loaded.append(load(root, dispatch_id))
+        return {k: loaded[0].get(k) for k in keys}
+
+    part("dispatch", record)
+    d = loaded[0] if loaded else {}
+    part("result", lambda: loaded[0].get("verification_result") if loaded else "no record")
+    if loaded:
+        part("assessment", lambda: gate.acceptance(root, d))
+        part("requires_lease", lambda: gate.requires_lease(root, d))
+    part(
+        "lane holders",
+        lambda: {
+            lease["area"]: lease.get("session_id")
+            for lease in leases.list_all(root)
+            if str(lease.get("area", "")).lower().startswith(("verify:", "repo-slot:"))
+        },
+    )
+
+    def run_of() -> tuple[Any, str, Path]:
+        value = gate.metadata(d)
+        if value is None:
+            raise LookupError("no verification metadata")
+        binding, mode = value
+        return binding, mode, root / lane.run_area(binding)
+
+    def status() -> str:
+        binding, mode, run = run_of()
+        found = verification.load_status(root, binding)
+        return (
+            f"mode={mode} dir={run} evidence={found.evidence and found.evidence.state} "
+            f"lifecycle={found.lifecycle} active={found.active} cleanup_confirmed={found.cleanup_confirmed}"
+        )
+
+    def lifecycle_file() -> dict[str, Any]:
+        store = Store(root, run_of()[0])
+        try:
+            return store.load_lifecycle()
+        finally:
+            store.close()
+
+    def evidence() -> str:
+        store = Store(root, run_of()[0])
+        try:
+            try:
+                life = store.load_lifecycle()
+            except Exception:  # noqa: BLE001 — evidence is still readable without it
+                life = {"command_index": None}
+            found = verification_status.latest(store, life)
+            return str(found and found.state)
+        finally:
+            store.close()
+
+    def output() -> str:
+        log = run_of()[2] / "output.log"
+        return (
+            repr(log.read_bytes()[-LOG_TAIL:].decode("utf-8", errors="replace")) if log.exists() else "None"
+        )
+
+    if loaded:
+        part("verifier status", status)
+        part("verifier lifecycle", lifecycle_file)
+        part("verifier evidence", evidence)
+        part("verifier output tail", output)
+    return "\n".join(lines)
+
+
+def wait_for(predicate, timeout=BARRIER_S, ended=lambda: None, explain=None):
     deadline = time.monotonic() + timeout
+    detail = lambda: f"\n{explain()}" if explain else ""  # noqa: E731
     while time.monotonic() < deadline:
         if predicate():
             return
         if (why := ended()) is not None:
-            pytest.fail(f"fixture ended before its controlled barrier: {why}")
+            pytest.fail(f"fixture ended before its controlled barrier: {why}{detail()}")
         time.sleep(0.02)
-    pytest.fail("fixture did not reach its controlled barrier")
+    pytest.fail(f"fixture did not reach its controlled barrier{detail()}")
 
 
 def ended_early(future: Future[None], root: Path, dispatch_id: str) -> str | None:
@@ -116,14 +202,9 @@ def ended_early(future: Future[None], root: Path, dispatch_id: str) -> str | Non
         return None
     if (error := future.exception()) is not None:
         return f"gate.execute raised {error!r}"
-    current = load(root, dispatch_id)
-    value = gate.metadata(current)
-    life = verification.load_status(root, value[0]).lifecycle if value is not None else {}
-    return (
-        f"gate.execute returned; verification_result={current.get('verification_result')!r}, "
-        f"verification_wait={current.get('verification_wait')!r}, "
-        f"verifier phase={life.get('phase')!r} reason={life.get('reason')!r}"
-    )
+    # `diagnose` reports the record, result, wait reason and verifier phase; a record it cannot read
+    # must not replace this answer.
+    return f"gate.execute returned {future.result()!r}"
 
 
 @contextmanager
@@ -141,12 +222,164 @@ def running(ready):
     with ThreadPoolExecutor(1) as pool:
         future = pool.submit(gate.execute, root, d["id"], d["attempt"])
         try:
-            wait_for(marker.exists, ended=lambda: ended_early(future, root, d["id"]))
+            wait_for(
+                marker.exists,
+                ended=lambda: ended_early(future, root, d["id"]),
+                explain=lambda: diagnose(root, d["id"]),
+            )
+        except BaseException as failure:
+            release.touch()  # the barrier failure stays primary; cleanup trouble is a note
+            wait([future], timeout=BARRIER_S)
+            try:
+                future.result(timeout=0)
+            except Exception as cleanup:  # noqa: BLE001 — cleanup must not replace the diagnostic
+                failure.add_note(f"verifier cleanup failed: {cleanup!r}")
+            raise
+        try:
             yield root, load(root, d["id"])
         finally:
             release.touch()
             wait([future], timeout=BARRIER_S)
         future.result(timeout=0)
+
+
+@pytest.mark.parametrize("early", ["raises", "returns"])
+def test_a_verifier_future_that_ends_early_fails_promptly_with_state(ready, monkeypatch, early):
+    def execute(*args):
+        if early == "raises":
+            raise RuntimeError("verifier blew up")
+
+    monkeypatch.setattr(gate, "execute", execute)
+    started = time.monotonic()
+    with pytest.raises(pytest.fail.Exception) as info:
+        with running(ready):
+            pytest.fail("barrier should not be reached")
+    assert time.monotonic() - started < 5
+    text = str(info.value)
+    assert ("raised RuntimeError('verifier blew up')" if early == "raises" else "returned None") in text
+    for label in ("dispatch:", "assessment:", "lane holders:", "verifier status:"):
+        assert label in text
+    assert "repo-slot:alpha/0" in text
+
+
+def test_diagnose_names_the_wait_reason_and_the_verifier_evidence(ready):
+    root, d = ready
+    with running(ready) as (_, live):
+        text = diagnose(root, d["id"])
+        assert "incomplete" in text
+        assert "verifier activity or cleanup is unconfirmed" in text
+        assert "requires_lease: True" in text
+        assert f"dir={root / lane.run_area(gate.metadata(live)[0])}" in text  # type: ignore[index]
+    d = load(root, d["id"])
+    d["verification_wait"] = {"attempt": d["attempt"], "reason": "waited for a lane", "outcome": "failed"}
+    d.pop("verification")
+    save(root, d)
+    after = diagnose(root, d["id"])
+    assert "waited for a lane" in after and "no verification metadata" in after
+
+
+def test_diagnose_keeps_each_readable_fragment_when_another_is_unreadable(ready):
+    root, d = ready
+    with running(ready) as (_, live):
+        run = root / lane.run_area(gate.metadata(live)[0])  # type: ignore[index]
+        log = run / "output.log"
+        log.write_text("LOG-SENTINEL")
+        lifecycle_file = run / "lifecycle.json"
+        good = lifecycle_file.read_text()
+        lifecycle_file.write_text("{malformed")
+        broken_life = diagnose(root, d["id"])
+        assert "LOG-SENTINEL" in broken_life and "verifier status: unavailable" in broken_life
+        lifecycle_file.write_text(good)
+        log.unlink()
+        log.mkdir()
+        broken_log = diagnose(root, d["id"])
+        assert "verifier output tail: unavailable" in broken_log
+        assert "verifier status: mode=run" in broken_log and "lifecycle=" in broken_log
+        log.rmdir()
+
+
+@pytest.mark.parametrize("broken", ["terminal.json", "lifecycle.json"])
+def test_diagnose_keeps_verifier_evidence_and_lifecycle_apart(ready, broken):
+    root, d = ready
+    with running(ready) as (_, live):
+        binding = gate.metadata(live)[0]  # type: ignore[index]
+        run = root / lane.run_area(binding)
+        broken_file = run / broken
+        good = broken_file.read_text() if broken_file.exists() else None
+        broken_file.write_text("{malformed")
+        (run / "output.log").write_text("LOG-SENTINEL")
+        try:
+            text = diagnose(root, d["id"])
+        finally:
+            if good is None:
+                broken_file.unlink()
+            else:
+                broken_file.write_text(good)
+        assert "LOG-SENTINEL" in text and "verifier status: unavailable" in text
+        if broken == "lifecycle.json":
+            assert "verifier evidence: unavailable" not in text and "verifier evidence:" in text
+            assert "verifier lifecycle: unavailable" in text
+        else:
+            assert "verifier lifecycle: unavailable" not in text and "phase" in text
+            assert "verifier evidence: unavailable" in text
+
+
+@pytest.mark.parametrize("settles_during_release", [False, True])
+@pytest.mark.parametrize("cleanup", ["raises", "returns"])
+def test_a_barrier_timeout_keeps_the_diagnostic_failure_when_cleanup_fails(
+    ready, monkeypatch, cleanup, settles_during_release
+):
+    root, d = ready
+    release = root / "verifier-release"
+    ended = threading.Event()
+
+    def execute(*args):
+        try:
+            while not release.exists():
+                time.sleep(0.02)
+            if cleanup == "raises":
+                raise RuntimeError("cleanup blew up")
+        finally:
+            ended.set()
+
+    real_touch = Path.touch
+
+    def touch(self, *args, **kwargs):
+        real_touch(self, *args, **kwargs)
+        if settles_during_release and self == release:
+            assert ended.wait(5)
+            time.sleep(0.05)
+
+    original = wait_for
+    monkeypatch.setattr(Path, "touch", touch)
+    monkeypatch.setattr(gate, "execute", execute)
+    monkeypatch.setitem(globals(), "wait_for", lambda *a, **k: original(*a, **{**k, "timeout": 0.3}))
+    started = time.monotonic()
+    with pytest.raises(pytest.fail.Exception) as info:
+        with running(ready):
+            pytest.fail("barrier should not be reached")
+    assert time.monotonic() - started < 5
+    text = str(info.value)
+    assert "fixture did not reach its controlled barrier" in text and "dispatch:" in text
+    if cleanup == "raises":
+        assert any("cleanup blew up" in note for note in getattr(info.value, "__notes__", []))
+
+
+def test_diagnose_survives_an_unreadable_dispatch_record_and_keeps_the_original_failure(ready, monkeypatch):
+    root, d = ready
+    record = state_file(root, d["id"], ".json")
+
+    def execute(*args):
+        record.write_text("{malformed")
+        return "ORIGINAL-RESULT"
+
+    monkeypatch.setattr(gate, "execute", execute)
+    with pytest.raises(pytest.fail.Exception) as info:
+        with running(ready):
+            pytest.fail("barrier should not be reached")
+    text = str(info.value)
+    assert "returned 'ORIGINAL-RESULT'" in text
+    assert "dispatch: unavailable" in text and "lane holders:" in text
 
 
 def test_done_and_collect_wait_for_a_live_verifier_and_preserve_the_lease(ready):
