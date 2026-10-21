@@ -8,8 +8,9 @@ timing-flake entry for every failed node. Missing, pending or malformed entries 
 
 Only pytest exit 1 is retryable, with clean completed checkout, all other commands passing,
 complete summary node counts and no lost worker, collection error or interruption. Serial
-collect-only must match the original execution count. Rerun exactly the failed node ids once, with
-project addopts, xdist and rerunfailures disabled and PYTEST_ADDOPTS cleared.
+collect-only must match the original execution count, and the failed files' collected ids must name
+exactly the failed nodes. Rerun exactly the failed node ids once, with project addopts, xdist and
+rerunfailures disabled and PYTEST_ADDOPTS cleared.
 
 Keep immutable failed and retry evidence under `<store>/failed/` and `<store>/retry/`. A
 retry-passed full certificate names both; readers rederive it and fail closed on tampering.
@@ -50,6 +51,9 @@ _COUNT = re.compile(r"(\d+) (failed|errors?|passed)\b")
 #: Outcomes a run reports for a test it executed (an `error` is a setup or teardown error).
 _RAN = re.compile(r"(\d+) (passed|failed|skipped|xfailed|xpassed|errors?)\b")
 _COLLECTED = re.compile(r"^(\d+) tests? collected\b", re.M)
+#: A `--collect-only -qq` line: one file's collected count.
+_PER_FILE = re.compile(r"^(\S[^\n]*?): (\d+)$", re.M)
+_SESSION = re.compile(r"^=+ test session starts =+$", re.M)
 _GROUP = re.compile(r"@[\w.-]+$")
 #: A run that lost a worker, stopped early or failed to collect never qualifies (a crashed xdist worker left
 #: an unknown failing test unrun, and its crashed node's serial retry certified the tree).
@@ -219,10 +223,17 @@ def executed(log: str) -> int | None:
     return sum(int(n) for n, _ in _RAN.findall(totals[-1]))
 
 
-def collected(log: str) -> int | None:
-    """The count a `--collect-only -q` run printed, or None."""
-    found = _COLLECTED.findall(log)
-    return int(found[0]) if found else None
+def collected(retry_log: str) -> int | None:
+    """The suite's size from the retry's `--collect-only -qq` step, which prints one count per
+    file after the id listing's `N tests collected` and before the rerun's session header; None
+    when that section is missing or empty."""
+    listed = _COLLECTED.search(retry_log)
+    if not listed:
+        return None
+    end = _SESSION.search(retry_log, listed.end())
+    section = retry_log[listed.end() : end.start() if end else len(retry_log)]
+    counts = [int(n) for path, n in _PER_FILE.findall(section) if "::" not in path]
+    return sum(counts) if counts else None
 
 
 def launcher(command: str) -> str:
@@ -235,20 +246,23 @@ def launcher(command: str) -> str:
 
 
 def retry_config(config: Any, index: int, nodes: list[str]) -> Any:
-    """The retry's two commands. First the configured pytest command, collecting only, serially,
-    so the original run's executed count can be checked against the suite it should have run;
-    then the launcher alone on exactly `nodes`, serially, once each."""
+    """The retry's three commands, all serial and sharing one capped output log. First the ids
+    collected from the failed nodes' files, to confirm which tests failed; then the configured
+    pytest command's per-file counts, so the original run's executed count can be checked against
+    the suite it should have run (a whole-suite id listing can fill the cap alone); then the
+    launcher alone on exactly `nodes`, once each."""
     from .repos import VerificationCommand, VerificationConfig
 
     base = config.commands[index]
-    collect = f"{base.command} --collect-only -q -o addopts= -p no:xdist"
-    retry = f"{launcher(base.command)} " + " ".join(shlex.quote(w) for w in (*RETRY_FLAGS, *nodes))
+    run = launcher(base.command)
+    files = sorted({n.split("::", 1)[0] for n in nodes})
+    serial = "-o addopts= -p no:xdist"
+    ids = f"{run} --collect-only -q {serial} " + " ".join(shlex.quote(f) for f in files)
+    count = f"{base.command} --collect-only -qq {serial}"
+    retry = f"{run} " + " ".join(shlex.quote(w) for w in (*RETRY_FLAGS, *nodes))
     return VerificationConfig(
-        (
-            VerificationCommand(collect, base.timeout_seconds),
-            VerificationCommand(retry, base.timeout_seconds),
-        ),
-        base.timeout_seconds * 2,
+        tuple(VerificationCommand(c, base.timeout_seconds) for c in (ids, count, retry)),
+        base.timeout_seconds * 3,
     )
 
 
@@ -264,7 +278,7 @@ def incomplete(original_log: str, retry_log: str) -> str:
 
 
 def collected_ids(retry_log: str) -> set[str]:
-    """The exact node ids the retry's collect-only step listed (`--collect-only -q`)."""
+    """The exact node ids the retry's first collect-only step listed (`--collect-only -q`)."""
     found = _COLLECTED.search(retry_log)
     section = retry_log[: found.start()] if found else ""
     return {line.strip() for line in section.splitlines() if "::" in line and not line.startswith(" ")}
@@ -396,7 +410,7 @@ def attempt(
         "failed_run": run_id,
         "nodes": retried,
         "source": source,
-        "command": config.commands[1].command,
+        "command": config.commands[-1].command,
         "evidence": again["hashes"],
     }
     write_retry(

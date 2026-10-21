@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -65,7 +66,11 @@ def test_eight_processes_append_concurrently_without_loss_or_tearing(tmp_path, i
         out, err = child.communicate(timeout=120)
         assert child.returncode == 0, err
         reports.append(json.loads(out))
-    assert all(r == {"attempted": EACH, "written": EACH, "lost": 0, "skipped": 0} for r in reports), reports
+    expected = {"attempted": EACH, "written": EACH, "lost": 0, "skipped": 0}
+    off = {n: r for n, r in enumerate(reports) if r != expected}
+    loss = telemetry.Sink.for_main(main).loss
+    reasons = Counter(row.get("reason") for row in lines(loss)) if loss.exists() else {}
+    assert not off, f"children off count: {off}; loss reasons: {dict(reasons)}"
     raw = b"".join(p.read_bytes() for p in sorted((main / ".agent/telemetry/events").glob("*.jsonl")))
     assert raw.endswith(b"\n")
     rows = [json.loads(line) for line in raw.decode().splitlines()]

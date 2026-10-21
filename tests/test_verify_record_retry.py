@@ -182,7 +182,8 @@ def test_an_approved_flake_is_retried_once_serially_and_linked(harness: Path, ru
     # one original run under the project's own -n 8, plus exactly one serial retry of one node
     assert runs[0] == "full" and len(runs) == 2
     assert runs[1] == (
-        f"{PYTEST} tests --collect-only -q -o addopts= -p no:xdist"
+        f"{PYTEST} --collect-only -q -o addopts= -p no:xdist tests/test_flaky.py"
+        f" | {PYTEST} tests --collect-only -qq -o addopts= -p no:xdist"
         f" | {PYTEST} -o addopts= -p no:xdist -p no:rerunfailures {NODE}"
     )
     original = _log(harness, record["run_id"])
@@ -256,6 +257,7 @@ def test_a_failing_retry_is_recorded_and_the_gate_stays_failed(serial: Path, run
     (kept,) = (_store(serial) / "retry").glob("*.json")
     retry = json.loads(kept.read_text())
     assert retry["kind"] == "retry-failed" and retry["nodes"] == [BROKEN, NODE]
+    assert retry["why"].startswith("a command did not pass (command 2 ")
     assert (_store(serial) / "failed" / f"{retry['failed_run']}.json").is_file()
     assert verify_record.lookup(serial, "HEAD")[0] is None
 
@@ -329,10 +331,72 @@ def test_a_worker_crash_is_not_a_timing_flake_and_cannot_hide_an_unrun_defect(ha
     assert push_records.problems(harness, [Update(sha, "0" * 40, "refs/heads/main", "refs/heads/main")])
 
 
+XDIST_ONLY = (
+    "import os\n\nimport pytest\n\n\n@pytest.mark.xdist_group('timing-0')\ndef test_lost_update_a():\n"
+    "    assert not os.environ.get('PYTEST_XDIST_WORKER'), 'lost update'\n"
+)
+# Enough parametrized ids that the suite's `--collect-only -q` listing alone passes LOG_LIMIT.
+PADDING = (
+    "import pytest\n\n\n@pytest.mark.parametrize('i', range({count}), ids=lambda i: f'{{i:04d}}' + 'p' * 80)\n"
+    "def test_padding(i):\n    pass\n"
+)
+
+
+def test_a_retry_certifies_a_suite_whose_listing_passes_the_capture_limit(harness: Path, runs: list[str]):
+    """A whole-suite listing fills the run's shared output cap before the retry's own summary."""
+    from agent_cli.dispatch.verification import LOG_LIMIT
+
+    (harness / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = "-q -n 2 --dist loadgroup"\n'
+    )
+    (harness / "tests" / "test_flaky.py").write_text(XDIST_ONLY)
+    count = LOG_LIMIT // 100 + 200
+    (harness / "tests" / "test_padding.py").write_text(PADDING.format(count=count))
+    assert count * len("tests/test_padding.py::test_padding[0000" + "p" * 80 + "]\n") > LOG_LIMIT
+    _quarantine(harness, _entry(NODE))
+    record = verify_record.record(harness, "HEAD")
+    assert f"FAILED {NODE}@timing-0" in _log(harness, record["run_id"])
+    again = _log(harness, record["retry"]["run_id"])
+    assert len(again.encode()) < LOG_LIMIT and re.search(r"\b1 passed\b", again)
+    assert f"tests/test_padding.py: {count}" in again
+    found, why = verify_record.lookup(harness, "HEAD")
+    assert found is not None, why
+    assert land.record_kind(found) == "retry-passed"
+
+
 def test_an_original_run_that_executed_fewer_tests_than_collected_fails_the_retry():
-    collect = "tests/test_a.py::test_x\ntests/test_a.py::test_y\n3 tests collected in 0.01s\n"
+    collect = (
+        "tests/test_a.py::test_x\ntests/test_a.py::test_y\n2 tests collected in 0.01s\n"
+        "tests/test_a.py: 2\ntests/test_b.py: 1\n\ntests/timing_groups.py:78\n"
+        "========== test session starts ==========\ntests/test_c.py: 9\n"
+    )
     assert verify_retry.incomplete("1 failed, 2 passed in 1.0s\n", collect) == ""
     assert "executed 2 of 3" in verify_retry.incomplete("1 failed, 1 passed in 1.0s\n", collect)
     assert "cannot be read" in verify_retry.incomplete("no summary", collect)
+    # a log cut off before the per-file counts proves nothing
+    cut = collect[: collect.index("tests/test_a.py: 2")]
+    assert "cannot be read" in verify_retry.incomplete("1 failed, 2 passed in 1.0s\n", cut)
+    assert "cannot be read" in verify_retry.incomplete("1 failed, 2 passed in 1.0s\n", collect[:40])
     for marker in ("[gw0] node down: Not properly terminated", "worker 'gw1' crashed while running x"):
         assert "did not execute every test" in verify_retry.failed_nodes(marker + "\n1 failed in 1s\n")[1]
+
+
+def test_failed_ids_must_match_exactly_one_test_the_failed_files_collect():
+    """The id listing covers only the failed files, so every id a failure line could name is in it."""
+    from agent_cli.repos import VerificationCommand, VerificationConfig
+
+    node = "tests/test_a.py::test_x[a]"
+    ids = f"{node}\ntests/test_a.py::test_x[a] - b]\n2 tests collected in 0.01s\n"
+    grouped = f"FAILED {node}@timing-0 - AssertionError\n1 failed, 1 passed in 1s\n"
+    assert verify_retry.ambiguous(grouped, ids, [node]) == ""
+    assert "not the retried ones" in verify_retry.ambiguous(grouped, ids, ["tests/test_a.py::test_x[b]"])
+    both = "FAILED tests/test_a.py::test_x[a] - b] - boom\n1 failed in 1s\n"
+    assert "names 2 collected tests" in verify_retry.ambiguous(both, ids, [node])
+    assert "cannot be read" in verify_retry.ambiguous(grouped, ids[:30], [node])
+    configured = VerificationConfig((VerificationCommand("uv run pytest tests -x", 60),), 60)
+    config = verify_retry.retry_config(configured, 0, [node, "tests/test_a.py::test_y"])
+    assert [c.command for c in config.commands] == [
+        "uv run pytest --collect-only -q -o addopts= -p no:xdist tests/test_a.py",
+        "uv run pytest tests -x --collect-only -qq -o addopts= -p no:xdist",
+        f"uv run pytest -o addopts= -p no:xdist -p no:rerunfailures '{node}' tests/test_a.py::test_y",
+    ]
