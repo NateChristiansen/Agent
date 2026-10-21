@@ -16,6 +16,14 @@ from agent_cli.peer_net.channel import Clock
 from agent_cli.peer_net.errors import PeerNetError
 from peer_net_route_fixture import paired  # noqa: F401 -- the fixture
 
+# Timed from when the guard hold starts. A connect that spent a fresh deadline on each step waits
+# for the guard (released at least the hold after that) and then a whole deadline on the held
+# write lock, so it ends at least their sum later, however late the test thread starts it. One
+# shared deadline ends near the deadline after connect starts; the guard hold is its headroom on
+# every platform, for that start delay and any overrun together.
+CONNECT_DEADLINE_S = 1.0
+GUARD_HOLD_S = 0.5
+
 
 def _send(root, **kw):
     return sender.send(
@@ -32,26 +40,28 @@ def test_store_connect_spends_one_deadline_across_guard_and_setup(paired):
     raw.execute("DROP TABLE outbox")  # connect must recreate it, which needs the write lock
     raw.execute("BEGIN IMMEDIATE")  # another writer holds that lock throughout
     held, release = threading.Event(), threading.Event()
+    hold_started: list[float] = []
 
     def hold_guard() -> None:
         with area_guard(devices.a, "peer-net:store-init"):
+            hold_started.append(time.monotonic())
             held.set()
-            release.wait(0.25)
+            release.wait(GUARD_HOLD_S)
 
     holder = threading.Thread(target=hold_guard)
     holder.start()
-    held.wait(5)
-    started = time.monotonic()
+    assert held.wait(5)
+    started = hold_started[0]
     try:
         with pytest.raises(PeerNetError) as caught:
-            store.connect(devices.a, timeout=0.4)
+            store.connect(devices.a, timeout=CONNECT_DEADLINE_S)
         elapsed = time.monotonic() - started
     finally:
         release.set()
         holder.join(5)
         raw.execute("ROLLBACK")
         raw.close()
-    assert caught.value.code == "timeout" and elapsed < 0.6
+    assert caught.value.code == "timeout" and elapsed < CONNECT_DEADLINE_S + GUARD_HOLD_S
 
 
 @pytest.mark.parametrize(
