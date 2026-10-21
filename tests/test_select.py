@@ -154,7 +154,7 @@ def test_ordinary_dispatch_and_notes_changes_are_scoped():
         ("pyproject.toml", "tests/test_doctor.py"),
         ("uv.lock", "tests/test_doctor.py"),
         ("bin/agent", "tests/test_dispatch_launch_flags.py"),
-        (".github/workflows/ci.yml", "tests/test_ci_windows.py"),
+        (".github/workflows/ci.yml", "tests/test_ci_workflow.py"),
         ("src/agent_cli/hooks/guards.py", "tests/test_permissions.py"),
         (".claude/settings.json", "tests/test_permissions.py"),
         ("src/agent_cli/dispatch/verification_process.py", "tests/test_dispatch_verify_lane.py"),

@@ -1829,7 +1829,7 @@ def test_check_command(text: str, why: str | None):
         ("`.venv/bin/python -I -m agent_cli --nope`", "unrecognized arguments: --nope"),
         ("`python.exe -I -m agent_cli`", None),  # incomplete, and otherwise right
         ("`python -m agent_cli status check`", None),
-        ("`python -m agent_cli.ci_pytest --output x`", None),  # another module, not the CLI
+        ("`python -m agent_cli.launcher --output x`", None),  # another module, not the CLI
         ('`"python.exe" -m agent_cli status check`', CANNOT_VERIFY),
         ("`python -magent_cli status check`", CANNOT_VERIFY),
         ('`python -m "agent_cli" status check`', CANNOT_VERIFY),

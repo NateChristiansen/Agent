@@ -97,9 +97,8 @@ tests = [
 [[broad]]
 reason = "launcher"
 paths = [
-  "bin/**", "setup.sh", "setup.ps1", "setup.cmd", ".github/**", "src/agent_cli/ci_launchers.py",
-  "src/agent_cli/ci_pytest.py", "src/agent_cli/launch_flags.py", "src/agent_cli/launcher.py",
-  "src/agent_cli/__main__.py",
+  "bin/**", "setup.sh", "setup.ps1", "setup.cmd", ".github/**", "src/agent_cli/launch_flags.py",
+  "src/agent_cli/launcher.py", "src/agent_cli/__main__.py",
 ]
 tests = [
   "tests/test_ci_*.py", "tests/test_dispatch_launch_flags.py", "tests/test_launcher.py", "tests/test_setup*.py",

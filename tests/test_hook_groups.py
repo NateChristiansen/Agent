@@ -468,15 +468,6 @@ def test_one_process_per_tool_call(client: str, tools: list[str]):
             assert len(commands) <= 1, (event, tool, commands)
 
 
-@pytest.mark.parametrize("client", ["claude", "codex"])
-def test_the_launcher_probe_times_the_shell_group_each_client_runs(client: str):
-    from agent_cli import ci_launchers
-
-    group = GROUPS[ci_launchers.BASH_GROUP[client]]
-    assert (group.client, group.event, group.matcher) == (client, "PreToolUse", "Bash")
-    assert group.members[0 if client == "codex" else 1].name == "no-chaining"
-
-
 class _Stdin:
     def __init__(self, text: str) -> None:
         self.text = text

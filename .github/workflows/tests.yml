@@ -3,8 +3,7 @@ name: tests
 on:
   push:
   pull_request:
-  # A manual run starts every job, and it is the only run that also includes the two
-  # report-only Windows jobs, which never run on a push or pull request (see below).
+  # A manual run (`gh workflow run tests --ref <branch>`) runs the same jobs as a push.
   workflow_dispatch:
 
 jobs:
@@ -26,15 +25,13 @@ jobs:
       # examples.
       - run: cp agent.example.yaml agent.yaml
       - run: cp .mcp.example.json .mcp.json
-      # What the runner actually gives us: the pytest parallelism below is a function of it.
-      - run: nproc
-      # `-n 4` is pyproject's default and was calibrated on 18 cores, where it is a quarter of
-      # the machine. A hosted runner is a fraction of that, and these tests spawn processes of
-      # their own: one verification costs three extra interpreters (guardian, command,
-      # watchdog), each ~0.6s of import before it does any work. Four workers doing that on a
-      # hosted runner blow the wall-clock budgets the dispatch tests assume, and the suite
-      # comes back with dozens of `blocked` where it wanted `done`. Raising those budgets
-      # would remove the hang the tests exist to catch, so the parallelism gives way instead.
+      # `-n 8` is pyproject's default and was calibrated on 18 cores. A hosted runner is a
+      # fraction of that, and these tests spawn processes of their own: one verification
+      # costs three extra interpreters (guardian, command, watchdog), each ~0.6s of import
+      # before it does any work. Four or more workers doing that on a hosted runner blow the
+      # wall-clock budgets the dispatch tests assume, and the suite comes back with dozens of
+      # `blocked` where it wanted `done`. Raising those budgets would remove the hang the
+      # tests exist to catch, so the parallelism gives way instead.
       - run: uv run pytest -n 2
 
   # A fresh Windows clone, set up the way the README says, with nothing configured by hand
@@ -93,10 +90,10 @@ jobs:
       - run: bin\agent.cmd doctor
       # the terminal plugin's private Python imports its packages
       - run: .agent\terminal-python\Scripts\python.exe -c "import psutil, pywinctl, typing_extensions"
-      # the tests that exercise the Windows link paths
-      - run: uv run pytest -n 0 tests/test_skill_links.py tests/test_notes.py tests/test_obsidian.py tests/test_cli_encoding.py tests/test_hook_commands.py tests/test_installs.py tests/test_config_file.py tests/test_forge_per_repo.py
-      # Gating native safety regressions, separate from the temporary full-suite inventory.
-      - run: uv run pytest -n 0 tests/test_winproc.py tests/test_win_tree.py tests/test_win_procs.py tests/test_win_driver.py tests/test_win_transport.py tests/test_guard_paths_windows.py tests/test_win_lock.py tests/test_hook_entry.py tests/test_ci_windows.py tests/test_gitgate.py tests/test_codex_identity.py tests/test_codex_executable.py tests/test_lease_clear.py tests/test_plugin_lease_clear.py tests/test_telemetry_sink.py
+      # The gating section of tests/windows.txt, every path above its [pending] line.
+      # tests/test_ci_workflow.py checks that this expands to exactly that section.
+      - shell: bash
+        run: uv run pytest -n 0 $(sed '/^\[pending\]$/,$d' tests/windows.txt | grep -v -e '^#' -e '^$')
 
   # A fresh macOS clone through ./setup.sh, under the bash macOS ships (3.2). Linux CI
   # runs bash 5, where `args[@]` on an empty array is fine but fails as an unbound variable
@@ -118,7 +115,9 @@ jobs:
           node-version: "22"
       # setup's gate needs a claude binary on PATH; no account is needed for that
       - run: npm install -g @anthropic-ai/claude-code
-      - run: /bin/bash --version
+      - run: |
+          /bin/bash --version
+          /bin/bash -c 'test "${BASH_VERSINFO[0]}" -eq 3'
       # --check writes nothing and needs a synced project, so sync first.
       - run: uv sync
       - run: /bin/bash ./setup.sh --check
@@ -144,73 +143,8 @@ jobs:
       - run: test -d ../Agent-notes/.git
       # every skill link resolves, every private path is linked, 0 FAIL
       - run: bin/agent doctor
-      - run: uv run pytest -n 0 tests/test_setup_sh.py tests/test_gitgate.py tests/test_skill_links.py tests/test_notes.py
-
-  # The two report-only jobs run only when started by hand (`gh workflow run tests --ref
-  # <branch>`). Together they were
-  # about two thirds of a run's billed minutes (Windows minutes count double), and neither
-  # gates anything.
-  windows-discovery:
-    name: Windows full suite (report only)
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    timeout-minutes: 60
-    continue-on-error: true
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.14"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: npm install -g @anthropic-ai/claude-code
-      - run: uv sync
-      - run: Copy-Item agent.example.yaml agent.yaml
-      - run: Copy-Item .mcp.example.json .mcp.json
-      # Child deadline leaves time for inventory construction and artifact upload.
-      # No failure is converted to success; only this job is explicitly non-gating.
-      - run: uv run python -m agent_cli.ci_pytest --output ci-results --timeout 2400
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: windows-full-suite-inventory
-          path: ci-results/
-          if-no-files-found: error
-
-  windows-launchers:
-    name: Windows launcher measurements (report only)
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    timeout-minutes: 60
-    continue-on-error: true
-    defaults:
-      run:
-        shell: pwsh
-        working-directory: harness with spaces
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: harness with spaces
-          submodules: true
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.14"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: uv sync
-      # powershell.exe is Windows PowerShell 5.1.
-      # These command probes cannot establish client hook delivery or two-manager load.
-      - run: uv run python -m agent_cli.ci_launchers --output .agent/scratch/launcher-results --samples 30 --budget 2400
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: windows-launcher-matrix
-          path: harness with spaces/.agent/scratch/launcher-results/
-          if-no-files-found: error
+      # The full suite on macOS, with the same example configuration as the pytest job,
+      # which overwrites anything setup wrote. `-n 2` for the same reason as there.
+      - run: cp agent.example.yaml agent.yaml
+      - run: cp .mcp.example.json .mcp.json
+      - run: uv run pytest -n 2
