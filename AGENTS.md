@@ -65,6 +65,7 @@ Every incoming task goes through this loop, in order:
    that drive decisions and record how. Use `/adr` only for decisions changing a contract or rule others rely on.
    Accepted ADRs change only by one "Superseded by" line; no rewording passes. Private notes are
    the default; public `adrs/` omit private links. Product ADRs go through `/dispatch`.
+   For blockers, record why, next actor and resume condition in the plan and log.
 7. **Tick before you report.** Verify the outcome, then `task_done` before reporting completion.
    Re-check the owner's reported symptom and say what you observed. Passing tests alone does
    not establish that the symptom stopped. If you cannot observe it, ask the owner to check.
