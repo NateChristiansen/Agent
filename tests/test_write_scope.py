@@ -190,6 +190,36 @@ def test_a_committed_then_reverted_change_still_breaks_read_only(tmp_path: Path)
     assert "2 commit(s)" in str(write_scope.broken_read_only(d))
 
 
+def test_read_only_boundary_requires_resume_evidence_and_survives_auto_retry(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = ["git", "-C", str(repo)]
+    subprocess.run([*run, "init", "-q", "-b", "worker"], check=True)
+    subprocess.run([*run, "commit", "--allow-empty", "-qm", "base"], check=True)
+    base = subprocess.run(
+        [*run, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (repo / "outside.txt").write_text("implementation", encoding="utf-8")
+    subprocess.run([*run, "add", "outside.txt"], check=True)
+    subprocess.run([*run, "commit", "-qm", "implementation"], check=True)
+    d: dict[str, Any] = {"writes": [], "worktree": str(repo), "branch": "worker", "base": base, "attempt": 2}
+    assert "1 commit(s)" in str(write_scope.broken_scope(d))
+    d["writes_history"] = [{"attempt": 2, "from": None, "to": []}]
+    assert "1 commit(s)" in str(write_scope.broken_scope(d))
+    write_scope.prepare_read_only_resume(d, 2, previous={**d, "writes": None})
+    assert write_scope.broken_scope(d) is None
+    d["attempt"] = 3
+    assert "1 commit(s)" in str(write_scope.broken_scope(d))
+    d["auto_resumes"] = [{"attempt": 2, "reason": "timeout"}]
+    assert write_scope.broken_scope(d) is None
+    subprocess.run([*run, "commit", "--allow-empty", "-qm", "new write"], check=True)
+    assert "1 commit(s)" in str(write_scope.broken_scope(d))
+    d["writes"] = ["allowed"]
+    assert "outside.txt" in str(write_scope.broken_scope(d))
+    d["writes"] = None
+    assert write_scope.broken_scope(d) is None
+
+
 @pytest.mark.parametrize("stage", ["committed", "staged", "unstaged"])
 def test_declared_scope_checks_both_rename_paths_and_deleted_files(tmp_path: Path, stage: str) -> None:
     repo = tmp_path / "repo"

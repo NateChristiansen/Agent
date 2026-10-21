@@ -2,7 +2,7 @@
 
 Absent `writes` means unknown scope and blocks all other writers in that repo. `writes: []` is a
 read-only review: it holds no paths and may probe its own checkout only if it restores every change
-and leaves no commits. A nonempty list holds those paths. `no_checks` changes verification, never
+and leaves no new commits. A nonempty list holds those paths. `no_checks` changes verification, never
 scope. Resume may narrow, never widen; record each narrowing with its attempt.
 
 Active records and in-progress resume reservations hold claims under `.agent/dispatch-board/` in
@@ -110,18 +110,67 @@ def narrow(d: dict[str, Any], writes: list[str], attempt: int) -> None:
     d["writes"] = new
 
 
+def prepare_read_only_resume(d: dict[str, Any], attempt: int, *, previous: dict[str, Any]) -> None:
+    """Record an observed clean checkout before a read-only resume is queued."""
+    if d.get("writes") != []:
+        return
+    wt = Path(d["worktree"])
+    if repos_mod.run_git(["status", "--porcelain", "--untracked-files=all"], wt).strip():
+        raise AgentError("not resumed: read-only work requires a clean checkout, including untracked files")
+    branch = repos_mod.run_git(["symbolic-ref", "--short", "HEAD"], wt).strip()
+    if branch != d["branch"]:
+        raise AgentError("not resumed: cannot establish a read-only boundary on another branch")
+    head = repos_mod.run_git(["rev-parse", "--verify", "HEAD^{commit}"], wt).strip()
+    if previous.get("writes") is not None:
+        since = str(previous.get("start_sha") or previous["base"])
+        repos_mod.run_git(["rev-parse", "--verify", f"{since}^{{commit}}"], wt)
+        if broken := broken_scope(previous):
+            raise AgentError(f"not resumed: previous write scope is still violated: {broken}")
+    if not head or repos_mod.run_git(["status", "--porcelain", "--untracked-files=all"], wt).strip():
+        raise AgentError("not resumed: cannot establish a clean read-only boundary")
+    entries = dict_list(d.get("writes_history"))
+    if not entries or entries[-1].get("attempt") != attempt:
+        entries.append({"attempt": attempt, "from": [], "to": [], "at": iso(now())})
+    entries[-1]["read_only_start_sha"] = head
+    d["writes_history"] = entries
+
+
 def broken_read_only(d: dict[str, Any]) -> str | None:
     """Why a read-only review broke its scope (what it left changed), or None."""
     if d.get("writes") != []:
         return None
     worktree = Path(str(d.get("worktree") or ""))
-    if not worktree.exists():
-        return None
     since = str(d.get("start_sha") or d["base"])
+    entries = dict_list(d.get("writes_history"))
+    boundary = entries[-1] if entries else {}
+    attempt = as_int(boundary.get("attempt"))
+    current = as_int(d.get("attempt"))
+    retries = {as_int(row.get("attempt")) for row in dict_list(d.get("auto_resumes"))}
+    observed = (
+        boundary.get("to") == []
+        and bool(boundary.get("read_only_start_sha"))
+        and 0 < attempt <= current
+        and all(a in retries for a in range(attempt, current))
+    )
+    if not worktree.exists():
+        return "read-only boundary checkout is missing" if observed else None
+    head, status = None, None
+    if observed:
+        since = str(boundary["read_only_start_sha"])
+        try:
+            repos_mod.run_git(["rev-parse", "--verify", f"{since}^{{commit}}"], worktree)
+            head = repos_mod.run_git(["rev-parse", "--verify", "HEAD^{commit}"], worktree).strip()
+            status = repos_mod.run_git(["status", "--porcelain", "--untracked-files=all"], worktree).strip()
+        except AgentError:
+            return "read-only boundary could not be verified"
     commits = git_commits(worktree, since)
     changed = git_files(worktree, since)
     if commits:  # a change committed then reverted is still a durable write (net diff empty)
         changed = [*changed, f"{len(commits)} commit(s) since the review started"]
+    if head is not None and head != since and not commits:
+        changed.append("HEAD changed since the read-only resume")
+    if status and not changed:
+        changed.append("checkout is dirty")
     if not changed:
         return None
     shown = ", ".join(changed[:10]) + (f" and {len(changed) - 10} more" if len(changed) > 10 else "")

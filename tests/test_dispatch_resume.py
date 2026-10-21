@@ -7,6 +7,7 @@ question or a budget hit with the owner's own answer.
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -26,6 +27,195 @@ from dispatch_helpers import (  # noqa: F401 -- droot is a pytest fixture, used 
 )
 
 # ------------------------------------------------------------------ failure modes and auto-resume
+
+
+def test_read_only_resume_keeps_implementation_history(droot: Path, fake_claude):
+    fake_claude.scenario(
+        [
+            one(envelope(cost=0.1), commit="T-42 implementation"),
+            one(envelope(cost=0.1)),
+            one(envelope(cost=0.1)),
+        ]
+    )
+    first = _new_fast(droot, writes=["worker.txt"])
+    wt = Path(first["worktree"])
+    run = ["git", "-C", str(wt)]
+    subprocess.run([*run, "commit", "--allow-empty", "-qm", "second implementation commit"], check=True)
+    head = subprocess.run(
+        [*run, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    legacy = {**first, "writes": []}
+    assert dispatch.evaluate(droot, legacy)["state"] == "failed"
+    resumed = dispatch.resume(droot, dispatch_id=first["id"], answer="Diagnose only", writes=[], watch=True)
+    assert resumed["state"] == "done", resumed.get("error")
+    assert resumed["start_sha"] == first["start_sha"]
+    assert resumed["base"] == first["base"]
+    assert len(resumed["git"]["commits"]) == 2
+    boundary = resumed["writes_history"][-1]
+    assert boundary["attempt"] == 2 and boundary["read_only_start_sha"] == head
+    missing = {
+        **resumed,
+        "writes_history": [{k: v for k, v in boundary.items() if k != "read_only_start_sha"}],
+    }
+    assert dispatch.evaluate(droot, missing)["state"] == "failed"
+    invalid = {**resumed, "writes_history": [{**boundary, "read_only_start_sha": "0" * 40}]}
+    assert "could not be verified" in dispatch.evaluate(droot, invalid)["error"]
+    absent = {**resumed, "worktree": str(wt / "missing-checkout")}
+    assert "checkout is missing" in dispatch.evaluate(droot, absent)["error"]
+    again = dispatch.resume(droot, dispatch_id=first["id"], answer="Diagnose again", watch=True)
+    assert again["state"] == "done", again.get("error")
+    assert [row["attempt"] for row in again["writes_history"]] == [2, 3]
+    assert again["writes_history"][-1]["read_only_start_sha"] == head
+
+
+@pytest.mark.parametrize("prior_scope", [[], ["other.txt"]])
+def test_read_only_resume_never_blesses_a_failed_initial_scope(droot: Path, fake_claude, prior_scope):
+    fake_claude.scenario([one(envelope(cost=0.1), commit="T-42 forbidden"), one(envelope(cost=0.1))])
+    first = _new_fast(droot, writes=prior_scope)
+    assert first["state"] == "failed"
+    assert dispatch.evaluate(droot, first)["state"] == "failed"
+    with pytest.raises(AgentError, match="previous write scope"):
+        dispatch.resume(
+            droot,
+            dispatch_id=first["id"],
+            answer="Diagnose only",
+            writes=[] if prior_scope else None,
+            watch=True,
+        )
+    saved = dispatch.load(droot, first["id"])
+    assert saved["attempt"] == 1 and saved["writes"] == prior_scope
+    assert not saved.get("writes_history")
+    assert len(fake_claude.calls()) == 1
+    assert dispatch.evaluate(droot, saved)["state"] == "failed"
+
+
+def test_read_only_resume_never_blesses_a_failed_intermediate_scope(droot: Path, fake_claude):
+    fake_claude.scenario(
+        [
+            one(envelope(cost=0.1), commit="T-42 implementation"),
+            one(envelope(cost=0.1), commit="T-42 forbidden"),
+            one(envelope(cost=0.1)),
+        ]
+    )
+    first = _new_fast(droot, writes=["worker.txt"])
+    second = dispatch.resume(droot, dispatch_id=first["id"], answer="Diagnose only", writes=[], watch=True)
+    assert second["state"] == "failed"
+    assert "1 commit(s)" in second["error"]
+    history = second["writes_history"]
+    with pytest.raises(AgentError, match="previous write scope"):
+        dispatch.resume(droot, dispatch_id=first["id"], answer="Diagnose again", watch=True)
+    saved = dispatch.load(droot, first["id"])
+    assert saved["attempt"] == 2 and saved["writes_history"] == history
+    assert len(fake_claude.calls()) == 2
+    assert dispatch.evaluate(droot, saved)["state"] == "failed"
+
+
+@pytest.mark.parametrize("prior_scope", [None, ["worker.txt"]])
+def test_read_only_resume_accepts_valid_scope_despite_an_unrelated_failure(
+    droot: Path, fake_claude, prior_scope
+):
+    fake_claude.scenario(
+        [one(envelope(nonce="wrong", cost=0.1), commit="T-42 implementation"), one(envelope(cost=0.1))]
+    )
+    first = _new_fast(droot, writes=prior_scope)
+    assert first["state"] == "failed" and "nonce mismatch" in first["error"]
+    resumed = dispatch.resume(droot, dispatch_id=first["id"], answer="Diagnose only", writes=[], watch=True)
+    assert resumed["state"] == "done", resumed.get("error")
+    assert resumed["start_sha"] == first["start_sha"] and resumed["base"] == first["base"]
+    assert len(resumed["git"]["commits"]) == 1
+
+
+def test_read_only_resume_rechecks_scope_after_a_valid_return(droot: Path, fake_claude):
+    fake_claude.scenario([one(envelope(cost=0.1), commit="T-42 implementation")])
+    first = _new_fast(droot, writes=["worker.txt"])
+    assert first["state"] == "done"
+    wt = Path(first["worktree"])
+    (wt / "outside.txt").write_text("late change", encoding="utf-8")
+    subprocess.run(["git", "-C", str(wt), "add", "outside.txt"], check=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-qm", "outside scope"], check=True)
+    with pytest.raises(AgentError, match="previous write scope.*outside.txt"):
+        dispatch.resume(droot, dispatch_id=first["id"], answer="Diagnose only", writes=[], watch=True)
+    assert dispatch.load(droot, first["id"])["attempt"] == 1
+    assert len(fake_claude.calls()) == 1
+
+
+def _mutate_checkout(wt: Path, mutation: str) -> None:
+    run = ["git", "-C", str(wt)]
+    target = wt / "worker.txt"
+    if mutation == "deleted":
+        target.unlink()
+    elif mutation == "renamed":
+        target.rename(wt / "renamed.txt")
+    elif mutation == "untracked":
+        (wt / "untracked.txt").write_text("new", encoding="utf-8")
+    elif mutation == "rewound":
+        subprocess.run([*run, "reset", "--hard", "HEAD~1"], check=True, capture_output=True)
+    else:
+        target.write_text("changed", encoding="utf-8")
+    if mutation in ("staged", "committed", "reverted"):
+        subprocess.run([*run, "add", "-A"], check=True)
+    if mutation in ("committed", "reverted"):
+        subprocess.run([*run, "commit", "-qm", "new change"], check=True)
+    if mutation == "reverted":
+        subprocess.run([*run, "revert", "--no-edit", "HEAD"], check=True, capture_output=True)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["committed", "reverted", "unstaged", "staged", "untracked", "deleted", "renamed", "rewound"]
+)
+def test_read_only_resume_rejects_new_changes(droot: Path, fake_claude, monkeypatch, mutation):
+    from agent_cli.dispatch import supervisor
+
+    fake_claude.scenario([one(envelope(cost=0.1), commit="T-42 implementation"), one(envelope(cost=0.1))])
+    first = _new_fast(droot, writes=["worker.txt"])
+    factory = supervisor.transport_factory
+    assert factory is not None
+
+    def mutate_before_worker(options):
+        queued = dispatch.load(droot, first["id"])
+        assert queued["attempt"] == 2
+        assert queued["writes_history"][-1]["read_only_start_sha"]
+        _mutate_checkout(Path(first["worktree"]), mutation)
+        return factory(options)
+
+    monkeypatch.setattr(supervisor, "transport_factory", mutate_before_worker)
+    resumed = dispatch.resume(droot, dispatch_id=first["id"], answer="Diagnose only", writes=[], watch=True)
+    assert resumed["state"] == "failed", resumed.get("error")
+    assert "declared no durable writes" in resumed["error"]
+    assert resumed["attempt"] == 2 and resumed["auto_resumes"] == []
+    assert len(fake_claude.calls()) == 2
+
+
+@pytest.mark.parametrize("mutation", ["unstaged", "staged", "untracked", "deleted", "renamed"])
+def test_read_only_resume_requires_a_clean_start(droot: Path, fake_claude, mutation):
+    fake_claude.scenario([one(envelope(cost=0.1), commit="T-42 implementation")])
+    first = _new_fast(droot, writes=["worker.txt"])
+    _mutate_checkout(Path(first["worktree"]), mutation)
+    with pytest.raises(AgentError, match="clean checkout"):
+        dispatch.resume(droot, dispatch_id=first["id"], answer="Diagnose only", writes=[], watch=True)
+    saved = dispatch.load(droot, first["id"])
+    assert saved["attempt"] == 1 and saved["writes"] == ["worker.txt"]
+    assert not saved.get("writes_history")
+    assert len(fake_claude.calls()) == 1
+
+
+def test_read_only_resume_refuses_an_unobserved_start(droot: Path, fake_claude, monkeypatch):
+    from agent_cli import repos
+
+    fake_claude.scenario([one(envelope(cost=0.1), commit="T-42 implementation")])
+    first = _new_fast(droot)
+    run_git = repos.run_git
+
+    def unavailable(args, cwd):
+        if args == ["status", "--porcelain", "--untracked-files=all"]:
+            raise AgentError("checkout observation failed")
+        return run_git(args, cwd)
+
+    monkeypatch.setattr(repos, "run_git", unavailable)
+    with pytest.raises(AgentError, match="checkout observation failed"):
+        dispatch.resume(droot, dispatch_id=first["id"], answer="Diagnose only", writes=[], watch=True)
+    assert dispatch.load(droot, first["id"])["attempt"] == 1
+    assert len(fake_claude.calls()) == 1
 
 
 def test_nonce_mismatch_is_failed(droot: Path, fake_claude):

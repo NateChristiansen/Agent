@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
 
@@ -486,6 +487,7 @@ def _prepare_resume(
             d["timeout_source"] = "passed"
         answer_findings = answer_preflight(root, d, rp, answer)
         check_preflight(answer_findings, allow_unmatched=allow_unmatched)
+        previous_scope = deepcopy(d)
         undo = write_scope.check_resume(root, d, narrow_to=writes)  # `writes` may only narrow
         try:
             taken = holdings.resume(root, d, note=f"dispatch {dispatch_id} (resume)")
@@ -515,6 +517,7 @@ def _prepare_resume(
                 f"dispatch {dispatch_id} produced no observable Claude session but changed its "
                 "worktree; inspect the branch before starting a fresh worker"
             )
+        write_scope.prepare_read_only_resume(d, int(d["attempt"]) + 1, previous=previous_scope)
         notice_producers.record_answer(d, answer_by, answer.strip("\n"))  # carries an open question
         d["attempt"] += 1
         d["max_attempts"] = d["attempt"] + 1
