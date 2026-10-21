@@ -584,14 +584,14 @@ def build(root: Path) -> dict[str, Any]:
         "needs_you": owed["needs_you"],
         "manager_action": owed["manager_action"],
         "tabs": tab_entries(root, pairs, dispatches, live_dispatches, owed),
-        "health": _health(root),
+        "health": _health(root, owed),
     }
 
 
-def _health(root: Path) -> dict[str, Any]:
+def _health(root: Path, owed: dict[str, Any]) -> dict[str, Any]:
     from ..telemetry.dashboard import live_health
 
-    return live_health(root)
+    return live_health(root, stamp={"observed_at": owed["observed_at"], "valid_until": owed["valid_until"]})
 
 
 def _stable(value: Any) -> Any:

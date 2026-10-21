@@ -12,7 +12,7 @@ from agent_cli import cli, core, telemetry
 from agent_cli.mcp.specs_harness import harness
 from agent_cli.mcp.tools import Ctx
 from agent_cli.telemetry import schema
-from agent_cli.telemetry.dashboard import capture, live_health
+from agent_cli.telemetry.dashboard import capture, lesson_row, live_health, machine_rows, peer_link
 from agent_cli.telemetry.summary import machine_days, queries, summary, summary_rel
 from agent_cli.usage import job, publish
 from usage_helpers import sample_record
@@ -248,45 +248,299 @@ def test_missing_sink_is_incomplete_and_unused_kinds_are_refused(tmp_root: Path)
         assert not schema.known_kind(kind)
 
 
-def test_fresh_partial_spend_is_warn_and_remote_age_is_retained(tmp_root: Path):
-    (tmp_root / "agent.local.yaml").write_text("machine: mac\n", encoding="utf-8")
-    value = {
-        "machine": "windows",
+def _facts(**changes: dict) -> dict:
+    """A healthy machine's captured facts, with `changes` merged into the named signals."""
+    at = core.iso(core.now() - timedelta(minutes=2))
+    facts = {
+        "notes_sync": {
+            "mode": "on",
+            "attempt_at": at,
+            "attempt_status": "current",
+            "last_ok_at": at,
+            "error_current": False,
+        },
+        "peer_link": {"enrolled": False},
+        "hook_errors": {"count": 0, "last": None},
+        "vault_display": {"tab_paint_failures": 0, "render_failures": 0, "heartbeat_at": at},
+        "coverage": {"events": True, "plugin_metrics": True, "pane_metrics": True, "losses": {}},
+    }
+    for key, value in changes.items():
+        facts[key] = {**facts[key], **value}
+    return facts
+
+
+def _record(machine: str, facts: dict, *, age: timedelta = timedelta(0)) -> dict:
+    return {
+        "schema": 2,
+        "machine": machine,
         "date": core.today().isoformat(),
-        "updated": core.iso(core.now()),
+        "updated": core.iso(core.now() - age),
         "complete": False,
+        "health": facts,
+    }
+
+
+def _at(stamp: str) -> datetime:
+    return datetime.fromisoformat(stamp)
+
+
+def _hhmm() -> str:
+    return core.now().astimezone().strftime("%H:%M")
+
+
+def _rows(record: dict) -> dict[str, dict]:
+    return {row["signal"]: row for row in machine_rows(record, core.now())}
+
+
+def test_a_healthy_machine_is_ok_and_its_rows_expire_from_the_observation(tmp_root: Path):
+    record = _record("mac", _facts(), age=timedelta(minutes=3))
+    rows = _rows(record)
+    assert {k: r["state"] for k, r in rows.items()} == {
+        "notes_sync": "ok",
+        "hook_errors": "ok",
+        "vault_display": "ok",
+        "machine": "unknown",
+    }
+    assert "peer_link" not in rows, "an install that never enrolled has no pairing row"
+    expected = core.now() + timedelta(minutes=12)
+    assert {_at(r["valid_until"]) for k, r in rows.items() if k != "machine"} == {expected}
+    assert all(r["expired"] is None for k, r in rows.items() if k != "machine")
+    assert _at(rows["machine"]["show_after"]) == expected
+    assert rows["machine"]["note"] == "last report had no problems"
+    assert rows["notes_sync"]["ages"][0]["prefix"] == " · last sync "
+    assert all(r["meaning"] for r in rows.values())
+    assert all(r["action"] is None for r in rows.values() if r["state"] == "ok")
+
+
+def test_this_machines_rows_expire_one_by_one_without_a_machine_line(tmp_root: Path):
+    rows = {r["signal"]: r for r in machine_rows(_record("mac", _facts()), core.now(), local=True)}
+    assert "machine" not in rows
+    hooks = rows["hook_errors"]["expired"]
+    assert hooks["state"] == "unknown" and hooks["headline"] == "last report: no errors today"
+    assert hooks["ages"][-1]["prefix"] == " · observed "
+    missing = machine_rows({"machine": "mac"}, core.now(), local=True)
+    assert [(r["signal"], r["headline"]) for r in missing] == [("machine", "no report today")]
+
+
+def test_a_recovered_sync_error_is_history_and_offline_never_asks_the_owner(tmp_root: Path):
+    error = {"last_error_at": core.iso(core.now()), "last_error": "fetch failed: no route"}
+    recovered = _rows(_record("mac", _facts(notes_sync={**error, "last_error_status": "conflict"})))
+    assert recovered["notes_sync"]["state"] == "ok"
+    assert "fetch failed" not in str(recovered["notes_sync"])
+    offline = _rows(
+        _record("mac", _facts(notes_sync={**error, "last_error_status": "offline", "error_current": True}))
+    )["notes_sync"]
+    assert offline["state"] == "unknown"
+    assert offline["headline"].startswith("offline since ") and "retries by itself" in offline["headline"]
+    assert offline["action"].startswith("Nothing")
+    conflict = _rows(
+        _record("mac", _facts(notes_sync={**error, "last_error_status": "conflict", "error_current": True}))
+    )["notes_sync"]
+    assert conflict["state"] == "action"
+    assert conflict["headline"] == f"conflict since {_hhmm()}"
+    assert conflict["note"] == "fetch failed: no route"
+    assert "resolve" in conflict["action"]
+    nothing = _rows(_record("mac", _facts(notes_sync={"attempt_at": None})))["notes_sync"]
+    assert nothing["state"] == "unknown" and nothing["headline"] == "no sync recorded"
+    assert "notes_sync" not in _rows(_record("mac", _facts(notes_sync={"mode": "off"})))
+
+
+def test_an_old_accepted_send_is_delivery_history_not_reachability(tmp_root: Path):
+    old = core.iso(core.now() - timedelta(hours=3))
+    accepted = _rows(
+        _record(
+            "mac",
+            _facts(
+                peer_link={"enrolled": True, "readable": True, "state": "accepted", "at": old, "alias": "win"}
+            ),
+        )
+    )["peer_link"]
+    assert accepted["state"] == "ok"
+    assert accepted["headline"] == "last message to win accepted"
+    assert accepted["ages"] == [{"prefix": " ", "at": old, "suffix": " ago"}]
+    assert "reachable" not in accepted["headline"]
+    assert "does not show that the other machine is reachable" in accepted["meaning"]
+
+    def pending(minutes: int) -> dict:
+        at = core.iso(core.now() - timedelta(minutes=minutes))
+        fact = {"enrolled": True, "readable": True, "state": "pending", "at": at, "alias": "win"}
+        return _rows(_record("mac", _facts(peer_link=fact)))["peer_link"]
+
+    assert pending(2)["state"] == "ok"
+    assert pending(11)["state"] == "action"
+    assert pending(11)["headline"] == "message to win not delivered"
+    refused = {"enrolled": True, "readable": True, "state": "refused:auth", "at": old}
+    assert _rows(_record("mac", _facts(peer_link=refused)))["peer_link"]["state"] == "action"
+    unreadable = _rows(_record("mac", _facts(peer_link={"enrolled": True, "readable": False})))
+    assert unreadable["peer_link"]["state"] == "unknown"
+
+
+def test_incomplete_telemetry_qualifies_the_counts_it_feeds(tmp_root: Path):
+    lossy = _rows(_record("mac", _facts(coverage={"losses": {"malformed": 2, "gaps": 0}})))
+    for key in ("hook_errors", "vault_display"):
+        assert lossy[key]["state"] == "unknown"
+        assert "telemetry incomplete (2 malformed)" in lossy[key]["headline"]
+        assert lossy[key]["action"]
+    assert lossy["notes_sync"]["state"] == "ok"
+    unread = _rows(_record("mac", _facts(coverage={"plugin_metrics": False})))
+    assert unread["hook_errors"]["state"] == "ok"
+    assert unread["vault_display"]["headline"].endswith("(tab metrics missing or unreadable)")
+    counted = _rows(
+        _record(
+            "mac",
+            _facts(
+                hook_errors={
+                    "count": 3,
+                    "last": {"hook": "activity", "reason": "OSError", "at": core.iso(core.now())},
+                },
+                coverage={"events": False},
+            ),
+        )
+    )
+    assert counted["hook_errors"]["state"] == "action"
+    assert counted["hook_errors"]["headline"] == f"3 errors today · last: activity (OSError), {_hhmm()}"
+    display = _rows(_record("mac", _facts(vault_display={"tab_paint_failures": 1, "render_failures": 2})))
+    assert display["vault_display"]["headline"] == "1 tab paint failure · 2 render failures today"
+    silent = _rows(_record("mac", _facts(vault_display={"heartbeat_at": None})))["vault_display"]
+    assert silent["state"] == "unknown"
+
+
+def test_an_open_usage_day_alone_does_not_make_telemetry_incomplete(tmp_root: Path, monkeypatch):
+    from agent_cli import config_file, notes_sync
+
+    monkeypatch.setattr(notes_sync, "last_outcomes", lambda root: {})
+    monkeypatch.setattr(config_file, "notes_sync_mode", lambda root: "on")
+    moment = core.now()
+    _emit(
+        tmp_root, "hook.error", moment - timedelta(minutes=5), data={"hook": "activity", "reason": "OSError"}
+    )
+    _emit(tmp_root, "hook.error", moment - timedelta(minutes=1), data={"hook": "usage", "reason": "KeyError"})
+    result = capture(
+        tmp_root, moment.astimezone().date(), {"machine": "mac", "status": "partial"}, now=moment
+    )
+    assert result["complete"] is False, "the record still says the usage day is open"
+    coverage = result["health"]["coverage"]
+    assert coverage["events"] is True and not any(coverage["losses"].values())
+    assert coverage["plugin_metrics"] is True, "no metrics file yet is nothing lost"
+    assert result["health"]["hook_errors"]["count"] == 2
+    assert result["health"]["hook_errors"]["last"]["hook"] == "usage"
+    assert result["health"]["hook_errors"]["last"]["reason"] == "KeyError"
+    assert "verify_queue" not in result["health"] and "spend_today" not in result["health"]
+    rows = _rows(result)
+    assert rows["hook_errors"]["headline"].startswith("2 errors today · last: usage (KeyError), ")
+
+
+def test_a_silent_machine_is_one_line_and_keeps_its_problems_as_history(tmp_root: Path):
+    (tmp_root / "agent.local.yaml").write_text("machine: mac\n", encoding="utf-8")
+    facts = _facts(hook_errors={"count": 1, "last": {"hook": "activity", "at": core.iso(core.now())}})
+    _write(tmp_root / summary_rel(core.today(), "windows"), _record("windows", facts, age=timedelta(hours=3)))
+    _write(
+        core.agent_path(tmp_root, "usage", "telemetry", f"{core.today()}.mac.json"), _record("mac", _facts())
+    )
+    rows = {r["key"]: r for r in live_health(tmp_root)["rows"]}
+    windows = rows["machine:windows"]
+    assert windows["state"] == "unknown" and windows["title"] == "windows"
+    assert windows["headline"] == "no report" and windows["ages"][0]["at"] == windows["updated"]
+    assert windows["note"] == "last report had 1 problem"
+    hooks = rows["hook_errors:windows"]
+    assert _at(hooks["valid_until"]) < core.now()
+    assert hooks["expired"]["state"] == "unknown"
+    assert hooks["expired"]["headline"].startswith("last report: 1 error today")
+    assert rows["notes_sync:windows"]["expired"] is None, "a healthy row folds into the machine line"
+    assert _at(rows["notes_sync:mac"]["valid_until"]) > core.now()
+    assert "lessons:" in rows
+    assert not any(k.startswith(("verify_queue", "spend_today", "telemetry")) for k in rows)
+
+
+def test_a_machine_with_no_record_today_is_unknown(tmp_root: Path):
+    (tmp_root / "agent.local.yaml").write_text("machine: mac\n", encoding="utf-8")
+    checkpoint = tmp_root / "usage/machines/windows.md"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("", encoding="utf-8")
+    rows = {r["key"]: r for r in live_health(tmp_root)["rows"]}
+    assert rows["machine:windows"]["headline"] == "no report today"
+    assert rows["machine:windows"]["show_after"] is None
+    assert rows["machine:mac"]["headline"] == "no report today"
+
+
+def test_a_record_from_an_older_harness_keeps_its_own_status(tmp_root: Path):
+    record = {
+        "machine": "windows",
+        "updated": core.iso(core.now()),
         "health": {
-            "spend_today": {
-                "status": "ok",
-                "complete": False,
-                "updated": core.iso(core.now()),
-                "detail": "$2.00",
-            }
+            "notes_sync": {"status": "fail", "detail": "push failed"},
+            "render_failures": {"status": "ok", "detail": "0"},
+            "spend_today": {"status": "warn", "detail": "$2.00"},
         },
     }
-    _write(tmp_root / summary_rel(core.today(), "windows"), value)
-    health = live_health(tmp_root)
-    row = next(r for r in health["spend_today"] if r["machine"] == "windows")
-    assert row["status"] == "warn" and row["complete"] is False
-    assert row["updated"] == value["updated"]
+    rows = _rows(record)
+    assert rows["notes_sync"]["state"] == "action" and rows["notes_sync"]["headline"] == "push failed"
+    assert rows["vault_display"]["state"] == "ok"
+    assert set(rows) == {"notes_sync", "vault_display", "machine"}
+    record["health"]["tab_paint_failures"] = {"status": "ok", "detail": "0"}
+    record["health"]["render_failures"] = {"status": "fail", "detail": "2"}
+    merged = _rows(record)["vault_display"]
+    assert merged["state"] == "action", "a healthy tab paint must not hide the render failures"
+    assert merged["headline"] == "0 · 2"
 
 
-def test_missing_notes_sync_evidence_is_unknown_and_real_failure_stays(tmp_root: Path):
-    day = core.today()
-    for machine, detail in (("windows", "no sync recorded"), ("mac", "push failed")):
-        _write(
-            tmp_root / summary_rel(day, machine),
-            {
-                "machine": machine,
-                "date": day.isoformat(),
-                "updated": core.iso(core.now()),
-                "complete": True,
-                "health": {"notes_sync": {"status": "fail", "detail": detail}},
-            },
-        )
-    rows = {row["machine"]: row for row in live_health(tmp_root)["notes_sync"]}
-    assert rows["windows"]["status"] == "unknown"
-    assert rows["mac"]["status"] == "fail"
+def test_vault_display_is_only_as_fresh_as_the_plugin_heartbeat(tmp_root: Path):
+    old = core.iso(core.now() - timedelta(hours=3))
+    stale = _rows(_record("mac", _facts(vault_display={"heartbeat_at": old})))["vault_display"]
+    assert stale["state"] == "unknown"
+    assert stale["headline"] == "the Agent Terminal plugin has not reported since"
+    assert stale["ages"] == [{"prefix": " ", "at": old, "suffix": " ago"}]
+    minutes = core.iso(core.now() - timedelta(minutes=10))
+    aging = _rows(_record("mac", _facts(vault_display={"heartbeat_at": minutes})))
+    assert aging["vault_display"]["state"] == "ok"
+    assert aging["vault_display"]["updated"] == minutes
+    assert _at(aging["vault_display"]["valid_until"]) == core.now() + timedelta(minutes=5)
+    assert aging["vault_display"]["expired"]["state"] == "unknown", "it expires alone, never silently"
+    assert _at(aging["hook_errors"]["valid_until"]) == core.now() + timedelta(minutes=15)
+
+
+def test_a_silent_machine_keeps_its_unknown_reasons_and_next_steps(tmp_root: Path):
+    lossy = _facts(coverage={"events": False})
+    rows = _rows(_record("windows", lossy, age=timedelta(hours=3)))
+    for key in ("hook_errors", "vault_display"):
+        expired = rows[key]["expired"]
+        assert expired["state"] == "unknown"
+        assert expired["headline"] == f"last report: {rows[key]['headline']}"
+        assert "event log missing or unreadable" in expired["headline"]
+        assert expired["action"].endswith(rows[key]["action"])
+    assert rows["notes_sync"]["expired"] is None
+    assert rows["machine"]["note"] == "last report had 2 problems"
+
+
+@pytest.mark.parametrize(
+    ("count", "state", "headline"),
+    [
+        (0, "ok", "lessons: 0 open"),
+        (9, "ok", "lessons: 9 open"),
+        (10, "action", "lessons: 10 open — review needed"),
+    ],
+)
+def test_the_lesson_row_counts_the_local_queue(tmp_root: Path, count: int, state: str, headline: str):
+    from agent_cli import lessons
+
+    for n in range(count):
+        lessons.add(tmp_root, title=f"finding {n}", source="none", evidence="ordinary evidence", home="")
+    row = lesson_row(tmp_root, {"observed_at": "a", "valid_until": "b"})
+    assert (row["state"], row["headline"], row["count"], row["machine"]) == (state, headline, count, None)
+    assert row["brief"] == headline
+    assert row["observed_at"] == "a" and row["valid_until"] == "b" and row["updated"] is None
+    assert (row["action"] is not None) is (state == "action")
+
+
+def test_an_unreadable_lesson_queue_is_unknown_not_empty(tmp_root: Path):
+    from agent_cli import lessons
+
+    assert lesson_row(tmp_root, {})["headline"] == "lessons: 0 open", "a missing queue is empty"
+    (tmp_root / lessons.QUEUE).mkdir(parents=True)
+    row = lesson_row(tmp_root, {})
+    assert row["state"] == "unknown" and row["count"] is None
+    assert row["headline"] == "lessons: unknown — queue unreadable"
+    assert row["action"]
 
 
 def test_every_stop_collects_locally_but_publication_is_on_cadence(tmp_root: Path, monkeypatch):
@@ -322,7 +576,36 @@ def test_day_capture_never_calls_network(tmp_root: Path, monkeypatch):
     monkeypatch.setattr("agent_cli.notes_sync.sync", lambda *a: pytest.fail("health must not sync"))
     result = capture(tmp_root, date(2026, 9, 3), sample_record())
     assert result["complete"] is False
-    assert result["health"]["peer_link"]["status"] == "unknown"
+    assert result["health"]["peer_link"] == {"enrolled": False}
+
+
+def test_peer_link_reads_enrollment_and_the_newest_send(tmp_root: Path):
+    import sqlite3
+
+    path = core.agent_path(tmp_root, "peer-net", "state.db")
+    path.parent.mkdir(parents=True)
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE enrollment (k TEXT, v TEXT)")
+    conn.execute("CREATE TABLE outbox (state TEXT, updated_at REAL, alias TEXT)")
+    conn.commit()
+    assert peer_link(tmp_root) == {"enrolled": False}
+    conn.execute("INSERT INTO enrollment VALUES ('device', 'mac')")
+    conn.commit()
+    assert peer_link(tmp_root) == {"enrolled": True, "readable": True, "state": None}
+    conn.executemany(
+        "INSERT INTO outbox VALUES (?, ?, ?)", [("accepted", 100.0, "win"), ("pending", 200.0, "win")]
+    )
+    conn.commit()
+    conn.close()
+    assert peer_link(tmp_root) == {
+        "enrolled": True,
+        "readable": True,
+        "state": "pending",
+        "at": datetime.fromtimestamp(200.0, UTC).isoformat(),
+        "alias": "win",
+    }
+    path.write_bytes(b"not a database")
+    assert peer_link(tmp_root) == {"enrolled": True, "readable": False}
 
 
 def test_session_end_requests_a_flush_on_the_existing_hook(tmp_root: Path, monkeypatch):
@@ -389,25 +672,6 @@ def test_duplicate_and_malformed_lines_do_not_inflate_counts(tmp_root: Path):
     result = queries(tmp_root, START, END, END)
     assert result["owner_questions"]["raised"] == 1
     assert result["complete"] is False
-
-
-def test_health_counts_a_live_verify_wait_and_missing_spend(tmp_root: Path, monkeypatch):
-    monkeypatch.setattr(core, "is_alive", lambda pid: pid == 4242)
-    _write(
-        core.agent_path(tmp_root, "dispatches", "001-mac-01.json"),
-        {
-            "state": "running",
-            "attempt": 1,
-            "slot_released": {"attempt": 1},
-            "worker_cleanup_confirmed": True,
-            "supervisor_pid": 4242,
-        },
-    )
-    result = capture(tmp_root, START.date(), {"machine": "mac"})
-    assert result["health"]["verify_queue"]["count"] == 1
-    assert result["health"]["verify_queue"]["status"] == "warn"
-    assert result["health"]["spend_today"]["status"] == "unknown"
-    assert result["health"]["spend_today"]["detail"] == "unavailable"
 
 
 def test_final_flush_child_has_no_owner_reap_tag(tmp_root: Path, monkeypatch):

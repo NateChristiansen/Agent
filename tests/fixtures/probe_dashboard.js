@@ -47,7 +47,11 @@ const snap = { rendered_at: new Date(now).toISOString(), valid_until: new Date(n
   managers: [ {session_id:'b', feature:'002 two', name:'second', state:'working', since:new Date(now).toISOString(), leases:['vault:x'], clear_leases:true}, {session_id:'a', feature:'001 one', name:'first', state:'approval', attention:'approval', show_after:new Date(now + 20000).toISOString(), since:new Date(now).toISOString()} ],
   needs_you: [{kind:'manager',session_id:'a',name:'first',reason:'approval',show_after:new Date(now + 20000).toISOString()}, {kind:'orphaned',feature:3,count:1,ids:['003-01'],resume:{command:'claude --resume ordinary'}}],
   workers: Array.from({length:47}, (_,i) => ({id:`004-${String(i).padStart(2,'0')}`, feature:4, state:'running', started:new Date(now - 1000).toISOString(), goal:'ordinary work', handoff:`features/004/handoffs/${i}.md`, open:'obsidian://agent-dispatch-open?id=ordinary'})),
-  health: {spend_today:[{machine:'mac',status:'ok',complete:false,updated:new Date(now).toISOString(),detail:'$2.00'}]}
+  health: {schema:2, rows:[
+    {key:'hook_errors:mac', title:'Hooks · mac', brief:'Hooks · mac', state:'ok', headline:'no errors today', ages:[], order:[2,2,'mac'], updated:new Date(now).toISOString(), valid_until:new Date(now + 100000).toISOString(), expired:null},
+    {key:'notes_sync:mac', title:'Notes sync · mac', brief:'Notes sync · mac', state:'action', headline:'conflict since 04:58', ages:[{prefix:' · last sync ', at:new Date(now - 60000).toISOString(), suffix:' ago'}], meaning:'ordinary meaning', action:'ordinary action', order:[0,0,'mac'], updated:new Date(now).toISOString(), valid_until:new Date(now + 100000).toISOString(), expired:{state:'unknown', headline:'last report: conflict since 04:58', action:'refresh'}},
+    {key:'machine:mac', title:'mac', brief:'mac', state:'unknown', headline:'no report', ages:[{prefix:' for ', at:new Date(now).toISOString(), suffix:''}], order:[1,5,'mac'], show_after:new Date(now + 100000).toISOString(), valid_until:null, expired:null},
+  ]}
 };
 const status = {features:[
   {id:1,dir:'features/001-one',slug:'one',title:'One',status:'active',open_tasks:2,open_task_items:[{index:2,text:'ordinary task'},{index:10,text:'later task'}]},
@@ -58,7 +62,10 @@ const app = {workspace:{openLinkText: (...args) => opened.push(args)}};
 const root = new El('root');
 const pane = new Plugin.LivePane(root, app);
 pane.update(snap, now, '', status);
-assert.deepEqual(root.children.filter((el)=>el.tagName==='h2').map((el)=>el.textContent), ['Needs you','Managers','Workers','Open features (2)','Open tasks (2)']);
+assert.deepEqual(root.children.filter((el)=>el.tagName==='h2').map((el)=>el.textContent), ['Needs you','Managers','Workers','Open features (2)','Open tasks (2)','Health: 1 needs action']);
+assert.deepEqual([...pane.groups.get('health').rows.keys()], ['notes_sync:mac']);
+assert.equal(pane.healthSummary.textContent, '1 ok: Hooks · mac');
+const healthRow = pane.groups.get('health').rows.get('notes_sync:mac').el;
 assert.deepEqual(pane.groups.get('tasks').body.children.map((el)=>el.attrs['data-key']), ['sec:1','1:2','1:10']);
 assert.equal(pane.healthDetails.tagName, 'details');
 assert(!pane.healthDetails.attrs.open);
@@ -91,8 +98,13 @@ assert(pane.groups.get('needs_you').rows.has('manager:a'));
 assert.equal(pane.groups.get('managers').rows.get('a').cells[1].el.children[0].textContent, 'approval');
 pane.update(snap, now + 100001);
 assert.equal(pane.groups.get('workers').rows.get('004-00').cells[1].el.children[0].textContent, 'unknown');
-const spend = pane.groups.get('health').rows.get('spend_today:mac').cells[1].el.children[0].textContent;
-assert(spend.startsWith('warn · partial'));
+// Past valid_until the problem stays as unknown history, the healthy row folds into the
+// machine's "no report" row, and the history row keeps its node.
+assert.strictEqual(pane.groups.get('health').rows.get('notes_sync:mac').el, healthRow);
+assert.equal(healthRow.children[1].children[0].textContent, 'unknown · last report: conflict since 04:58');
+assert.deepEqual(pane.groups.get('health').body.children.map((el)=>el.attrs['data-key']), ['notes_sync:mac','machine:mac']);
+assert.equal(pane.healthDetails.style.display, 'none');
+assert.equal(root.children.find((el)=>el.textContent.startsWith('Health:')).textContent, 'Health: 2 unknown');
 const handoff = pane.groups.get('workers').rows.get('004-00').cells[0].el.children[0];
 handoff.events.click({preventDefault(){},metaKey:false,ctrlKey:true});
 assert.equal(opened[0][0], 'features/004/handoffs/0.md');
@@ -242,12 +254,16 @@ const statusChangeRebuilds = creations + removals;
 const other = {needs_you:[{kind:'orphaned',feature:20},{kind:'orphaned',feature:2}],
   managers:[{session_id:'z',feature:20},{session_id:'b',feature:2},{session_id:'a',feature:2}],
   workers:[{id:'w20',feature:20},{id:'w10',feature:2},{id:'w2',feature:2}],
-  health:{spend_today:[{machine:'z'},{machine:'a'}]}};
+  health:{rows:[{key:'notes_sync:z',state:'ok'},{key:'notes_sync:a',state:'ok'},{key:'hooks:a',state:'odd'}]}};
 grouped.update(other,now,'',mixed);
 assert.deepEqual(keys('needs_you'), ['orphaned:2','orphaned:20']);
 assert.deepEqual(keys('managers'), ['a','b','z']);
 assert.deepEqual(keys('workers'), ['w2','w10','w20']);
-assert.deepEqual(keys('health'), ['hook_errors:','notes_sync:','peer_link:','render_failures:','spend_today:a','spend_today:z','tab_paint_failures:','telemetry:','verify_queue:']);
+assert.deepEqual(keys('health'), ['hooks:a']);
+assert.deepEqual(keys('health_ok'), ['notes_sync:a','notes_sync:z']);
+grouped.update({managers:[]},now,'',mixed);
+assert.deepEqual(keys('health'), ['health:']);
+assert.deepEqual(keys('health_ok'), []);
 grouped.update({},now,'',{features:[feature(1,'closed')]});
 assert.deepEqual(keys('features'), []);
 assert.deepEqual(keys('tasks'), []);

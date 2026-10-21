@@ -162,6 +162,25 @@ def test_the_nudge_fires_at_ten_open(tmp_root: Path):
     assert line in lesson_nag(tmp_root)
 
 
+def test_add_and_resolve_rewrite_the_dashboard_count(tmp_root: Path, run):
+    """The Dashboard reads the queue when the snapshot is built, so a change writes it at once
+    instead of waiting for the next hook."""
+    import json
+
+    from agent_cli.vault import live
+
+    def count() -> int:
+        rows = json.loads(live.path(tmp_root).read_text(encoding="utf-8"))["health"]["rows"]
+        return next(r for r in rows if r["signal"] == "lessons")["count"]
+
+    r = run(["--json", "lesson", "add", "a finding", "--evidence", EVIDENCE])
+    assert r.code == 0, r
+    assert count() == 1
+    r = run(["--json", "lesson", "resolve", r.json["id"], "--disposition", "dropped", "--note", "covered"])
+    assert r.code == 0, r
+    assert count() == 0
+
+
 def test_cli_round_trip(tmp_root: Path, run):
     r = run(["--json", "lesson", "add", "a finding", "--scope", "harness", "--evidence", EVIDENCE])
     assert r.code == 0, r

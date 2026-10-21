@@ -691,9 +691,12 @@ class LivePane {
     this.makeGroup('workers', 'Workers', ['Worker', 'State', 'Now', 'Goal']);
     this.makeGroup('features', 'Open features', ['Feature', 'Open tasks', 'Note']);
     this.makeGroup('tasks', 'Open tasks', ['Task']);
+    // Rows that need action or are unknown stay open; healthy ones collapse into one line.
+    this.healthHeading = root.createEl('h2', { text: 'Health' });
+    this.makeGroup('health', '', ['Signal', 'Status']);
     this.healthDetails = root.createEl('details');
     this.healthSummary = this.healthDetails.createEl('summary');
-    this.makeGroup('health', '', ['Signal', 'Status'], this.healthDetails);
+    this.makeGroup('health_ok', '', ['Signal', 'Status'], this.healthDetails);
   }
 
   makeGroup(key, title, headers, parent = this.root) {
@@ -705,7 +708,7 @@ class LivePane {
     headers.forEach((text) => head.createEl('th', { text }));
     const body = table.createEl('tbody');
     const empty = parent.createEl('p');
-    this.groups.set(key, { body, empty, heading, columns: headers.length, rows: new Map() });
+    this.groups.set(key, { table, body, empty, heading, columns: headers.length, rows: new Map() });
   }
 
   patchCell(cell, parts) {
@@ -861,22 +864,27 @@ class LivePane {
       const text = `${title} (${count})`;
       if (heading.textContent !== text) heading.setText(text);
     }
-    const health = snap.health || {};
-    const counts = {ok: 0, warn: 0, fail: 0, unknown: 0};
-    this.patchGroup('health', HEALTH_KEYS.flatMap((key) => {
-      const items = Array.isArray(health[key]) && health[key].length ? health[key] : [health[key] && !Array.isArray(health[key]) ? health[key] : {}];
-      return items.map((item) => {
-        const old = !!item.valid_until && livePast(item.valid_until, nowMs);
-        const status = old ? 'unknown' : item.complete === false && item.status === 'ok' ? 'warn' : item.status || 'unknown';
-        counts[status in counts ? status : 'unknown']++;
-        const parts = [textPart(`${status} · ${item.complete === false ? 'partial · ' : ''}${item.detail || ''} · `), agePart(item.updated)];
-        if (key === 'notes_sync' && item.last_ok_at) parts.push(agePart(item.last_ok_at, ' · last sync '));
-        return { key: `${key}:${item.machine || ''}`, cells: [[textPart(`${key.replaceAll('_', ' ')}${item.machine ? ` · ${item.machine}` : ''}`)], parts] };
-      });
-    }), 'Health unknown.');
-    const summary = counts.warn || counts.fail || counts.unknown
-      ? `Health: ${counts.warn} warn, ${counts.fail} fail${counts.unknown ? `, ${counts.unknown} unknown` : ''}`
-      : 'Health: all ok';
+    const health = liveHealthRows(snap.health, nowMs);
+    const healthCells = (r) => {
+      const status = [textPart(`${HEALTH_BADGE[r.state]} · ${r.headline || ''}`), ...(r.ages || []).map((a) => agePart(a.at, a.prefix, a.suffix))];
+      if (r.note) status.push(textPart(` · ${r.note}`));
+      if (r.meaning) status.push(mutedPart(r.meaning));
+      if (r.action && r.state !== 'ok') status.push(mutedPart(`→ ${r.action}`));
+      return { key: r.key, order: r.order, cells: [[{ ...textPart(r.title), bold: r.state === 'action' }], status] };
+    };
+    const open = health.filter((r) => r.state !== 'ok');
+    const ok = health.filter((r) => r.state === 'ok');
+    this.patchGroup('health', open.map(healthCells), '');
+    this.patchGroup('health_ok', ok.map(healthCells), '');
+    this.groups.get('health').table.style.display = open.length ? '' : 'none';
+    this.healthDetails.style.display = ok.length ? '' : 'none';
+    const need = open.filter((r) => r.state === 'action').length;
+    const unknown = open.length - need;
+    const heading = open.length
+      ? `Health: ${[need && `${need} need${need === 1 ? 's' : ''} action`, unknown && `${unknown} unknown`].filter(Boolean).join(', ')}`
+      : 'Health: all clear';
+    if (this.healthHeading.textContent !== heading) this.healthHeading.setText(heading);
+    const summary = `${ok.length} ok: ${ok.map((r) => r.brief || r.title).join(', ')}`;
     if (this.healthSummary.textContent !== summary) this.healthSummary.setText(summary);
     for (const age of this.ages) {
       const text = `${age.prefix}${liveAge(age.at, nowMs)}${age.suffix}`;
@@ -887,7 +895,20 @@ class LivePane {
   tick(nowMs = Date.now()) { if (this.snapshot) this.update(this.snapshot, nowMs, this.error, this.statusSnapshot, this.statusError); }
 }
 const WORKER_LIVE_ASK = { done: 'finished — review, then push or ack', question: 'has a question', blocked: 'is blocked', failed: 'failed' };
-const HEALTH_KEYS = ['notes_sync', 'peer_link', 'verify_queue', 'spend_today', 'hook_errors', 'tab_paint_failures', 'render_failures', 'telemetry'];
+const HEALTH_BADGE = { ok: 'ok', action: 'needs action', unknown: 'unknown' };
+
+// Python decides each row and its expired form; this applies only the clock. A row past
+// valid_until takes its expired form or, with none, folds into its machine's "no report" row,
+// which waits for show_after. A missing health block is unknown, never healthy.
+function liveHealthRows(health, nowMs) {
+  if (!health || !Array.isArray(health.rows)) {
+    return [{ key: 'health:', title: 'Health', state: 'unknown', headline: 'not reported in this snapshot', order: [1] }];
+  }
+  return health.rows.filter((r) => !liveDeferred(r, nowMs)).flatMap((r) => {
+    const row = livePast(r.valid_until, nowMs) ? r.expired && { ...r, ...r.expired } : r;
+    return row ? [{ ...row, state: row.state in HEALTH_BADGE ? row.state : 'unknown' }] : [];
+  });
+}
 
 class AgentLiveBlock extends (MarkdownRenderChild || class {}) {
   constructor(el, plugin) { super(el); this.el = el; this.plugin = plugin; }

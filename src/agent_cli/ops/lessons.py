@@ -6,6 +6,13 @@ from .. import lesson_upstream, lessons
 from ._shared import Op
 
 
+def _refresh(root: Path) -> None:
+    """The Dashboard's lesson count reads the queue when the snapshot is built."""
+    from ..vault import live
+
+    live.write_quietly(root)
+
+
 def lesson_add(
     root: Path,
     *,
@@ -19,6 +26,7 @@ def lesson_add(
     entry = lessons.add(
         root, title=title, scope=scope, kind=kind, source=source, evidence=evidence, home=home
     )
+    _refresh(root)
     return Op(entry.as_dict(), f"queued {entry.id}: {entry.title}")
 
 
@@ -33,6 +41,7 @@ def lesson_list(root: Path, *, scope: str | None = None) -> Op:
 
 def lesson_resolve(root: Path, *, entry_id: str, disposition: str, note: str) -> Op:
     entry = lessons.resolve(root, entry_id=entry_id, disposition=disposition, note=note)
+    _refresh(root)
     return Op(entry.as_dict(), f"resolved {entry.id}: {entry.fields['disposition']}")
 
 

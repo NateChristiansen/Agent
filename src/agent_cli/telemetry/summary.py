@@ -196,10 +196,11 @@ def hand_episodes(
 def queries(root: Path, start: datetime, end: datetime, now: datetime) -> dict[str, Any]:
     sink = Sink.for_main(main_of(root))
     stop = min(end, now + timedelta(microseconds=1))
-    rows, complete = event_rows(sink, start, stop)
+    rows, events_complete = event_rows(sink, start, stop)
     kinds = Counter(str(r["kind"]) for r in rows)
     losses = read_health(sink, start, stop - timedelta(microseconds=1))["counts"]
-    complete = complete and not any(losses.values())
+    complete = events_complete and not any(losses.values())
+    hook_errors = [r for r in rows if r["kind"] == "hook.error"]
     transitions = Counter(
         str(r.get("provider") or "unknown")
         for r in rows
@@ -209,7 +210,7 @@ def queries(root: Path, start: datetime, end: datetime, now: datetime) -> dict[s
     # The two painters have different records. Count successful label writes, not requests.
     drain, drain_complete = metric_rows(core.agent_path(root, "tabs", "metrics.jsonl"), start, stop)
     plugin, plugin_complete = metric_rows(core.agent_path(root, "tabs", "plugin-metrics.jsonl"), start, stop)
-    pane, _ = metric_rows(core.agent_path(root, "tabs", "pane-metrics.jsonl"), start, stop)
+    pane, pane_complete = metric_rows(core.agent_path(root, "tabs", "pane-metrics.jsonl"), start, stop)
     complete = complete and drain_complete and plugin_complete
     paints: Counter[str] = Counter()
     for row in [*drain, *plugin]:
@@ -303,6 +304,22 @@ def queries(root: Path, start: datetime, end: datetime, now: datetime) -> dict[s
         "health": {
             "losses": losses,
             "hook_errors": kinds["hook.error"],
+            "last_hook_error": {
+                "hook": as_dict(hook_errors[-1]["data"]).get("hook"),
+                "reason": as_dict(hook_errors[-1]["data"]).get("reason"),
+                "at": hook_errors[-1]["ts"],
+            }
+            if hook_errors
+            else None,
+            # A metrics file that does not exist yet has nothing to lose; only an unreadable or
+            # malformed one leaves the counts in doubt.
+            "coverage": {
+                "events": events_complete,
+                "plugin_metrics": plugin_complete
+                or not core.agent_path(root, "tabs", "plugin-metrics.jsonl").exists(),
+                "pane_metrics": pane_complete
+                or not core.agent_path(root, "tabs", "pane-metrics.jsonl").exists(),
+            },
             "render_failures": kinds["status.render"] + sum(as_int(r.get("failed")) for r in pane),
             "tab_paint_failures": sum(as_int(r.get("failed")) for r in plugin),
             "notes_sync": dict(
