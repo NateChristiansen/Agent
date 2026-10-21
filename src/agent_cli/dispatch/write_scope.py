@@ -131,6 +131,33 @@ def broken_read_only(d: dict[str, Any]) -> str | None:
     )
 
 
+def broken_scope(d: dict[str, Any]) -> str | None:
+    writes = canonical_writes(d.get("writes"))
+    if writes is None:
+        return None
+    if not writes:
+        return broken_read_only(d)
+    if not d.get("worktree") or not (worktree := Path(d["worktree"])).exists():
+        return None
+    since = str(d.get("start_sha") or d["base"])
+    changed: set[str] = set()
+    # Disable rename detection so both the removed and added paths are checked. NUL delimiters
+    # preserve spaces, newlines and names that Git would otherwise quote.
+    for args in (
+        ["diff", "--no-renames", "--name-only", "-z", since, "HEAD", "--"],
+        ["diff", "--no-renames", "--name-only", "-z", "--cached", "HEAD", "--"],
+        ["diff", "--no-renames", "--name-only", "-z", "--"],
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        changed.update(p for p in repos_mod.run_git(args, worktree).split("\0") if p)
+    outside = sorted(p for p in changed if not covered(p, writes))
+    if not outside:
+        return None
+    return "write scope verification failed; paths outside declared writes: " + ", ".join(
+        repr(p) for p in outside
+    )
+
+
 # ------------------------------------------------------------------ the path board
 
 

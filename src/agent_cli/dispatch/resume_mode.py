@@ -7,9 +7,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..records.narrow import as_dict, dict_list
+
+
+def flood_retried(d: dict[str, Any]) -> bool:
+    return any(row.get("reason") == "degenerate_output" for row in dict_list(d.get("auto_resumes")))
+
 
 def resumes(d: dict[str, Any]) -> bool:
     if int(d["attempt"]) <= 1:
+        return False
+    if (
+        d.get("provider") == "codex"
+        and as_dict(d.get("last_result")).get("terminal_reason") == "degenerate_output"
+    ):
         return False
     previous_session = d.get("session_established")
     if previous_session is None:

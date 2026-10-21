@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import json
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,9 +13,11 @@ from typing import Any
 
 import pytest
 
-from agent_cli import prices
+from agent_cli import dispatch, prices
 from agent_cli.dispatch import codex_flood, codex_transport, state
 from dispatch_helpers import _new_fast, droot  # noqa: F401
+
+evaluate_mod = importlib.import_module("agent_cli.dispatch.evaluate")
 
 
 def test_whitespace_run_spans_deltas_and_resets_on_text() -> None:
@@ -52,12 +57,15 @@ def test_ordinary_text_is_not_degenerate() -> None:
 class FloodRPC:
     """Streams small whitespace deltas forever and never completes the item or the turn."""
 
-    def __init__(self, tool_output: bool = False):
+    def __init__(self, tool_output: bool = False, answer: bool = False):
         self.process: Any = None
         self.events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.calls: list[str] = []
         self.tool_output = tool_output
         self.stop = asyncio.Event()
+        self.answer = answer
+        self.prompt = ""
+        self.cwd = ""
 
     def stderr_tail(self) -> str:
         return ""
@@ -67,6 +75,8 @@ class FloodRPC:
         if method == "thread/start":
             return {"thread": {"id": "flood-thread"}}
         if method == "turn/start":
+            self.prompt = params["input"][0]["text"]
+            self.cwd = params["cwd"]
             asyncio.create_task(self.play())
             return {"turn": {"id": "turn-1"}}
         if method == "turn/interrupt":
@@ -74,6 +84,42 @@ class FloodRPC:
         return {}
 
     async def play(self) -> None:
+        await self.events.put(
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "tokenUsage": {
+                        "last": {"inputTokens": 10, "outputTokens": 10},
+                        "total": {"totalTokens": 20},
+                    }
+                },
+            }
+        )
+        if self.answer:
+            nonce = re.search(r"nonce: (\S+)", self.prompt)
+            assert nonce is not None
+            ret = {
+                "nonce": nonce[1],
+                "status": "done",
+                "summary": "answered after restart",
+                "open_questions": [],
+                "next_steps": [],
+                "notes": "",
+            }
+            await self.events.put(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "id": "answer",
+                            "text": json.dumps(ret),
+                        }
+                    },
+                }
+            )
+            await self.events.put({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
+            return
         if self.tool_output:  # a large tool result is not agent-message text
             for _ in range(50):
                 await self.events.put(
@@ -84,22 +130,25 @@ class FloodRPC:
             await asyncio.sleep(0)
 
 
-def _codex(monkeypatch: pytest.MonkeyPatch, rpc: FloodRPC) -> None:
+def _codex(monkeypatch: pytest.MonkeyPatch, rpcs: list[FloodRPC]) -> None:
+    attempts = iter(rpcs)
+
     @asynccontextmanager
     async def server(*_args: Any, **_kwargs: Any):
-        yield rpc, {}
+        yield next(attempts), {}
 
     monkeypatch.setattr(codex_transport, "isolated_server", server)
     monkeypatch.setattr(prices, "price_usage", lambda *_args: 0.0)
 
 
 @pytest.mark.parametrize("tool_output", [False, True])
-def test_a_flood_with_no_completed_item_is_interrupted_and_never_resumed(
+def test_two_floods_are_interrupted_and_only_restarted_once(
     droot: Path, monkeypatch: pytest.MonkeyPatch, tool_output: bool
 ) -> None:
     monkeypatch.setattr(codex_flood, "WHITESPACE_RUN_LIMIT", 20_000)
     rpc = FloodRPC(tool_output=tool_output)
-    _codex(monkeypatch, rpc)
+    second = FloodRPC()
+    _codex(monkeypatch, [rpc, second])
     started = time.monotonic()
     result = _new_fast(droot, provider="codex", model="gpt-6-sol", timeout_minutes=2)
     assert time.monotonic() - started < 60, "stopped by the flood bound, not the timeout"
@@ -107,8 +156,59 @@ def test_a_flood_with_no_completed_item_is_interrupted_and_never_resumed(
     assert result["state"] == "blocked"
     assert "degenerate output" in str(result.get("error"))
     record = state.load(droot, result["id"])
-    assert not record.get("auto_resumes")
+    assert record["attempt"] == 2
+    assert [row["reason"] for row in record["auto_resumes"]] == ["degenerate_output"]
+    assert "thread/start" in second.calls and "thread/resume" not in second.calls
     assert record["last_result"]["terminal_reason"] == "degenerate_output"
     assert record["result"]["next_steps"] == ["launch the task fresh, or use the other provider"]
     err = state.file(droot, result["id"], ".err").read_text(encoding="utf-8")
-    assert "degenerate_output" in err and len(err) < 3 * codex_flood.SAMPLE_BYTES + 1000
+    assert "degenerate_output" in err and len(err) < 6 * codex_flood.SAMPLE_BYTES + 2000
+
+
+def test_flood_then_answer_restarts_with_full_order_in_same_checkout(
+    droot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = FloodRPC(), FloodRPC(answer=True)
+    _codex(monkeypatch, [first, second])
+    monkeypatch.setattr(prices, "price_usage", lambda *_args: 0.2)
+    result = _new_fast(droot, provider="codex", model="gpt-6-sol", budget=1)
+    assert result["state"] == "done" and result["attempt"] == 2
+    assert "thread/start" in second.calls and "thread/resume" not in second.calls
+    assert first.cwd == second.cwd == result["worktree"]
+    assert first.prompt in second.prompt
+    assert result["budget_usd"] == 1 and result["max_attempts"] == 2
+    assert result["cost_usd"] == pytest.approx(0.4)
+    assert [row["cost_usd"] for row in result["thread"] if row["from"] == "worker"] == [0.2, 0.2]
+    assert len(result["auto_resumes"]) == 1
+
+
+def test_flood_retry_is_not_reset_by_manual_resume(droot: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rpcs = [FloodRPC(), FloodRPC(), FloodRPC()]
+    _codex(monkeypatch, rpcs)
+    result = _new_fast(droot, provider="codex", model="gpt-6-sol")
+    result = dispatch.resume(droot, dispatch_id=result["id"], answer="try again", watch=True)
+    assert result["state"] == "blocked" and result["attempt"] == 3
+    assert len(result["auto_resumes"]) == 1
+    assert "thread/start" in rpcs[2].calls and "thread/resume" not in rpcs[2].calls
+
+
+@pytest.mark.parametrize("limit", ["attempts", "budget", "attempt_budget"])
+def test_flood_does_not_retry_an_exhausted_limit(
+    droot: Path, monkeypatch: pytest.MonkeyPatch, limit: str
+) -> None:
+    _codex(monkeypatch, [FloodRPC()])
+    result = _new_fast(droot, provider="codex", model="gpt-6-sol", max_attempts=1)
+    assert result["state"] == "blocked" and result["attempt"] == 1
+    if limit == "budget":
+        result["max_attempts"] = 3
+        result["cost_usd"] = result["budget_usd"]
+        result["cost_accounted_attempt"] = result["attempt"]
+        result["cost_accounting"] = "n1"
+    if limit == "attempt_budget":
+        result["max_attempts"] = 2
+        result["cost_usd"] = 0
+        result["cost_accounted_attempt"] = None
+        result["cost_accounting"] = "n1"
+        result["last_result"]["total_cost_usd"] = result["budget_usd"]
+        result["last_result"]["cost_source"] = "local-estimate"
+    assert evaluate_mod.evaluate(droot, result)["auto_resume"] is None

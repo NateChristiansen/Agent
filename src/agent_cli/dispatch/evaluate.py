@@ -3,6 +3,7 @@ git says, and what state that lands the dispatch in."""
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from ..records.narrow import as_dict, dict_list
 from . import conventions as conventions_mod
 from . import spend, write_scope
 from .prompt import verify_return
+from .resume_mode import flood_retried
 from .return_schema import LEGACY_RETURN_FIELDS
 from .state import envelope_return, file, one_line, save, store_result
 from .telemetry_events import note_cost_evidence
@@ -41,13 +43,12 @@ def _hit_max_turns(out: dict[str, Any]) -> bool:
 
 
 def evaluate(root: Path, d: dict[str, Any], rp: repos_mod.Repo | None = None) -> dict[str, Any]:
-    """`_decide`, then the declared write scope: a read-only review (`writes: []`) that left
-    changes fails, whatever it returned (`write_scope.broken_read_only`)."""
+    """Check declared writes after deciding the attempt's return."""
     out = _decide(root, d, rp)
-    if out["state"] in ("done", "question", "blocked") and (broken := write_scope.broken_read_only(d)):
+    if out["state"] in ("done", "question", "blocked", "failed") and (broken := write_scope.broken_scope(d)):
         out["state"] = "failed"
         out["auto_resume"] = None
-        out["error"] = broken
+        out["error"] = "; ".join(filter(None, (out.get("error"), broken)))
     return out
 
 
@@ -132,9 +133,17 @@ def _decide(root: Path, d: dict[str, Any], rp: repos_mod.Repo | None = None) -> 
         out["error"] = "worker cleanup failed; process exit is unconfirmed (see dispatch stderr)"
         return out
     if out.get("terminal_reason") == "degenerate_output":
-        # Do not auto-resume degenerate output: the same thread may continue the flood. Keep a
-        # bounded diagnostic sample in stderr.
-        out["auto_resume"] = None
+        if (
+            d.get("provider") == "codex"
+            and not timed_out
+            and not flood_retried(d)
+            and int(d["attempt"]) < int(d["max_attempts"])
+        ):
+            accounted = deepcopy(d)
+            if d.get("cost_accounted_attempt") != d["attempt"]:
+                spend.add_attempt_cost(accounted, out, root)
+            if float(accounted.get("cost_usd") or 0) < float(d["budget_usd"]):
+                out["auto_resume"] = "degenerate_output"
         out["state"] = "blocked"
         out["result"] = out["result"] or _synthesize(
             d,
@@ -307,11 +316,11 @@ def _synthesize(
 def queue_auto_resume(
     root: Path, d: dict[str, Any], feat: features_mod.Feature, outcome: dict[str, Any], reason: str
 ) -> dict[str, Any]:
-    """Auto-resume only timeouts, at the same budget: the worker needs its clock reset. Budget
-    increases and answers to questions require an owner decision.
-    """
+    """Retry a timeout or one flood at the same total budget."""
     budget = float(d["budget_usd"])
     text = f"the {d['timeout_minutes']:g} minute time limit was hit; same budget, same time again. commit what works, then return."
+    if reason == "degenerate_output":
+        text = "The worker streamed degenerate output. Restart with the full work order in the same checkout; keep the same total budget."
     ts = iso(now())
     result = result_of(outcome)
     if d.get("cost_accounted_attempt") != d["attempt"]:
@@ -334,6 +343,9 @@ def queue_auto_resume(
     )
     d["num_turns"] = int(outcome.get("num_turns") or 0)
     _close_attempt(root, {**d, "state": outcome["state"]}, reason)
+    if reason == "degenerate_output":
+        d["codex_thread_id"] = None
+        d["session_established"] = False
     d["verification"] = None
     d["terminal_committed"] = False
     d["attempt"] += 1

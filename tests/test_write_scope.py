@@ -190,6 +190,57 @@ def test_a_committed_then_reverted_change_still_breaks_read_only(tmp_path: Path)
     assert "2 commit(s)" in str(write_scope.broken_read_only(d))
 
 
+@pytest.mark.parametrize("stage", ["committed", "staged", "unstaged"])
+def test_declared_scope_checks_both_rename_paths_and_deleted_files(tmp_path: Path, stage: str) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*run, "init", "-q"], check=True)
+    (repo / "allowed").mkdir()
+    for name in ("outside source.txt", "deleted.txt", "allowed/moved.txt"):
+        (repo / name).write_text(name, encoding="utf-8")
+    subprocess.run([*run, "add", "."], check=True)
+    subprocess.run([*run, "commit", "-qm", "base"], check=True)
+    base = subprocess.run([*run, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    (repo / "outside source.txt").rename(repo / "allowed/incoming.txt")
+    (repo / "allowed/moved.txt").rename(repo / "outside destination.txt")
+    (repo / "deleted.txt").unlink()
+    if stage != "unstaged":
+        subprocess.run([*run, "add", "-A"], check=True)
+    if stage == "committed":
+        subprocess.run([*run, "commit", "-qm", "changes"], check=True)
+    (repo / "allowed/new.txt").write_text("fine", encoding="utf-8")
+    unusual = 'outside\n"quoted".txt'
+    (repo / unusual).write_text("untracked", encoding="utf-8")
+    d: dict[str, Any] = {"writes": ["allowed/./"], "worktree": str(repo), "base": base}
+    broken = write_scope.broken_scope(d)
+    assert broken is not None
+    for name in ("outside source.txt", "outside destination.txt", "deleted.txt", unusual):
+        assert repr(name) in broken
+    assert "allowed/" not in broken
+    d["writes"] = None
+    assert write_scope.broken_scope(d) is None
+    d["writes"] = ["allowed", "outside source.txt", "outside destination.txt", "deleted.txt", unusual]
+    assert write_scope.broken_scope(d) is None
+
+
+def test_outside_scope_return_is_recorded_as_failed(
+    droot: Path, fake_claude: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_claude.scenario([one(envelope())])
+    decide = evaluate_mod._decide  # pyright: ignore[reportPrivateUsage]
+
+    def leave_change(root: Path, d: dict[str, Any], rp: Any) -> dict[str, Any]:
+        (Path(d["worktree"]) / "outside.txt").write_text("left behind", encoding="utf-8")
+        return decide(root, d, rp)
+
+    monkeypatch.setattr(evaluate_mod, "_decide", leave_change)
+    recorded = new_fast(droot, writes=["allowed"])
+    assert recorded["state"] == "failed"
+    assert "outside.txt" in load(droot, recorded["id"])["error"]
+    assert recorded["writes"] == ["allowed"]
+
+
 # ------------------------------------------------------------------ the path board
 
 
