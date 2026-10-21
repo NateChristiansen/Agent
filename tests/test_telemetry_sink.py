@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -66,23 +66,163 @@ def test_eight_processes_append_concurrently_without_loss_or_tearing(tmp_path, i
         out, err = child.communicate(timeout=120)
         assert child.returncode == 0, err
         reports.append(json.loads(out))
-    expected = {"attempted": EACH, "written": EACH, "lost": 0, "skipped": 0}
-    off = {n: r for n, r in enumerate(reports) if r != expected}
     loss = telemetry.Sink.for_main(main).loss
-    reasons = Counter(row.get("reason") for row in lines(loss)) if loss.exists() else {}
-    assert not off, f"children off count: {off}; loss reasons: {dict(reasons)}"
     raw = b"".join(p.read_bytes() for p in sorted((main / ".agent/telemetry/events").glob("*.jsonl")))
     assert raw.endswith(b"\n")
     rows = [json.loads(line) for line in raw.decode().splitlines()]
-    assert len(rows) == PROCESSES * EACH
-    assert len({row["event_id"] for row in rows}) == PROCESSES * EACH
+    _assert_accounted(reports, rows, lines(loss) if loss.exists() else [])
+
+
+def _assert_accounted(
+    reports: list[dict], rows: list[dict], losses: list[dict], processes: int = PROCESSES, each: int = EACH
+) -> None:
+    """Every attempt is a valid written line, a recorded lock-timeout loss, or a skip after the
+    instance's third consecutive loss disabled it; nothing else explains a missing event."""
+    assert len({row["event_id"] for row in rows}) == len(rows)
     by_instance: dict[str, list[int]] = {}
     for row in rows:
         assert schema.validate(row) is None
         by_instance.setdefault(row["writer"]["instance"], []).append(row["writer"]["seq"])
-    assert len(by_instance) == PROCESSES
-    assert all(sorted(seqs) == list(range(1, EACH + 1)) for seqs in by_instance.values())
-    assert not telemetry.Sink.for_main(main).loss.exists()
+    assert len(by_instance) == processes, "an instance that wrote nothing is not concurrency"
+    assert {row["writer"]["instance"] for row in losses} <= set(by_instance), "loss from an unknown instance"
+    derived = []
+    for instance, seqs in by_instance.items():
+        mine = [row for row in losses if row["writer"]["instance"] == instance]
+        assert {row["reason"] for row in mine} <= {"TimeoutError"}, mine
+        lost = [row["writer"]["seq"] for row in mine if row["kind_lost"] == "dispatch.terminal"]
+        disabled = [row["writer"]["seq"] for row in mine if row["kind_lost"] == "disabled"]
+        assert len(mine) == len(lost) + len(disabled) and len(disabled) <= 1, mine
+        assert len(set(lost)) == len(lost)
+        tripped = {seq for seq in lost if {seq - 1, seq - 2} <= set(lost)}
+        assert tripped == set(disabled), "strikes and the disabled line disagree"
+        skipped = list(range(disabled[0] + 1, each + 1)) if disabled else []
+        assert sorted([*seqs, *lost, *skipped]) == list(range(1, each + 1)), "unaccounted attempts"
+        derived.append({"attempted": each, "written": len(seqs), "lost": len(lost), "skipped": len(skipped)})
+    assert sorted(derived, key=lambda r: sorted(r.items())) == sorted(
+        reports, key=lambda r: sorted(r.items())
+    )
+
+
+A, B = str(uuid.uuid4()), str(uuid.uuid4())
+
+
+def _accounting_case(tmp_path: Path) -> tuple[list[dict], list[dict], list[dict]]:
+    """Two instances of six attempts: `a` writes all; `b` writes 1-2, loses 3-5 to lock timeouts
+    (the third disables it) and skips 6."""
+    main = tmp_path / "main"
+    telemetry.record(main, "dispatch.terminal", outcome="passed", data={"i": 0, "flags": ["-x"]})
+    [template] = events(main / ".agent/telemetry")
+    written = {A: range(1, 7), B: range(1, 3)}
+    rows = [
+        {
+            **template,
+            "event_id": str(uuid.uuid4()),
+            "writer": {**template["writer"], "instance": name, "seq": seq},
+        }
+        for name, seqs in written.items()
+        for seq in seqs
+    ]
+    stamp = {"ts": template["ts"], "reason": "TimeoutError"}
+    losses = [
+        {**stamp, "writer": {**template["writer"], "instance": B, "seq": seq}, "kind_lost": kind}
+        for seq, kind in [
+            (3, "dispatch.terminal"),
+            (4, "dispatch.terminal"),
+            (5, "dispatch.terminal"),
+            (5, "disabled"),
+        ]
+    ]
+    reports = [
+        {"attempted": 6, "written": 6, "lost": 0, "skipped": 0},
+        {"attempted": 6, "written": 2, "lost": 3, "skipped": 1},
+    ]
+    return reports, rows, losses
+
+
+def _drop_loss(rows, losses, reports):
+    return rows, [row for row in losses if row["writer"]["seq"] != 3], reports
+
+
+def _drop_disabled(rows, losses, reports):
+    return rows, [row for row in losses if row["kind_lost"] != "disabled"], reports
+
+
+def _lose_to_oserror(rows, losses, reports):
+    return rows, [{**row, "reason": "OSError"} for row in losses], reports
+
+
+def _lose_to_short_write(rows, losses, reports):
+    return rows, [{**row, "reason": "short_write"} for row in losses], reports
+
+
+def _duplicate_event(rows, losses, reports):
+    return [*rows, rows[0]], losses, reports
+
+
+def _duplicate_seq(rows, losses, reports):
+    return [*rows, {**rows[0], "event_id": str(uuid.uuid4())}], losses, reports
+
+
+def _invalid_row(rows, losses, reports):
+    return [{**rows[0], "schema": 99}, *rows[1:]], losses, reports
+
+
+def _wrong_report(rows, losses, reports):
+    return rows, losses, [reports[0], {**reports[1], "skipped": 0, "lost": 4}]
+
+
+def _all_lost(rows, losses, reports):
+    return [], losses, reports
+
+
+def _no_writer_b(rows, losses, reports):
+    return [row for row in rows if row["writer"]["instance"] == A], losses, reports
+
+
+def _gap_in_seq(rows, losses, reports):
+    return (
+        [row for row in rows if (row["writer"]["instance"], row["writer"]["seq"]) != (A, 3)],
+        losses,
+        reports,
+    )
+
+
+def test_a_contention_loss_accounts_for_every_attempt(tmp_path):
+    reports, rows, losses = _accounting_case(tmp_path)
+    _assert_accounted(reports, rows, losses, processes=2, each=6)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _drop_loss,
+        _drop_disabled,
+        _lose_to_oserror,
+        _lose_to_short_write,
+        _duplicate_event,
+        _duplicate_seq,
+        _invalid_row,
+        _wrong_report,
+        _all_lost,
+        _no_writer_b,
+        _gap_in_seq,
+    ],
+)
+def test_unexplained_loss_or_damage_fails_the_accounting(tmp_path, mutate):
+    reports, rows, losses = _accounting_case(tmp_path)
+    rows, losses, reports = mutate(rows, losses, reports)
+    with pytest.raises(AssertionError):
+        _assert_accounted(reports, rows, losses, processes=2, each=6)
+
+
+@pytest.mark.parametrize("reason", ["OSError", "TimeoutError"])
+def test_a_loss_line_from_an_unknown_instance_fails_the_accounting(tmp_path, reason):
+    reports, rows, losses = _accounting_case(tmp_path)
+    stray = {**losses[0], "reason": reason, "writer": {**losses[0]["writer"], "instance": str(uuid.uuid4())}}
+    path = tmp_path / "loss.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in [*losses, stray]))
+    with pytest.raises(AssertionError):
+        _assert_accounted(reports, rows, lines(path), processes=2, each=6)
 
 
 def test_an_event_is_one_versioned_line_in_the_utc_day_file(tmp_path):
