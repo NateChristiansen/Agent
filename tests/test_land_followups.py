@@ -22,6 +22,7 @@ from agent_cli.ops import peer_wake
 
 BRANCH = "agent/001-x-mac-01"
 DAY_TS = "2026-10-09T01:00:00-06:00"
+SETTLED = {"milestone": "recorded", "notices": "done"}
 
 
 @pytest.fixture
@@ -83,7 +84,7 @@ def _landings(root: Path) -> list[dict]:
 def test_a_landing_with_an_unticked_task_tells_the_manager_and_records_its_milestone(tmp_root: Path, landed):
     journal = _journal()
     obligations = followups.reconcile(tmp_root, tmp_root, journal)
-    assert obligations == {"milestone": "recorded", "notices": "done"}
+    assert obligations == {**SETTLED, "cleanup": "pending"}  # cleanup is never reconcile's
     rows = _rows(tmp_root)
     assert (
         len(rows) == 1 and "task(s) #1 landed on main" in rows[0]["text"] and "001-mac-01" in rows[0]["text"]
@@ -119,7 +120,7 @@ def test_recovery_of_a_done_landing_delivers_a_failed_notice_with_no_git(
     monkeypatch.setattr(peers, "send", original)
     monkeypatch.setattr("agent_cli.land_observe.Git", lambda *a, **k: pytest.fail("recovery replayed Git"))
     land_recover.recover(tmp_root, journal["id"])
-    assert jn.read(tmp_root, journal["id"])["obligations"] == {"milestone": "recorded", "notices": "done"}
+    assert jn.read(tmp_root, journal["id"])["obligations"] == {**SETTLED, "cleanup": "pending"}
     assert len(_rows(tmp_root)) == 1
 
 
@@ -127,7 +128,7 @@ def test_a_stop_right_after_done_is_settled_by_recovery(tmp_root: Path, landed):
     journal = _journal()
     jn.write(tmp_root, journal)  # done on disk, nothing reconciled yet
     land_recover.recover(tmp_root, journal["id"])
-    assert jn.read(tmp_root, journal["id"])["obligations"] == {"milestone": "recorded", "notices": "done"}
+    assert jn.read(tmp_root, journal["id"])["obligations"] == {**SETTLED, "cleanup": "pending"}
     assert len(_rows(tmp_root)) == 1 and len(_landings(tmp_root)) == 1
 
 

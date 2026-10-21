@@ -145,11 +145,14 @@ def claim(
     """Allocate `d` for real: under `dispatch-alloc:<short>`, confirm the sequence number and
     reuse decision `new` read, take the worktree lease and a repo slot, and create the record.
     Every failure leaves no record and no lease behind."""
+    from .. import land_followups
     from . import machine
     from .holdings import acquire, cap_of, rollback
     from .state import allocate, dispatches_dir, save
 
     d["label_claim"] = machine.require_claim(root, tag)
+    # Before any allocation guard, and never on the tree this launch reuses.
+    land_followups.retry_cleanup(root, keep=(str(d["worktree"]), *((str(reused),) if reused else ())))
     reconcile_allocations(root)
     refuse_cutover(root, d)
     with alloc_guard(root, rp.short):

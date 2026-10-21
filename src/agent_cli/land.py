@@ -395,7 +395,8 @@ def land(
         _op_event(main, trail, asked, "failed", why=str(exc))
         raise
     _op_event(main, trail, asked, "done")
-    return journal
+    # After the landing is done and released: a held or failed cleanup stays on the journal.
+    return followups.retry_cleanup(root, current=journal) or journal
 
 
 def _op_event(main: Path, trail: dict[str, Any], asked: float, outcome: str, why: str = "") -> None:
@@ -513,8 +514,8 @@ def _land(
             "ts": jn.now(),
             **({"members": [{"branch": b, "tip": t} for b, t in members]} if len(members) > 1 else {}),
             **({"origins": [{"branch": b, "tip": t} for b, t in sources]} if sources else {}),
-            # Record follow-up intent before marking done so recovery can complete it after a
-            # crash.
+            # Record follow-up intent, worktree cleanup included, before marking done so recovery
+            # can complete it after a crash.
             "obligations": followups.initial(),
             "session": os.environ.get("AGENT_LAND_SESSION") or None,  # who asked, for the notices
         }
