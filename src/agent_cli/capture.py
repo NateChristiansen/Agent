@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,7 +18,7 @@ except ImportError:  # Windows: the CLI runs there, but advisory file locks are 
 from . import features as features_mod
 from . import sessions
 from .core import AgentError, agent_path, append_line, iso, now
-from .records.narrow import as_dict, as_dict_or_none, as_str, dig
+from .records.narrow import as_dict, as_dict_or_none
 
 KINDS = ("prompt", "stop", "subagent-stop", "session-start", "session-end")
 EVENT_TO_KIND = {
@@ -66,6 +65,16 @@ def _utf8_strings(value: Any) -> Any:
 def raw_lock(root: Path) -> Generator[None]:
     """Serialize hook appends with capture rehomes and adoption on this vault."""
     path = agent_path(root, "raw", ".lock")
+    if fcntl is None:
+        from . import win_lock
+
+        fd = win_lock.open_lock_file(root, (*agent_path(Path(), "raw").parts, ".lock"))
+        try:
+            with win_lock.exclusive(fd):
+                yield
+        finally:
+            os.close(fd)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         if fcntl is not None:
@@ -116,6 +125,9 @@ def capture(root: Path, kind: str, payload: dict[str, Any], session_id: str | No
         "dispatch_id": dispatch_id,
         "extra": extra,
     }
+    from .hooks import transcript_retention as retention
+
+    record_out["retention_reports"] = retention.reports(record_out)
     day = ts.strftime("%Y-%m-%d")
     if feature_info:
         try:
@@ -127,9 +139,23 @@ def capture(root: Path, kind: str, payload: dict[str, Any], session_id: str | No
         target = root / UNASSIGNED / f"{day}.jsonl"
     # raw captures hold full prompts and replies. Owner-only, unlike ordinary vault files.
     with raw_lock(root):
+        # Mapping may have changed while this append waited behind adoption.
+        current = sessions.get(root, str(sid)) if sid else None
+        mapped = as_dict(as_dict(current).get("feature"))
+        if mapped:
+            try:
+                target = features_mod.resolve(root, str(mapped["id"])).raw_dir / f"{day}.jsonl"
+                record_out["feature"] = mapped["id"]
+            except AgentError:
+                pass
         # Under the lock, so two first captures of the day cannot both see the file absent.
         new_unassigned = target.parent == root / UNASSIGNED and not target.exists()
         append_line(target, json.dumps(_utf8_strings(record_out), ensure_ascii=False) + "\n", mode=0o600)
+    try:
+        retention.enqueue(root, record_out)
+    except OSError:
+        # The raw event remains the durable recovery reference if launch fails.
+        pass
     if new_unassigned:
         # STATUS.md lists the unassigned files and hashes their names, so a new one made the
         # render stale and doctor failed minutes after a fresh setup, before any session was
@@ -170,6 +196,12 @@ def _adopt_locked(root: Path, feature: features_mod.Feature, session_id: str) ->
                     feature.raw_dir / path.name, json.dumps(rec, ensure_ascii=False) + "\n", mode=0o600
                 )
                 moved_here += 1
+                from .hooks import transcript_retention as retention
+
+                try:
+                    retention.enqueue(root, rec)
+                except OSError:
+                    pass
             else:
                 keep.append(line)
         if moved_here:
@@ -266,47 +298,41 @@ def redact_preserved(root: Path) -> dict[str, Any]:
 
 
 def preserve_transcripts(root: Path, feature: features_mod.Feature) -> list[Path]:
-    """Copy every transcript referenced in the feature's `.agent/raw/<slug>/*.jsonl` captures
-    into `.agent/raw/<slug>/transcripts/` (already under the gitignored `.agent/` tree).
+    """Refresh a feature's evidence. Full copies have stable identities across adoption.
 
-    Claude Code's own `cleanupPeriodDays` default (30 days) sweeps `~/.claude/projects`
-    transcripts well before most features close, so a retro built later than that has
-    nothing to read. `feature_close` calls this on every close. Skip a transcript that's
-    already gone, already swept or never existed on this machine, rather than fail the
-    close over it. Skip re-copying one already here and no older than its source; the check
-    is on mtime rather than size because `redact_jsonl` makes a redacted copy smaller than
-    what it came from, and a size check would re-copy every transcript on every close.
+    The return stays a list of newly copied paths; missing-source outcomes live in the
+    reports linked by raw captures. Stop and worker capture also enqueue preservation.
+    """
+    import shutil
+    import time
 
-    A subagent's own transcript counts. `SubagentStop` carries the parent
-    session's path in `transcript_path` and the agent's own in
-    `extra.agent_transcript_path`
-    (`~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl`),
-    and only the latter holds what the subagent actually did: the parent transcript has no
-    sidechain records at all. Retro-readers, journal drafters and review agents are most of
-    the model work on a harness day, and without this it was swept at 30 days with nothing
-    kept. Names are unique per agent id, so both kinds land in the same directory."""
-    dest_dir = feature.raw_dir / TRANSCRIPTS_DIR
-    seen: set[str] = set()
+    from .hooks import transcript_retention as retention
+
     copied: list[Path] = []
-    if not feature.raw_dir.exists():
-        return copied
-    for path in sorted(feature.raw_dir.glob("*.jsonl")):
-        for record in read_jsonl(path):
-            for tp in (
-                record.get("transcript_path"),
-                as_str(dig(record, "extra", "agent_transcript_path")),
-            ):
-                if not tp or tp in seen:
-                    continue
-                seen.add(tp)
-                src = Path(tp)
-                if not src.exists():
-                    continue
-                dest = dest_dir / src.name
-                if dest.exists() and dest.stat().st_mtime >= src.stat().st_mtime:
-                    continue
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dest)
-                redact_jsonl(dest)
-                copied.append(dest)
+    with retention.lock(root, "writer.lock", retention.JOB_MAX):
+        records = [record for path in sorted(feature.raw_dir.glob("*.jsonl")) for record in read_jsonl(path)]
+        names: dict[str, set[str]] = {}
+        for record in records:
+            for source in retention.references(record):
+                names.setdefault(Path(source).name, set()).add(retention.key(record, source))
+        for record in records:
+            refreshed = retention.retain(root, record, deadline=time.monotonic() + retention.JOB_MAX)
+            for source in retention.references(record):
+                ident = retention.key(record, source)
+                canonical = root / retention.BASE / "transcripts" / f"{ident}.jsonl"
+                name = Path(source).name
+                if len(names[name]) > 1:
+                    name = f"{ident}-{name}"
+                dest = feature.raw_dir / TRANSCRIPTS_DIR / name
+                if canonical.exists() and (
+                    canonical in refreshed
+                    or not dest.exists()
+                    or canonical.stat().st_mtime_ns > dest.stat().st_mtime_ns
+                ):
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = dest.with_name(f".{dest.name}.copy")
+                    shutil.copyfile(canonical, temporary)
+                    os.chmod(temporary, 0o600)
+                    os.replace(temporary, dest)
+                    copied.append(dest)
     return copied
