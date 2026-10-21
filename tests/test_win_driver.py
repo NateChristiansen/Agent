@@ -48,7 +48,8 @@ def test_cancel_checks_dispatch_tag_and_ends_grandchild_only(tmp_path: Path, mon
     grandchild = None
     try:
         deadline = time.monotonic() + 5
-        while not pidfile.exists() and time.monotonic() < deadline:
+        # write_text creates the file before it writes the pid
+        while not (pidfile.exists() and pidfile.read_text()) and time.monotonic() < deadline:
             time.sleep(0.05)
         grandchild = int(pidfile.read_text())
         monkeypatch.setattr(procs, "snapshot", win_snapshot.snapshot)

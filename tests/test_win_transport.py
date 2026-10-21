@@ -69,7 +69,8 @@ def test_reap_ends_grandchild_after_parent_exit_and_spares_unrelated(tmp_path: P
         job = isolated_transport._windows_job(process)
         try:
             deadline = time.monotonic() + 5
-            while not pidfile.exists() and time.monotonic() < deadline:
+            # write_text creates the file before it writes the pid
+            while not (pidfile.exists() and pidfile.read_text()) and time.monotonic() < deadline:
                 await anyio.sleep(0.05)
             grandchild = int(pidfile.read_text())
             await isolated_transport._reap(process, job)
