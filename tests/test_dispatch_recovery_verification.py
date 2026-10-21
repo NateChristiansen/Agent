@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -136,6 +137,134 @@ def test_cancel_finalizes_when_windows_inventory_fails(ready, monkeypatch, lease
 
     _assert_finalized(root, result, lease_held)
     assert "Toolhelp snapshot failed" in result["error"]
+
+
+LSTART = b"S Sat Oct 10 02:03:39 2026\n"
+STARTED = 1791597819.0  # LSTART as Unix seconds
+INSPECTIONS = {
+    "denied": (False, 1, b""),
+    "absent": (True, 1, b""),
+    "zombie": (False, 0, b"Z Sat Oct 10 02:03:39 2026\n"),
+    "own": (False, 0, LSTART),
+    "reused": (False, 0, LSTART),
+}
+
+
+def _worker(root, d, monkeypatch, inspection, *, identity=True):
+    """Record made-up worker 728 and fake every inspection of it; a kill is only recorded."""
+    from agent_cli.dispatch import verification_status
+
+    absent, code, output = INSPECTIONS[inspection]
+    since = STARTED - 60 if inspection == "reused" else STARTED + 60
+    d["claude_pid"] = 728
+    if identity:
+        d["claude_pid_identity"] = {"pid": 728, "since": since}
+    save(root, d)
+    monkeypatch.setattr(verification_status, "absent", lambda number, group=False: absent)
+    monkeypatch.setattr(verification_process, "capture", lambda *args, **kwargs: (code, output))
+    killed: list[int] = []
+    monkeypatch.setattr(verification_process, "kill_group", lambda pgid: killed.append(pgid) or True)
+    return killed
+
+
+posix_identity = pytest.mark.skipif(sys.platform == "win32", reason="start-time identity via ps is POSIX")
+
+
+@posix_identity
+@pytest.mark.parametrize(
+    ("inspection", "held"),
+    [("denied", True), ("absent", False), ("zombie", False), ("own", True), ("reused", False)],
+)
+def test_worker_lease_follows_its_start_time_identity(ready, monkeypatch, inspection, held):
+    root, d = ready
+    _worker(root, d, monkeypatch, inspection)
+    assert gate.requires_lease(root, load(root, d["id"])) is held
+
+
+@posix_identity
+def test_a_denied_ps_keeps_a_legacy_worker_lease(ready, monkeypatch):
+    root, d = ready
+    _worker(root, d, monkeypatch, "denied", identity=False)
+    assert gate.requires_lease(root, load(root, d["id"]))
+    stale = {**load(root, d["id"]), "claude_pid_identity": {"pid": 729, "since": STARTED - 60}}
+    assert gate.worker_since(stale) is None and gate.requires_lease(root, stale)
+
+
+@posix_identity
+@pytest.mark.parametrize(
+    ("inspection", "identity", "signalled", "confirmed"),
+    [
+        ("denied", True, False, False),
+        ("reused", True, False, True),
+        ("own", True, True, True),
+        ("zombie", True, True, True),
+        ("denied", False, True, True),
+    ],
+    ids=["unknown", "reused", "own", "zombie", "legacy"],
+)
+def test_settle_signals_an_unsupervised_worker_only_under_its_own_identity(
+    ready, monkeypatch, inspection, identity, signalled, confirmed
+):
+    """The supervisor is dead, so nothing holds the worker's pid. A recorded identity lets a
+    reused pid be told apart and left alone; an unknown one is never signalled and stays
+    pending. A legacy record without one is signalled as before."""
+    root, d = ready
+    killed = _worker(root, d, monkeypatch, inspection, identity=identity)
+    gate.settle(root, d["id"], cancel=True, timeout=0)
+    after = load(root, d["id"])
+    assert killed == ([728] if signalled else [])
+    assert after["worker_cleanup_pending"] is not confirmed
+    assert after["claude_pid"] == (None if confirmed else 728)
+    if not confirmed:
+        assert gate.requires_lease(root, after)
+
+
+@posix_identity
+@pytest.mark.parametrize(
+    ("inspection", "identity", "signalled"),
+    [
+        ("denied", True, False),
+        ("reused", True, False),
+        ("absent", True, False),
+        ("own", True, True),
+        ("denied", False, True),
+    ],
+    ids=["unknown", "reused", "gone", "own", "legacy"],
+)
+def test_cancel_signals_an_unsupervised_worker_only_under_its_own_identity(
+    ready, monkeypatch, inspection, identity, signalled
+):
+    """Cancel's own SIGTERM fallback answers to the same identity check as `settle`."""
+    root, d = ready
+    _worker(root, d, monkeypatch, inspection, identity=identity)
+    sent: list[int] = []
+    monkeypatch.setattr(recovery, "await_worker_stop", lambda root, ident: False)
+    monkeypatch.setattr(recovery, "kill_group", lambda pid, *, root, dispatch_id: sent.append(pid) or [])
+    actual = gate.settle
+    monkeypatch.setattr(
+        gate, "settle", lambda root, ident, cancel: actual(root, ident, cancel=cancel, timeout=0)
+    )
+    result = recovery.cancel(root, dispatch_id=d["id"])
+    assert sent == ([728] if signalled else [])
+    if inspection == "denied" and identity:
+        assert result["worker_cleanup_pending"] and result["verification_cleanup_pending"]
+        assert result["claude_pid"] == 728 and not result.get("terminal_committed")
+        assert leases.get(root, "repo-slot:alpha/0") is not None
+
+
+def test_remember_worker_pid_records_its_identity(ready):
+    from types import SimpleNamespace
+
+    from agent_cli.dispatch import supervisor
+
+    root, d = ready
+    before = time.time()
+    client = SimpleNamespace(_transport=SimpleNamespace(_process=SimpleNamespace(pid=728)))
+    supervisor.remember_worker_pid(root, d, client)  # pyright: ignore[reportArgumentType] -- a stand-in client
+    after = load(root, d["id"])
+    assert after["claude_pid"] == 728 and after["claude_pid_identity"]["pid"] == 728
+    assert before <= after["claude_pid_identity"]["since"] <= time.time()
+    assert gate.worker_since(after) == after["claude_pid_identity"]["since"]
 
 
 def test_missing_worker_identity_never_invents_cleanup(ready):

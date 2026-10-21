@@ -456,6 +456,36 @@ def test_a_cancelled_codex_turn_with_no_usage_records_a_marked_prompt_estimate(
     assert record["cost_estimated_attempts"] == [1]
 
 
+def test_a_codex_server_pid_is_recorded_with_its_start_identity(
+    droot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+    from types import SimpleNamespace
+
+    from agent_cli.dispatch import state, verification_process
+    from agent_cli.dispatch import verification_gate as gate
+
+    # 728 is a made-up server pid: no cleanup path may signal it for real.
+    monkeypatch.setattr(verification_process, "kill_group", lambda pgid: True)
+    monkeypatch.setattr(verification_process, "kill_worker", lambda pid: True)
+    seen: list[dict[str, Any]] = []
+
+    class RecordingRPC(CancelledRPC):
+        async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "turn/start":
+                seen.extend(state.load_all(droot))
+            return await super().call(method, params)
+
+    rpc = RecordingRPC([])
+    rpc.process = SimpleNamespace(pid=728)
+    before = time.time()
+    _cancel_codex_mid_run(droot, monkeypatch, rpc)
+    [record] = seen
+    assert record["claude_pid"] == 728 and record["claude_pid_identity"]["pid"] == 728
+    since = gate.worker_since(record)
+    assert since is not None and before <= since <= time.time()
+
+
 class _SupervisorKilled(BaseException):
     """Stands in for TerminateProcess: nothing in the supervisor catches it, so no drain, result
     or finalize of its own runs."""

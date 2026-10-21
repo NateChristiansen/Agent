@@ -14,6 +14,7 @@ import time
 import pytest
 
 from agent_cli.dispatch import verification as runner
+from agent_cli.dispatch import verification_process as procs
 from agent_cli.dispatch import verification_status as status_mod
 from agent_cli.dispatch.verification_store import Store
 from verification_fixtures import assessment, config, fixture, start  # noqa: F401 — pytest fixture
@@ -187,6 +188,55 @@ def test_a_watchdog_with_an_unreadable_cleanup_time_is_judged_by_its_number(
     )
     status = runner.load_status(handle.root, handle.binding)
     assert not status.active and not status.cleanup_confirmed and status.requires_lease
+
+
+STAMP = calendar.timegm((2026, 10, 10, 2, 3, 39, 0, 0, 0))
+FAKE_PID = 4242  # never signalled: the kernel probe and `ps` are both faked
+
+
+def fake_inspection(monkeypatch, *, absent, code=1, output=b""):
+    """`absent` answers each kernel probe in turn; `ps` returns `code` and `output`."""
+    answers = list(absent)
+    monkeypatch.setattr(status_mod, "absent", lambda number, group=False: answers.pop(0))
+    monkeypatch.setattr(procs, "capture", lambda *args, **kwargs: (code, output))
+
+
+@posix_only
+def test_a_denied_ps_never_reads_as_dead(monkeypatch):
+    """A sandbox that refuses `ps` exits 1 with nothing on stdout, the same as `ps -p` for a
+    missing pid. With the kernel still reporting the pid, that is unknown, not dead."""
+    fake_inspection(monkeypatch, absent=[False, False])
+    assert not procs.process_dead(FAKE_PID)
+    fake_inspection(monkeypatch, absent=[False, False])
+    assert status_mod.process_identity(FAKE_PID, STAMP) is None
+    fake_inspection(monkeypatch, absent=[False, False])
+    assert not status_mod.process_gone(FAKE_PID, STAMP)
+
+
+@posix_only
+@pytest.mark.parametrize("absent", [[True], [False, True]], ids=["before-ps", "during-ps"])
+def test_confirmed_absence_is_dead(monkeypatch, absent):
+    fake_inspection(monkeypatch, absent=list(absent))
+    assert procs.process_dead(FAKE_PID)
+    fake_inspection(monkeypatch, absent=list(absent))
+    assert status_mod.process_identity(FAKE_PID, STAMP) == "gone"
+
+
+@posix_only
+def test_a_zombie_is_dead(monkeypatch):
+    fake_inspection(monkeypatch, absent=[False], code=0, output=b"Z\n")
+    assert procs.process_dead(FAKE_PID)
+    fake_inspection(monkeypatch, absent=[False], code=0, output=b"Z Sat Oct 10 02:03:39 2026\n")
+    assert status_mod.process_identity(FAKE_PID, STAMP) == "gone"
+
+
+@posix_only
+@pytest.mark.parametrize(("since", "seen"), [(STAMP + 60, "own"), (STAMP - 60, "reused")])
+def test_start_time_tells_the_recorded_process_from_a_reused_pid(monkeypatch, since, seen):
+    fake_inspection(monkeypatch, absent=[False], code=0, output=b"S Sat Oct 10 02:03:39 2026\n")
+    assert status_mod.process_identity(FAKE_PID, since) == seen
+    fake_inspection(monkeypatch, absent=[False], code=0, output=b"S Sat Oct 10 02:03:39 2026\n")
+    assert status_mod.process_gone(FAKE_PID, since) is (seen == "reused")
 
 
 def test_lstart_reads_ps_output_as_utc():

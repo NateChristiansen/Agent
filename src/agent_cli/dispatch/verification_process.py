@@ -233,7 +233,9 @@ def process_dead(pid: int | None) -> bool:
         return True
     try:
         code, output = capture(["/bin/ps", "-o", "stat=", "-p", str(pid)], Path("/"), BASE_ENV, 1, 1024)
-        return (code == 1 and not output.strip()) or (code == 0 and output.strip().startswith(b"Z"))
+        if code == 1 and not output.strip():
+            return absent(pid)  # a denied `ps` exits the same way as a missing process
+        return code == 0 and output.strip().startswith(b"Z")
     except OSError, AgentError, subprocess.TimeoutExpired:
         return False
 

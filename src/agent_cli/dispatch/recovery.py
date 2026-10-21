@@ -34,11 +34,16 @@ def cancel(root: Path, *, dispatch_id: str) -> dict[str, Any]:
         notice_producers.supersede(d, "cancel")
         save(root, d)
     # Worker acknowledgement and verifier cleanup are separate. Neither holds the repo lock while waiting.
-    if was_running and not await_worker_stop(root, dispatch_id) and d.get("claude_pid"):
+    pid = (
+        _signallable_worker(root, dispatch_id)
+        if was_running and not await_worker_stop(root, dispatch_id)
+        else None
+    )
+    if pid:
         unknown: list[int] = []
         inventory_error = ""
         try:
-            unknown = kill_group(int(d["claude_pid"]), root=root, dispatch_id=dispatch_id)
+            unknown = kill_group(pid, root=root, dispatch_id=dispatch_id)
         except OSError as exc:
             inventory_error = f"{type(exc).__name__}: {exc}"
         if unknown or inventory_error:
@@ -51,6 +56,16 @@ def cancel(root: Path, *, dispatch_id: str) -> dict[str, Any]:
     current = load(root, dispatch_id)
     outcome = evaluate(root, current, repos.load_registry(root).find(str(current.get("repo") or "")))
     return finalize(root, current, feat, outcome)
+
+
+def _signallable_worker(root: Path, dispatch_id: str) -> int | None:
+    """The worker pid cancel may signal: one still the worker's own by its recorded start time.
+    A reused, gone or uninspectable one is left to `gate.settle`, which keeps cleanup pending."""
+    d = load(root, dispatch_id)
+    pid = d.get("claude_pid")
+    if type(pid) is not int or pid <= 1:
+        return None
+    return pid if gate.worker_seen(d, is_alive(d.get("supervisor_pid"))) in (None, "own") else None
 
 
 def collect(root: Path, *, dispatch_id: str | None = None, wait: float = 0) -> list[dict[str, Any]]:

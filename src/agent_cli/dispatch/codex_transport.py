@@ -28,6 +28,13 @@ from .rules import dispatch_rules
 from .state import file, save
 
 
+def remember_server_pid(latest: dict[str, Any], rpc: Any) -> None:
+    """`supervisor.remember_worker_pid` for the app server: the pid and its start bound."""
+    pid = rpc.process.pid if rpc.process else None
+    latest["claude_pid"] = pid
+    latest["claude_pid_identity"] = gate.worker_identity(pid) if pid else None
+
+
 def run_codex(
     root: Path,
     d: dict[str, Any],
@@ -196,6 +203,9 @@ async def _run_codex(
                             "config": thread_config,
                         },
                     )
+                    with gate.record_guard(root, d["id"]) as latest:
+                        remember_server_pid(latest, rpc)
+                        save(root, latest)
                 else:
                     started = await rpc.call(
                         "thread/start",
@@ -212,7 +222,7 @@ async def _run_codex(
                     with gate.record_guard(root, d["id"]) as latest:
                         latest["codex_thread_id"] = thread_id
                         latest["session_established"] = True
-                        latest["claude_pid"] = rpc.process.pid if rpc.process else None
+                        remember_server_pid(latest, rpc)
                         save(root, latest)
                 established = True
                 while True:

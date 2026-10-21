@@ -95,6 +95,44 @@ def metadata(d: dict[str, Any]) -> tuple[Binding, str] | None:
     return binding_of(raw["binding"]), as_str(raw["mode"])
 
 
+def worker_identity(pid: int) -> dict[str, Any]:
+    """Taken once `pid` is known, so the worker started no later than `since`."""
+    return {"pid": pid, "since": time.time()}
+
+
+def worker_since(d: dict[str, Any]) -> float | None:
+    """The recorded start bound for the current `claude_pid`; None for a record without one,
+    or one written for another pid, which leaves the number alone to decide."""
+    identity = as_dict_or_none(d.get("claude_pid_identity"))
+    if identity is None or identity.get("pid") != d.get("claude_pid"):
+        return None
+    since = identity.get("since")
+    return float(since) if isinstance(since, (int, float)) and not isinstance(since, bool) else None
+
+
+def worker_seen(d: dict[str, Any], supervised: bool) -> str | None:
+    """`process_identity` of the recorded worker, "unknown" when `ps` cannot tell, and None when
+    no check applies: a live supervisor still holds the pid, a legacy record has no start bound,
+    and Windows checks birth times in its own reap."""
+    since = worker_since(d)
+    if supervised or since is None or os.name == "nt":
+        return None
+    from .verification_status import process_identity
+
+    return process_identity(d["claude_pid"], since) or "unknown"
+
+
+def worker_running(d: dict[str, Any]) -> bool:
+    from .verification_status import process_gone
+
+    pid = d.get("claude_pid")
+    if not pid:
+        return False
+    if type(pid) is not int or pid <= 1:
+        raise ValueError("invalid worker process identity")
+    return not process_gone(pid, worker_since(d))
+
+
 def requires_lease(root: Path, d: dict[str, Any]) -> bool:
     """Fail closed, including malformed state; worker completion is not verifier completion."""
     from . import verification
@@ -126,7 +164,7 @@ def requires_lease(root: Path, d: dict[str, Any]) -> bool:
             verification.load_status(root, b).requires_lease for b in run_bindings(d)
         ):
             return True
-        return bool(d.get("claude_pid") and is_alive(d["claude_pid"]))
+        return worker_running(d)
     except Exception:  # noqa: BLE001 — missing/unreadable/malformed state cannot free a lease
         return True
 
@@ -488,7 +526,10 @@ def settle(
 
                     if type(pid) is not int or pid <= 1:
                         raise ValueError("invalid worker process identity")
-                    if (kill_worker if supervised else kill_group)(pid):
+                    seen = worker_seen(d, supervised)
+                    if seen == "unknown":
+                        d["worker_cleanup_pending"] = True
+                    elif seen == "reused" or (kill_worker if supervised else kill_group)(pid):
                         d["claude_pid"] = None
                         d["worker_cleanup_pending"] = False
                         d["worker_cleanup_confirmed"] = True

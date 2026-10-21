@@ -86,6 +86,31 @@ def _later(fields: Sequence[str], since: float) -> bool:
     return started is not None and started > since + START_SLACK
 
 
+def process_identity(pid: int, since: float) -> str | None:
+    """POSIX: "gone" for no process or a zombie, "reused" for a live process that started after
+    `since`, "own" for one that could be the process recorded at `since`, and None when `ps`
+    cannot tell."""
+    if absent(pid):
+        return "gone"
+    try:
+        argv = ["/bin/ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)]
+        code, output = procs.capture(argv, Path("/"), _PS_ENV, 1, 1024)
+    except OSError, AgentError, subprocess.TimeoutExpired:
+        return None
+    fields = output.decode("ascii", "replace").split()
+    if code == 1 and not fields:
+        # A denied `ps` exits the same way; only the kernel can say the process is gone.
+        return "gone" if absent(pid) else None
+    if code != 0 or not fields:
+        return None
+    if fields[0].startswith("Z"):
+        return "gone"
+    started = _lstart(fields[1:])
+    if started is None:
+        return None
+    return "reused" if started > since + START_SLACK else "own"
+
+
 def process_gone(pid: int | None, since: float | None) -> bool:
     """`process_dead`, except that a live process started after `since`, a store write that
     already named `pid`, holds a reused number and is not the run's. With no `since`, or a start
@@ -96,19 +121,7 @@ def process_gone(pid: int | None, since: float | None) -> bool:
         from . import verification_win as win
 
         return win.process_gone(pid, since + START_SLACK)
-    if absent(pid):
-        return True
-    try:
-        argv = ["/bin/ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)]
-        code, output = procs.capture(argv, Path("/"), _PS_ENV, 1, 1024)
-    except OSError, AgentError, subprocess.TimeoutExpired:
-        return False
-    fields = output.decode("ascii", "replace").split()
-    if code == 1 and not fields:
-        return True
-    if code != 0 or not fields:
-        return False
-    return fields[0].startswith("Z") or _later(fields[1:], since)
+    return process_identity(pid, since) in ("gone", "reused")
 
 
 def group_gone(pgid: int, since: float | None) -> bool:

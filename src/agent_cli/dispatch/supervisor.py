@@ -450,6 +450,7 @@ def remember_worker_pid(root: Path, d: dict[str, Any], client: ClaudeSDKClient) 
     if pid:
         with gate.record_guard(root, d["id"]) as latest:
             latest["claude_pid"] = int(pid)
+            latest["claude_pid_identity"] = gate.worker_identity(int(pid))
             save(root, latest)
 
 
