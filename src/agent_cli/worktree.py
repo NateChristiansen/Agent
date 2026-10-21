@@ -9,6 +9,8 @@ error. The launcher derives AGENT_ROOT from its checkout and runs that code agai
 
 from __future__ import annotations
 
+import functools
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -43,6 +45,14 @@ def main_checkout(root: Path) -> Path:
     if not path.is_absolute():
         path = (root / path).resolve()
     return path.parent
+
+
+def is_main_checkout_of(root: Path, main: Path) -> bool:
+    """Whether `main` is this harness's own checkout; False when the harness root is not in Git."""
+    try:
+        return main_checkout(root).resolve() == main.resolve()
+    except AgentError, ExternalFailure, OSError:
+        return False
 
 
 def is_worktree(root: Path) -> bool:
@@ -142,22 +152,36 @@ def _component(name: str) -> str:
     return slug
 
 
-def create(root: Path, name: str, *, base: str = "main", sync: bool = True) -> dict[str, Any]:
+def create(
+    root: Path, name: str, *, base: str = "main", sync: bool = True, expect_head: str | None = None
+) -> dict[str, Any]:
     """Add a manager worktree on `agent/<name>`, share the state, link the private set.
 
     Every step is separately idempotent, so re-running after a failure finishes the job rather
-    than starting a second broken one.
+    than starting a second broken one. An existing branch is checked out as it is: when it is not
+    at `base` the result says so in `branch_differs`, and a `base` other than main refuses.
+    `expect_head` makes the add refuse unless the branch is still at that commit under the
+    git-admin guard.
     """
     slug = _component(name)
     main = main_checkout(root)
     path = worktree_path(main, slug)
     branch = f"{BRANCH_PREFIX}{slug}"
     steps: list[str] = []
+    differs: dict[str, str] | None = None
 
     existing = {Path(w["path"]).resolve(): w for w in repos_mod.worktrees(main)}
-    if path.resolve() in existing:
+    seen = registration(main, path)
+    if seen["state"] == "present":
+        current = repos_mod.git_or_none(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], path)
+        differs = _base_differs(main, branch, (current or "").strip(), base)
         steps.append(f"worktree already at {path}")
-    elif path.exists():
+    elif seen.get("admin"):
+        raise AgentError(
+            f"{path} is registered but {seen['state']}; preview `harness` action `worktree_restore` "
+            "or `worktree_reconcile` for it. Nothing was added"
+        )
+    elif seen["state"] not in ("missing", "root-unavailable"):
         raise AgentError(f"{path} exists and is not a worktree; remove it or pick another name")
     else:
         # Use git_or_none for an absent ref: rev-parse --verify --quiet exits 1 normally, while
@@ -165,11 +189,19 @@ def create(root: Path, name: str, *, base: str = "main", sync: bool = True) -> d
         head = repos_mod.git_or_none(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], main)
         if head and any(w.get("branch") == branch for w in existing.values()):
             raise AgentError(f"branch {branch} is checked out in another worktree")
+        if head and expect_head is None:
+            differs = _base_differs(main, branch, head.strip(), base)
         path.parent.mkdir(parents=True, exist_ok=True)
         from .dispatch.allocation import git_admin, git_admin_short
 
         # Guarded in the main checkout's `.agent`, the one every manager worktree links to.
         with git_admin(main, git_admin_short(root, main)):
+            if expect_head is not None:
+                now = repos_mod.git_or_none(
+                    ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], main
+                )
+                if (now or "").strip() != expect_head or os.path.lexists(path):
+                    raise AgentError(f"{branch} or {path} changed before the restore; nothing was added")
             if head:
                 # The branch outlives its worktree — `remove` keeps it on purpose, because the work
                 # on it is the point. Recreating checks that branch out; passing `base` here instead
@@ -178,6 +210,11 @@ def create(root: Path, name: str, *, base: str = "main", sync: bool = True) -> d
             else:
                 _git(["worktree", "add", "-b", branch, str(path), base], main)
         steps.append(f"worktree added at {path} on {branch}")
+    if differs:
+        steps.append(
+            f"{branch} already existed at {differs['branch_tip'][:12]}, not at {base}; "
+            "checked out as it is, not reset"
+        )
 
     linked = link_state(path)
     steps.append(
@@ -194,7 +231,28 @@ def create(root: Path, name: str, *, base: str = "main", sync: bool = True) -> d
     if sync:
         steps.append(_sync(path))
     steps.append(_render(path))
-    return {"path": str(path), "branch": branch, "steps": steps}
+    return {
+        "path": str(path),
+        "branch": branch,
+        "steps": steps,
+        **({"branch_differs": differs} if differs else {}),
+    }
+
+
+def _base_differs(main: Path, branch: str, tip: str, base: str) -> dict[str, str] | None:
+    """How an existing checkout or branch at `tip` differs from `base`; refuses when the caller
+    named a base other than the default, since nothing here resets a branch."""
+    want = (
+        repos_mod.git_or_none(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], main) or ""
+    ).strip()
+    if want == tip:
+        return None
+    if base != "main":
+        raise AgentError(
+            f"{branch} already exists at {tip[:12] or '?'}, not at base {base}; nothing was added. "
+            "Omit base to use the branch as it is, or pick another name"
+        )
+    return {"branch_tip": tip, "base": base, "base_commit": want}
 
 
 def _render(path: Path) -> str:
@@ -252,23 +310,46 @@ def list_all(root: Path) -> list[dict[str, Any]]:
 
 
 def remove(root: Path, name: str, *, force: bool = False) -> dict[str, Any]:
-    """Remove a manager worktree. Refuses a dirty one unless forced, and never touches the
-    branch: the work on it is the point, and a worktree is cheap to recreate."""
+    """Remove a manager worktree through tidy's removal policy, and never touch the branch: the
+    work on it is the point, and a worktree is cheap to recreate. `force` waives only tracked
+    edits; untracked or ignored durable files, activity, locks, a HEAD off the branch tip and any
+    dispatch record on the path that is active or has unconfirmed cleanup always hold."""
     slug = _component(name)
     main = main_checkout(root)
-    known = {Path(w["path"]).resolve() for w in repos_mod.worktrees(main)}
     path = worktree_path(main, slug)
-    if path.resolve() not in known:
+    seen = registration(main, path)
+    if not seen.get("admin"):
         raise AgentError(f"{path} is not a worktree of this repository")
-    dirty = _git(["status", "--porcelain"], path).strip()
-    if dirty and not force:
-        raise AgentError(f"{path} has uncommitted changes; commit them or pass --force")
-    unlinked = unlink_links(path)
+    from . import tidy
     from .dispatch.allocation import git_admin, git_admin_short
+    from .dispatch.state import load_all
 
-    # The dirty check above is the gate. Removing a link that stood over tracked files leaves
-    # git seeing them deleted, so git's own check would refuse a worktree that was clean.
+    branch = f"{BRANCH_PREFIX}{slug}"
+
+    def holds(expect: dict[str, Any] | None) -> tuple[list[str], dict[str, Any]]:
+        records = [d for d in load_all(root) if d.get("worktree") and _same(d["worktree"], path)]
+        return tidy.removal_holds(
+            root,
+            main,
+            path,
+            branch,
+            None,
+            records,
+            collected={},
+            force=force,
+            expect=expect,
+            require_resolved=False,
+        )
+
+    reasons, decided = holds(None)
+    if reasons:
+        raise AgentError(f"{path} kept: " + "; ".join(reasons))
+    # The checks above are the gate, repeated under the guard. Removing a link that stood over
+    # tracked files leaves git seeing them deleted, so git's own check would refuse a clean tree.
     with git_admin(main, git_admin_short(root, main)):
+        if reasons := holds(decided)[0]:
+            raise AgentError(f"{path} kept: " + "; ".join(reasons))
+        unlinked = unlink_links(path)
         _git(["worktree", "remove", "--force", str(path)], main)
     return {"path": str(path), "removed": True, "branch_kept": True, "unlinked": unlinked}
 
@@ -293,3 +374,227 @@ def unlink_links(path: Path) -> list[str]:
             elif entry.is_dir():
                 stack.append(entry)
     return removed
+
+
+LOST_FILES_WARNING = (
+    "unstaged and untracked files of the lost checkout are not recoverable from Git; none were recreated"
+)
+
+
+def _same(left: Path | str, right: Path | str) -> bool:
+    return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
+
+
+def _path_state(path: Path) -> str:
+    """`present`, `missing` (its parent is readable and it is not there), `root-unavailable` (a
+    parent is gone: a moved or unmounted root, not proof of deletion) or `inaccessible`."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        try:
+            os.stat(path.parent)
+        except FileNotFoundError:
+            return "root-unavailable"
+        except OSError:
+            return "inaccessible"
+        return "missing"
+    except OSError:
+        return "inaccessible"
+    return "present"
+
+
+@functools.lru_cache(maxsize=64)
+def _common_dir(main: Path) -> Path:
+    common = git_discovery.common_dir(main) or Path(_git(["rev-parse", "--git-common-dir"], main).strip())
+    return common if common.is_absolute() else (main / common).resolve()
+
+
+def _admin_dirs(main: Path) -> list[Path]:
+    admin = _common_dir(main) / "worktrees"
+    return sorted(p for p in admin.iterdir() if p.is_dir()) if admin.is_dir() else []
+
+
+def _admin_head(main: Path, admin: Path) -> tuple[str, str, str]:
+    """(commit, branch, source) of the admin record's HEAD; a detached HEAD has no branch. A
+    symbolic HEAD only names a branch, which can move after the checkout is lost, so its commit
+    comes from the worktree's own HEAD reflog (`reflog`); `ref` means only the branch's current
+    tip was available, and that is no proof of where the checkout was."""
+    raw = (admin / "HEAD").read_text(encoding="utf-8").strip()
+    if not raw.startswith("ref: "):
+        sha = repos_mod.git_or_none(["rev-parse", "--verify", "--quiet", f"{raw}^{{commit}}"], main)
+        return (sha or "").strip(), "", "detached"
+    branch = raw.removeprefix("ref: refs/heads/")
+    log = admin / "logs" / "HEAD"
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
+    last = lines[-1].split() if lines else []
+    if len(last) > 1:
+        sha = repos_mod.git_or_none(["rev-parse", "--verify", "--quiet", f"{last[1]}^{{commit}}"], main)
+        if sha:
+            return sha.strip(), branch, "reflog"
+    sha = repos_mod.git_or_none(
+        ["rev-parse", "--verify", "--quiet", f"{raw.removeprefix('ref: ')}^{{commit}}"], main
+    )
+    return (sha or "").strip(), branch, "ref"
+
+
+def _index_matches(main: Path, index: Path, commit: str) -> bool:
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    probe = subprocess.run(  # noqa: S603 — fixed argv
+        ["git", "diff-index", "--cached", "--quiet", commit, "--"],
+        cwd=main,
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+def registration(main: Path, path: Path) -> dict[str, Any]:
+    """What Git and the filesystem each say about one worktree path, read only. Git's admin record
+    must name the path and the path's `.git` must name that record back; anything else is an
+    `occupied` path, not this worktree. A missing path's HEAD and index count as preserved only
+    when a ref contains that HEAD and the index equals HEAD's tree or a `refs/recovery/` snapshot."""
+    info: dict[str, Any] = {"path": str(path), "state": _path_state(path), "admin": None}
+    admin = next(
+        (
+            a
+            for a in _admin_dirs(main)
+            if (a / "gitdir").is_file()
+            and _same(Path((a / "gitdir").read_text(encoding="utf-8").strip()).parent, path)
+        ),
+        None,
+    )
+    if info["state"] == "present":
+        dot_git = path / ".git"
+        named = ""
+        if dot_git.is_file() and not dot_git.is_symlink():
+            named = dot_git.read_text(encoding="utf-8").strip().removeprefix("gitdir: ")
+        if admin is None or not named or not _same(named, admin):
+            info["state"] = "occupied"
+    if admin is None:
+        return info
+    info.update(admin=str(admin), locked=(admin / "locked").exists())
+    if info["state"] == "present":
+        return info
+    info["head"], info["branch"], info["head_source"] = _admin_head(main, admin)
+    head = info["head"]
+    contains = (
+        repos_mod.git_or_none(["for-each-ref", "--count=1", "--contains", head], main) if head else None
+    )
+    info["head_preserved"] = bool(contains and contains.strip())
+    index = admin / "index"
+    if index.is_file() and head and not _index_matches(main, index, head):
+        refs = repos_mod.git_or_none(["for-each-ref", "--format=%(refname)", "refs/recovery/"], main) or ""
+        index_ref = next((r for r in refs.split() if _index_matches(main, index, r)), "")
+        info["index_preserved"] = bool(index_ref)
+        info["staged_ref"] = index_ref
+    else:
+        info["index_preserved"] = bool(head)
+    return info
+
+
+def reconcile_holds(info: dict[str, Any]) -> list[str]:
+    if not info.get("admin"):
+        return ["Git has no worktree registered at this path"]
+    reasons: list[str] = []
+    if info["state"] != "missing":
+        reasons.append(f"path is {info['state']}; only a proven-missing path is reconciled")
+    if info.get("locked"):
+        reasons.append("the registration is locked (`git worktree lock`)")
+    if info["state"] == "missing" and not info.get("head_preserved"):
+        reasons.append(f"HEAD {info.get('head') or '(unreadable)'} is on no ref; pin it before reconciling")
+    if info["state"] == "missing" and not info.get("index_preserved"):
+        reasons.append(
+            "its index differs from HEAD and no refs/recovery/ snapshot holds it; preserve it first"
+        )
+    return reasons
+
+
+def forget_missing(root: Path, main: Path, path: Path, *, apply: bool = False) -> dict[str, Any]:
+    """Drop one missing path's Git registration, never a global prune: the admin record is
+    removed only while the path is still missing and its HEAD and index stay preserved."""
+    info = registration(main, path)
+    holds = reconcile_holds(info)
+    if holds or not apply:
+        return {**info, "holds": holds, "reconciled": False}
+    from . import links
+    from .dispatch.allocation import git_admin, git_admin_short
+
+    with git_admin(main, git_admin_short(root, main)):
+        again = registration(main, path)
+        holds = reconcile_holds(again)
+        if not holds and again != info:
+            holds = ["the registration changed while it was checked; run reconcile again"]
+        if holds:
+            return {**again, "holds": holds, "reconciled": False}
+        admin = Path(info["admin"])
+        if any(links.is_link(entry) for entry in admin.rglob("*")):
+            raise AgentError(f"{admin} holds a link; its registration was left in place")
+        shutil.rmtree(admin)
+    return {**info, "holds": [], "reconciled": True}
+
+
+def restore(root: Path, name: str, *, head: str, apply: bool = False, sync: bool = True) -> dict[str, Any]:
+    """Recreate a lost manager worktree at `head`, its branch's current tip, with its state and
+    private links. A moved branch, a new occupant, or a branch checked out elsewhere refuses
+    untouched; a present checkout at `head` is already restored."""
+    slug = _component(name)
+    main = main_checkout(root)
+    path = worktree_path(main, slug)
+    branch = f"{BRANCH_PREFIX}{slug}"
+    holds = restore_holds(root, main, path, branch, head)
+    info = registration(main, path)
+    result: dict[str, Any] = {"path": str(path), "branch": branch, "head": head, "state": info["state"]}
+    if info["state"] == "present" and not holds:
+        return {**result, "restored": False, "already": True, "holds": []}
+    if holds or not apply:
+        return {**result, "restored": False, "holds": holds, "warnings": restore_warnings(info)}
+    if info.get("admin"):
+        forgot = forget_missing(root, main, path, apply=True)
+        if forgot["holds"]:
+            return {**result, "restored": False, "holds": forgot["holds"], "warnings": restore_warnings(info)}
+    created = create(root, slug, sync=sync, expect_head=head)
+    return {
+        **result,
+        "restored": True,
+        "holds": [],
+        "steps": created["steps"],
+        "warnings": restore_warnings(info),
+    }
+
+
+def restore_holds(root: Path, main: Path, path: Path, branch: str, head: str) -> list[str]:
+    """Why a checkout of `branch` at `head` cannot be put back at `path`; shared by manager and
+    dispatch restore."""
+    info = registration(main, path)
+    tip = repos_mod.git_or_none(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"], main)
+    tip = (tip or "").strip()
+    reasons: list[str] = []
+    if not tip:
+        reasons.append(f"branch {branch} is gone; recover it from its refs/recovery/ pin first")
+    elif tip != head:
+        reasons.append(
+            f"branch {branch} is at {tip}, not the recorded {head}; it moved, so nothing was restored"
+        )
+    if info["state"] == "present":
+        current = repos_mod.git_or_none(["rev-parse", "HEAD"], path)
+        if (current or "").strip() != head:
+            reasons.append(f"{path} is a live checkout at {(current or '?').strip()}, not {head}")
+        return reasons
+    if info["state"] != "missing":
+        reasons.append(f"path is {info['state']}; a new occupant or unavailable root is never replaced")
+    if info.get("admin"):
+        if info.get("head") and info["head"] != head:
+            reasons.append(f"its registration records HEAD {info['head']}, not {head}")
+        reasons += [r for r in reconcile_holds(info) if not r.startswith("path is")]
+    for entry in repos_mod.worktrees(main):
+        if entry.get("branch") == branch and not _same(entry["path"], path):
+            reasons.append(f"branch {branch} is checked out at {entry['path']} (moved?)")
+    return reasons
+
+
+def restore_warnings(info: dict[str, Any]) -> list[str]:
+    warnings = [LOST_FILES_WARNING]
+    if info.get("staged_ref"):
+        warnings.append(f"staged changes are preserved at {info['staged_ref']} and were not reapplied")
+    return warnings

@@ -103,6 +103,10 @@ def dispatch(
     again: bool = False,
     writes: list[str] | None = None,
     verbose: bool = False,
+    apply: bool = False,
+    head: str | None = None,
+    delete_branches: bool = False,
+    plan_hashes: dict[str, str] | None = None,
 ) -> Op:
     """One tool over `ops.dispatch_*` (plan 2.2). `action` picks the operation. The rest of
     the parameters are the union of what every action needs, and are optional except the ones
@@ -212,7 +216,28 @@ def dispatch(
         )
     if action == "cleanup":
         return ops.dispatch_cleanup(
-            ctx.root, feature=feature, dispatch_id=dispatch_id, force=force, dry_run=dry_run
+            ctx.root,
+            feature=feature,
+            dispatch_id=dispatch_id,
+            force=force,
+            dry_run=dry_run,
+            delete_branches=delete_branches,
+        )
+    if action == "reconcile":
+        return ops.dispatch_reconcile(
+            ctx.root, dispatch_id=dispatch_require(dispatch_id, "dispatch_id", action), apply=apply
+        )
+    if action == "restore":
+        return ops.dispatch_restore(
+            ctx.root, dispatch_id=dispatch_require(dispatch_id, "dispatch_id", action), head=head, apply=apply
+        )
+    if action == "discard-files":
+        return ops.dispatch_discard_files(
+            ctx.root,
+            dispatch_id=dispatch_require(dispatch_id, "dispatch_id", action),
+            paths=dispatch_require(paths, "paths", action),
+            plan_hashes=plan_hashes,
+            apply=apply,
         )
     if action == "watch":
         return ops.dispatch_watch(
@@ -265,7 +290,8 @@ DISPATCH_TOOLS: dict[str, ToolSpec] = {
         "after reading a returned worker `consume`; close one nobody will resume `abandon`; mark one dealt "
         "with `ack`; where an attempt's time went `spans`; rerun its checks `reverify`; reconcile a dead "
         "supervisor `collect`; keep a worker's untracked files `collect-files`; remove worktrees `cleanup`; "
-        "outcomes and spend `ledger`; review a plan `plan-review`. "
+        "drop a lost checkout's registration `reconcile`; put an unfinished one back `restore`; delete an "
+        "abandoned worker's scratch `discard-files`; outcomes and spend `ledger`; review a plan `plan-review`. "
         "Ids read `NNN-<tag>-SS` (e.g. 001-mac-01), or legacy `NNN-SS`. "
         "`new` (repo, prompt; feature defaults to current; a manager session id, so pass `session_id` from "
         "the session-start block when the server cannot see it) sends a self-contained work order into its "
@@ -326,10 +352,19 @@ DISPATCH_TOOLS: dict[str, ToolSpec] = {
         "optional; wait seconds) reconciles a dispatch whose supervisor died into its handoff and the "
         "feature log; with no dispatch_id, every one still waiting. `collect-files` (dispatch_id, paths) "
         "copies named untracked files from a stopped worker's worktree into that dispatch's private handoff "
-        "artifacts. `cleanup` (feature or dispatch_id, force, dry_run) removes a feature's worktrees "
-        "or one dispatch's tree and keeps branches. A running sibling on another tree does not block "
-        "dispatch scope; all users of the selected tree must be stopped. "
-        "dry_run=True lists `would_remove` and the skipped ones and removes nothing. `ledger` (by: "
+        "artifacts. `cleanup` (feature or dispatch_id, force, dry_run, delete_branches) removes a feature's "
+        "worktrees or one dispatch's tree and keeps branches unless delete_branches=True, which deletes "
+        "removed trees' resolved branches no active or waiting dispatch needs. A running sibling on another "
+        "tree does not block dispatch scope; all users of the selected tree must be stopped. A tree with "
+        "unconfirmed verification or worker cleanup is `blocked` while the others go on; force never "
+        "waives it. dry_run=True lists `would_remove`, the skipped, blocked and `missing` ones and removes "
+        "nothing. Lists hold up to 10 examples beside `counts`, the rest in `evidence`. `reconcile` "
+        "(dispatch_id, apply) drops a proven-missing worktree's Git registration once its HEAD and index "
+        "are preserved, never a global prune; `restore` (dispatch_id, head, apply) puts an unfinished "
+        "dispatch's lost checkout back on its branch at its recorded head without running a model or "
+        "changing state; both preview unless apply=True. `discard-files` (dispatch_id, paths, plan_hashes, "
+        "apply) previews an abandoned worker's named scratch with sha256s; only after the owner agrees, "
+        "apply=True with plan_hashes = that preview's mapping deletes them. `ledger` (by: "
         "pr|feature|week, default pr; refresh=True refreshes PR data from gh first, optionally for one "
         "`repo`): finished dispatches grouped with spend and attempts. `plan-review` (paths = [the plan "
         "file], session_id) launches one fresh read-only reviewer of that plan on the other client, row "

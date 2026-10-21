@@ -33,6 +33,26 @@ def add_parser(sub: Subparsers) -> None:
 
     wt.add_parser("link", help="point this worktree's .agent at the main checkout's")
 
+    rs = wt.add_parser("restore", help="recreate a lost manager worktree at its branch's recorded head")
+    rs.add_argument("name")
+    rs.add_argument("--head", required=True, help="the commit agent/<name> must still be at")
+    rs.add_argument("--apply", action="store_true", help="restore; without it, preview only")
+    rs.add_argument("--no-sync", action="store_true", help="skip `uv sync`")
+
+    rc = wt.add_parser("reconcile", help="drop one missing path's Git registration (preview by default)")
+    rc.add_argument("path")
+    rc.add_argument("--apply", action="store_true")
+
+
+def worktree_restore(root: Path, args: argparse.Namespace, out: Output) -> int:
+    return out.done(
+        ops.worktree_restore(root, name=args.name, head=args.head, apply=args.apply, sync=not args.no_sync)
+    )
+
+
+def worktree_reconcile(root: Path, args: argparse.Namespace, out: Output) -> int:
+    return out.done(ops.worktree_reconcile(root, path=args.path, apply=args.apply))
+
 
 def worktree_new(root: Path, args: argparse.Namespace, out: Output) -> int:
     return out.done(ops.worktree_new(root, name=args.name, base=args.base, sync=not args.no_sync))
@@ -55,4 +75,6 @@ HANDLERS = {
     ("worktree", "list"): worktree_list,
     ("worktree", "remove"): worktree_remove,
     ("worktree", "link"): worktree_link,
+    ("worktree", "restore"): worktree_restore,
+    ("worktree", "reconcile"): worktree_reconcile,
 }

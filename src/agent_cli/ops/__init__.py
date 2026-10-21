@@ -33,6 +33,7 @@ from .dispatch import (
     dispatch_collect,
     dispatch_collect_files,
     dispatch_consume,
+    dispatch_discard_files,
     dispatch_ledger,
     dispatch_line,
     dispatch_list,
@@ -40,6 +41,8 @@ from .dispatch import (
     dispatch_open,
     dispatch_preview_text,
     dispatch_read_show,
+    dispatch_reconcile,
+    dispatch_restore,
     dispatch_reverify,
     dispatch_say,
     dispatch_show,
@@ -122,7 +125,14 @@ from .status import (
     status_line,
     status_render,
 )
-from .worktree import worktree_link, worktree_list, worktree_new, worktree_remove
+from .worktree import (
+    worktree_link,
+    worktree_list,
+    worktree_new,
+    worktree_reconcile,
+    worktree_remove,
+    worktree_restore,
+)
 
 __all__ = [
     # submodules, reachable as ops.<name> (a monkeypatch must target the owning submodule)
@@ -180,7 +190,9 @@ __all__ = [
     "worktree_link",
     "worktree_list",
     "worktree_new",
+    "worktree_reconcile",
     "worktree_remove",
+    "worktree_restore",
     "peer_inbox",
     "peer_list",
     "peer_send",
@@ -222,6 +234,9 @@ __all__ = [
     "dispatch_collect",
     "dispatch_collect_files",
     "dispatch_consume",
+    "dispatch_discard_files",
+    "dispatch_reconcile",
+    "dispatch_restore",
     "dispatch_ledger",
     "dispatch_line",
     "dispatch_reverify",

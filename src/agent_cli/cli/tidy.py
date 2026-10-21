@@ -15,10 +15,11 @@ def add_parser(sub: Subparsers) -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="list without changing anything (default)")
     mode.add_argument("--apply", action="store_true", help="remove safe trees and resolved agent/* branches")
+    parser.add_argument("--feature", type=int, help="only this feature's checkouts and branches")
 
 
 def tidy_cmd(root: Path, args: argparse.Namespace, out: Output) -> int:
-    return out.done(tidy.operation(root, apply=args.apply))
+    return out.done(tidy.operation(root, apply=args.apply, feature=args.feature))
 
 
 HANDLERS = {("tidy", None): tidy_cmd}

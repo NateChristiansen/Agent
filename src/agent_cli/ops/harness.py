@@ -94,8 +94,9 @@ def verify_show(root: Path, *, rev: str) -> Op:
     return Op(data, text, code=EXIT_OK if data["applies"] else EXIT_NOT_FOUND)
 
 
-def tidy(root: Path, *, apply: bool = False, wait_s: float = 60.0) -> Op:
-    """Run cleanup in a detached process; return its log if it outlasts the MCP wait."""
+def tidy(root: Path, *, apply: bool = False, wait_s: float = 60.0, feature: int | None = None) -> Op:
+    """Run cleanup in a detached process; return its log if it outlasts the MCP wait. The
+    returned lists are bounded; the result file holds them all."""
     import json
     import subprocess
     import sys
@@ -113,6 +114,8 @@ def tidy(root: Path, *, apply: bool = False, wait_s: float = 60.0) -> Op:
     argv += ["--root", str(root), "--json", "tidy"]
     if apply:
         argv.append("--apply")
+    if feature is not None:
+        argv += ["--feature", str(feature)]
     with result.open("wb") as output, log.open("ab") as stream:
         proc = subprocess.Popen(
             argv,
@@ -130,9 +133,11 @@ def tidy(root: Path, *, apply: bool = False, wait_s: float = 60.0) -> Op:
         )
     if code:
         return Op({**data, "detached": False}, f"tidy failed; log: {log}", code=EXIT_EXTERNAL)
-    from ..tidy import format_result
+    from ..tidy import EXAMPLES, TIDY_LISTS, bounded, format_result
 
     listing = json.loads(result.read_text(encoding="utf-8"))
+    long = any(len(listing.get(key) or []) > EXAMPLES for key in TIDY_LISTS)
+    listing = bounded(listing, TIDY_LISTS, result if long else None)
     return Op({**listing, **data, "detached": False}, format_result(listing))
 
 

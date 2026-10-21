@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
+from .. import features as features_mod
 from .. import ops
 from .. import scratch as scratch_mod
 from ..core import EXIT_OK, AgentError, json_default
@@ -33,6 +34,8 @@ HarnessAction = Literal[
     "worktree_new",
     "worktree_list",
     "worktree_remove",
+    "worktree_reconcile",
+    "worktree_restore",
     "procs_list",
     "verify_record",
     "verify_show",
@@ -120,7 +123,8 @@ def harness(
     elif action == "doctor":
         op = ops.doctor(root)
     elif action == "tidy":
-        op = harness_ops.tidy(root, apply=apply, wait_s=min(wait, 60.0))
+        number = features_mod.resolve(root, feature).id if feature else None
+        op = harness_ops.tidy(root, apply=apply, wait_s=min(wait, 60.0), feature=number)
     elif action == "notes_root":
         op = ops.notes_root(root)
     elif action == "notes_status":
@@ -161,6 +165,16 @@ def harness(
         op = ops.worktree_list(root)
     elif action == "worktree_remove":
         op = ops.worktree_remove(root, name=_harness_require(name, "name", action), force=force)
+    elif action == "worktree_reconcile":
+        op = ops.worktree_reconcile(root, path=_harness_require(target, "target", action), apply=apply)
+    elif action == "worktree_restore":
+        op = ops.worktree_restore(
+            root,
+            name=_harness_require(name, "name", action),
+            head=_harness_require(ref, "ref", action),
+            apply=apply,
+            sync=sync,
+        )
     elif action == "procs_list":
         op = ops.procs_list(root)
     elif action == "verify_record":
@@ -198,8 +212,9 @@ HARNESS_TOOLS: dict[str, ToolSpec] = {
         "the vault name from this machine's config; put it in inline code in the final reply. "
         "For repo files use `path:line`. "
         "`doctor` validates the harness. "
-        "`tidy` lists closed-feature leftovers and terminal dispatch trees of open features; "
-        "apply=True removes only safe trees and resolved branches. "
+        "`tidy` lists closed-feature leftovers and terminal dispatch trees of open features, or only "
+        "one `feature`'s; apply=True removes only safe trees and resolved branches; missing paths are "
+        "reported, not removed; lists hold up to 10 examples beside `counts`, the rest in the result file. "
         "It returns a log and result path after at most 60 seconds (`wait` can shorten that); "
         "cleanup continues detached. "
         "`notes_root` names the repo to `git add` a private path in; `notes_status`. `notes_publish` "
@@ -212,8 +227,13 @@ HARNESS_TOOLS: dict[str, ToolSpec] = {
         "file without severing its link, which Edit and apply_patch do: no from_file copies it to a "
         "draft to edit; from_file previews the diff; apply=True with expect_sha256 writes it. "
         "`journal_collect` (date, write), `journal_missing`, `journal_write` (date, file). "
-        "`scratch_path`. `worktree_new` (name, base, sync), `worktree_list`, "
-        "`worktree_remove` (name, force). "
+        "`scratch_path`. `worktree_new` (name, base, sync; an existing agent/<name> is checked out as "
+        "it is and `branch_differs` says when it is not at base; a base other than main refuses), "
+        "`worktree_list`, `worktree_remove` (name, force). `worktree_reconcile` (target = a registered "
+        "path, apply) drops one proven-missing path's Git registration once its HEAD and index are "
+        "preserved, never a global prune. `worktree_restore` (name, ref = the head agent/<name> must "
+        "still be at, apply, sync) recreates a lost manager worktree with its state links; both preview "
+        "unless apply=True. "
         "`procs_list`. "
         "`verify_show` (ref) says whether a full pass record covers that commit's tree; "
         "`verify_record` (ref, no_reuse) reuses one or runs the full verify list in an isolated "

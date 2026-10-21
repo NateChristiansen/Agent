@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -334,3 +335,72 @@ def test_a_marked_lease_is_refused_only_as_a_held_lease(droot: Path):
     assert "lease_protocol" not in str(refused.value) and "is held by" in str(refused.value)
     assert "dispatch:001-mac-77" in str(refused.value) and "without a repo slot" in str(refused.value)
     assert not list((droot / ".agent/dispatches").glob("*.json"))
+
+
+def _finished(droot: Path, fake_claude, **fields) -> dict:
+    fake_claude.scenario([one(envelope())])
+    d = _new_fast(droot)
+    d.update(fields)
+    dispatch.save(droot, d)
+    return d
+
+
+def _lose(path: Path) -> None:
+    from agent_cli import worktree
+
+    worktree.unlink_links(path)
+    shutil.rmtree(path)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"setup": [{"cmd": "npm ci", "exit": 1, "seconds": 0.1}]},
+        {"setup_pending": True},
+        {"worker_cleanup_pending": True},
+    ],
+    ids=["setup-failed", "setup-unfinished", "cleanup-pending"],
+)
+def test_a_tree_whose_setup_failed_or_cleanup_is_pending_is_not_reused(droot: Path, fake_claude, fields):
+    d = _finished(droot, fake_claude)
+    feat, rp = _feat(droot), _alpha(droot)
+    assert allocation.reusable(droot, feat, rp, "mac") == Path(d["worktree"])
+    d.update(fields)
+    dispatch.save(droot, d)
+    assert allocation.reusable(droot, feat, rp, "mac") is None
+
+
+def test_an_unregistered_directory_at_a_recorded_path_is_not_reused_or_replaced(droot: Path, fake_claude):
+    """The supported failed-launch case: the allocation path was retained after setup failed and
+    Git has no registration for it. Nothing is reused, deleted or reported as created."""
+    d = _finished(droot, fake_claude)
+    wt = Path(d["worktree"])
+    rp = _alpha(droot)
+    subprocess.run(["git", "worktree", "remove", "--force", str(wt)], cwd=rp.abs_path(droot), check=True)
+    wt.mkdir()
+    (wt / "partial-install.log").write_text("setup output\n")
+    assert allocation.reusable(droot, _feat(droot), rp, "mac") is None
+    for resume in (False, True):
+        with pytest.raises(AgentError, match="kept as it is"):
+            dispatch.worktrees.ensure_worktree(droot, rp, wt, d["branch"], d["base"], resume=resume)
+    assert (wt / "partial-install.log").read_text() == "setup output\n"
+
+
+def test_a_registration_alone_is_not_a_checkout(droot: Path, fake_claude):
+    d = _finished(droot, fake_claude)
+    wt = Path(d["worktree"])
+    rp = _alpha(droot)
+    main = rp.abs_path(droot)
+    other = main.parent / "other-lost"
+    subprocess.run(["git", "worktree", "add", "-b", "other-lost", str(other)], cwd=main, check=True)
+    _lose(other)
+    _lose(wt)
+    assert allocation.reusable(droot, _feat(droot), rp, "mac") is None
+    with pytest.raises(AgentError, match="registered in alpha but its checkout is not there"):
+        dispatch.worktrees.ensure_worktree(droot, rp, wt, d["branch"], d["base"])
+    created = dispatch.worktrees.ensure_worktree(droot, rp, wt, d["branch"], d["base"], resume=True)
+    assert created["created"] and wt.is_dir()
+    listed = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=main, capture_output=True, text=True, check=True
+    ).stdout
+    assert str(other) in listed  # scoped: the other missing registration was not pruned

@@ -198,6 +198,33 @@ def add_parser(sub: Subparsers) -> None:
     scope.add_argument("--dispatch-id", help="remove only this dispatch's tree")
     dcl.add_argument("--force", action="store_true", help="remove dirty worktrees too")
     dcl.add_argument("--dry-run", action="store_true", help="list what would be removed; remove nothing")
+    dcl.add_argument(
+        "--delete-branches",
+        action="store_true",
+        help="also delete removed trees' resolved, unneeded branches",
+    )
+    drc = dp.add_parser("reconcile", help="drop a missing worktree's Git registration (preview by default)")
+    drc.add_argument("id")
+    drc.add_argument("--apply", action="store_true")
+    drs = dp.add_parser(
+        "restore", help="put an unfinished dispatch's lost checkout back (preview by default)"
+    )
+    drs.add_argument("id")
+    drs.add_argument("--head", help="the commit the checkout was at; default: the recorded one")
+    drs.add_argument("--apply", action="store_true")
+    ddf = dp.add_parser(
+        "discard-files", help="delete an abandoned worker's named scratch files (preview by default)"
+    )
+    ddf.add_argument("id")
+    ddf.add_argument("--path", action="append", required=True, dest="paths", help="exact file (repeatable)")
+    ddf.add_argument(
+        "--sha256",
+        action="append",
+        default=[],
+        metavar="PATH=SHA256",
+        help="the preview's digest for each path; required with --apply",
+    )
+    ddf.add_argument("--apply", action="store_true", help="delete; only after the owner agrees")
     dru = dp.add_parser("run", help=argparse.SUPPRESS)
     dru.add_argument("id")
     dle = dp.add_parser(
@@ -327,6 +354,24 @@ def dispatch_cleanup(root: Path, args: argparse.Namespace, out: Output) -> int:
             dispatch_id=args.dispatch_id,
             force=args.force,
             dry_run=args.dry_run,
+            delete_branches=args.delete_branches,
+        )
+    )
+
+
+def dispatch_reconcile(root: Path, args: argparse.Namespace, out: Output) -> int:
+    return out.done(ops.dispatch_reconcile(root, dispatch_id=args.id, apply=args.apply))
+
+
+def dispatch_restore(root: Path, args: argparse.Namespace, out: Output) -> int:
+    return out.done(ops.dispatch_restore(root, dispatch_id=args.id, head=args.head, apply=args.apply))
+
+
+def dispatch_discard_files(root: Path, args: argparse.Namespace, out: Output) -> int:
+    hashes = dict(item.split("=", 1) for item in args.sha256 if "=" in item)
+    return out.done(
+        ops.dispatch_discard_files(
+            root, dispatch_id=args.id, paths=args.paths, plan_hashes=hashes or None, apply=args.apply
         )
     )
 
@@ -364,6 +409,9 @@ HANDLERS = {
     ("dispatch", "collect"): dispatch_collect,
     ("dispatch", "cleanup"): dispatch_cleanup,
     ("dispatch", "collect-files"): dispatch_collect_files,
+    ("dispatch", "reconcile"): dispatch_reconcile,
+    ("dispatch", "restore"): dispatch_restore,
+    ("dispatch", "discard-files"): dispatch_discard_files,
     ("dispatch", "reverify"): dispatch_reverify,
     ("dispatch", "run"): dispatch_run,
     ("dispatch", "ledger"): dispatch_ledger,

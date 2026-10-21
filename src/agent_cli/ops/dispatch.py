@@ -483,17 +483,108 @@ def dispatch_cleanup(
     dispatch_id: str | None = None,
     force: bool = False,
     dry_run: bool = False,
+    delete_branches: bool = False,
 ) -> Op:
-    result = dispatch_mod.cleanup(
-        root, feature=feature, dispatch_id=dispatch_id, force=force, dry_run=dry_run
-    )
-    if dry_run:
-        lines = [f"dry run: would remove: {', '.join(result.get('would_remove') or []) or 'none'}"]
-    else:
-        lines = [f"removed: {', '.join(result.get('removed') or []) or 'none'}"]
-    if result.get("skipped"):
-        lines.append("skipped: " + "; ".join(str(s) for s in result["skipped"]))
+    """Counts plus up to ten examples per list; past that, the whole result is in `evidence`."""
+    from .. import tidy
+    from ..dispatch import worktrees
+
+    full = dispatch_mod.cleanup(root, feature=feature, dispatch_id=dispatch_id, force=force, dry_run=dry_run)
+    if delete_branches:
+        full = worktrees.delete_branches(root, full)
+    result = tidy.report(root, "dispatch-cleanup", full, tuple(k for k in CLEANUP_LISTS if k in full))
+    counts = result["counts"]
+
+    def listed(key: str, label: str) -> str:
+        rows = [_cleanup_row(r) for r in as_list(result.get(key))]
+        more = counts[key] - len(rows)
+        return f"{label} ({counts[key]}): {', '.join(rows) or 'none'}" + (
+            f", {more} more" if more > 0 else ""
+        )
+
+    lines = [listed("would_remove", "dry run: would remove") if dry_run else listed("removed", "removed")]
+    for key in ("skipped", "blocked", "missing", "branches_deleted", "branches_skipped"):
+        if result.get(key):
+            lines.append(listed(key, key.replace("_", " ")))
+    if result.get("evidence"):
+        lines.append(f"full result: {result['evidence']}")
     return Op(result, "\n".join(lines))
+
+
+CLEANUP_LISTS = (
+    "would_remove",
+    "removed",
+    "skipped",
+    "blocked",
+    "missing",
+    "branches_kept",
+    "branches_deleted",
+    "branches_skipped",
+)
+
+
+def _cleanup_row(row: object) -> str:
+    entry = as_dict_or_none(row)
+    if entry is None:
+        return str(row)
+    where = entry.get("worktree") or entry.get("branch")
+    return f"{where} [{entry.get('id') or ''}] ({entry.get('reason') or entry.get('state')})"
+
+
+def dispatch_reconcile(
+    root: Path, *, dispatch_id: str | None = None, path: str | None = None, apply: bool = False
+) -> Op:
+    from ..dispatch.worktrees import reconcile
+
+    r = reconcile(root, dispatch_id=dispatch_id, path=path, apply=apply)
+    if r["holds"]:
+        text = f"{r['path']} ({r['state']}) kept registered: " + "; ".join(r["holds"])
+    elif r["already"]:
+        text = f"{r['path']} is missing and no longer registered; nothing to do"
+    elif r["reconciled"]:
+        text = f"reconciled {r['path']}: its registration is dropped; records marked {r['records_marked']}"
+    else:
+        text = (
+            f"preview: {r['path']} is missing; apply drops its registration (HEAD {r['head']} is preserved)"
+        )
+    return Op(r, text)
+
+
+def dispatch_restore(root: Path, *, dispatch_id: str, head: str | None = None, apply: bool = False) -> Op:
+    from ..dispatch.worktrees import restore
+
+    r = restore(root, dispatch_id=dispatch_id, head=head, apply=apply)
+    if r.get("already"):
+        first = f"{r['path']} already present at {r['head']}"
+    elif r["restored"]:
+        first = f"restored {r['path']} on {r['branch']} at {r['head']}"
+    else:
+        first = f"{'kept' if r['holds'] else 'preview'}: {r['path']} on {r['branch']} at {r['head'] or '?'}"
+    lines = [
+        first,
+        *(f"  hold: {h}" for h in r["holds"]),
+        *(f"  warning: {w}" for w in as_list(r.get("warnings"))),
+    ]
+    return Op(r, "\n".join(lines))
+
+
+def dispatch_discard_files(
+    root: Path,
+    *,
+    dispatch_id: str,
+    paths: list[str],
+    plan_hashes: dict[str, str] | None = None,
+    apply: bool = False,
+) -> Op:
+    from ..dispatch.worktrees import discard_files
+
+    r = discard_files(root, dispatch_id=dispatch_id, paths=paths, plan_hashes=plan_hashes, apply=apply)
+    if r["dry_run"]:
+        lines = [f"preview: would delete {len(r['plan_hashes'])} file(s) from {r['worktree']}:"]
+        lines += [f"  {name}  sha256 {digest}" for name, digest in r["plan_hashes"].items()]
+        lines.append("only after the owner agrees: apply=True with plan_hashes set to this mapping")
+        return Op(r, "\n".join(lines))
+    return Op(r, f"discarded from {r['worktree']}: " + ", ".join(r["discarded"]))
 
 
 def dispatch_reverify(root: Path, *, dispatch_id: str) -> Op:

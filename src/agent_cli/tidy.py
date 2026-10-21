@@ -67,6 +67,15 @@ def ignored_files(path: Path) -> list[str]:
     return files
 
 
+def harness_exempt(path: Path, harness_root: Path) -> set[str]:
+    """A harness checkout's regenerable files, and its `.agent` when that links to the shared state."""
+    exempt = {p.as_posix() for p in (*core.GENERATED_VIEWS.values(), *core.REGENERABLE_STATE)}
+    state = core.agent_root(path)
+    if links.is_link(state) and state.resolve() == core.agent_root(harness_root).resolve():
+        exempt.add(state.name)
+    return exempt
+
+
 def changes(path: Path, collected: set[str] | None = None, *, harness_root: Path | None = None) -> list[str]:
     output = repos.run_git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], path)
     rows = iter(output.split("\0"))
@@ -85,12 +94,9 @@ def changes(path: Path, collected: set[str] | None = None, *, harness_root: Path
     real.extend(name for name in ignored_files(path) if name not in (collected or set()))
     if harness_root is None:
         return sorted(set(real))
-    exempt = {p.as_posix() for p in (*core.GENERATED_VIEWS.values(), *core.REGENERABLE_STATE)}
+    exempt = harness_exempt(path, harness_root)
     state = core.agent_root(path)
-    shared = links.is_link(state) and state.resolve() == core.agent_root(harness_root).resolve()
-    if shared:
-        exempt.add(state.name)
-    elif state.exists() and not links.is_link(state):
+    if state.name not in exempt and state.exists() and not links.is_link(state):
         pending = [Path(state)]
         while pending:
             for entry in pending.pop().iterdir():
@@ -355,32 +361,97 @@ def _journal_landed(
     return False
 
 
-def holds(
+def identity(main: Path, path: Path, branch: str) -> dict[str, Any]:
+    """What a removal decision is bound to: the path's two-way registration, its HEAD and the
+    branch tip. A removal proceeds only while all three are unchanged."""
+    # One read for both while the branch exists: a worktree sees its main checkout's refs.
+    both = (
+        repos.git_or_none(["rev-parse", "HEAD^{commit}", f"refs/heads/{branch}^{{commit}}"], path)
+        if branch
+        else None
+    )
+    if both and len(both.split()) == 2:
+        head, tip = both.split()
+    else:
+        head = (repos.git_or_none(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], path) or "").strip()
+        tip = ""
+    return {"registration": worktree.registration(main, path), "head": head, "tip": tip}
+
+
+def missing_hold(state: str) -> str:
+    """A tree whose path is not present is reported, never removed or counted as removed."""
+    how = (
+        "preview `dispatch` action `reconcile` for a dispatch path; for a manager path, preview "
+        "`harness` action `worktree_reconcile`"
+    )
+    return f"path {state}: not removed; {how}"
+
+
+def removal_holds(
     root: Path,
     main: Path,
     path: Path,
     branch: str,
     feature: int | None,
+    records: list[dict[str, Any]],
     *,
     default: str = "main",
-    collected: set[str] | None = None,
+    collected: dict[str, object] | None = None,
+    force: bool = False,
+    expect: dict[str, Any] | None = None,
     cwds: list[tuple[int, str]] | None = None,
+    ignore_holder: str | None = None,
     session_id: str | None = None,
     context: ResolutionContext | None = None,
-) -> list[str]:
-    reasons = active_holds(root, path, feature, cwds=cwds, session_id=session_id)
-    context = context if context is not None else ResolutionContext(root)
-    group = [
-        d for d in context.records if d.get("worktree") and Path(d["worktree"]).resolve() == path.resolve()
-    ]
-    reasons.extend(dispatch_holds(root, group))
-    harness_root = main if main.resolve() == worktree.main_checkout(root).resolve() else None
-    real = changes(path, collected, harness_root=harness_root)
-    if real:
-        reasons.append("uncommitted changes: " + ", ".join(real))
-    if not resolved(root, main, branch, default, context=context):
-        reasons.append(UNRESOLVED_BRANCH)
-    return reasons
+    require_resolved: bool = True,
+) -> tuple[list[str], dict[str, Any]]:
+    """The one removal policy for tidy, manager and dispatch cleanup, run when deciding and again
+    under the coordination guards just before anything is unlinked. `records` are the dispatches
+    on this path, re-read here. `collected` is the collected-file digests whose copies make an
+    untracked file safe to lose (a dispatch's, `{}` for a manager checkout; None for tidy, whose
+    untracked files all count as changes). `force` waives owner waits, real changes and an
+    unresolved tip, never activity, unconfirmed cleanup or uncollected files. A manager removal
+    keeps its branch, so it passes `require_resolved=False`. Returns the holds and the identity
+    they were checked against; with `expect`, a changed identity holds."""
+    seen = identity(main, path, branch)
+    reg = seen["registration"]
+    if reg["state"] != "present":
+        return [missing_hold(reg["state"])], seen
+    reasons = active_holds(root, path, feature, cwds=cwds, ignore_holder=ignore_holder, session_id=session_id)
+    reasons.extend(dispatch_holds(root, records, force=force))
+    if reg.get("locked"):
+        reasons.append("its registration is locked (`git worktree lock`)")
+    if not seen["head"] or seen["head"] != seen["tip"]:
+        reasons.append(
+            f"worktree HEAD {seen['head'] or '?'} is not the exact tip of {branch or '(no branch)'}; kept"
+        )
+    if expect is not None and seen != expect:
+        reasons.append("its checkout, HEAD or branch changed while cleanup checked it; run again")
+    safe: set[str] = set()
+    harness_root = main if worktree.is_main_checkout_of(root, main) else None
+    if collected is not None:
+        from .dispatch.worktrees import uncollected_files
+
+        uncollected, safe = uncollected_files(path, collected)
+        if harness_root is not None:
+            uncollected = [n for n in uncollected if n not in harness_exempt(path, harness_root)]
+        safe |= set(uncollected)  # held below whatever `force` says; not listed twice
+        if uncollected:
+            how = (
+                "collect them with `dispatch` action `collect-files`, or have the owner confirm "
+                "`discard-files` for an abandoned worker's scratch"
+                if records
+                else "commit, move or delete them yourself; removal never discards them"
+            )
+            reasons.append(f"uncollected files: {', '.join(uncollected)} ({how})")
+    if not force:
+        real = changes(path, safe, harness_root=harness_root)
+        if real:
+            waive = " (dirty; pass force)" if collected is not None else ""
+            reasons.append("uncommitted changes: " + ", ".join(real) + waive)
+        if require_resolved and not resolved(root, main, branch, default, context=context):
+            reasons.append(UNRESOLVED_BRANCH)
+    return reasons, seen
 
 
 def dispatch_holds(root: Path, group: list[dict[str, Any]], *, force: bool = False) -> list[str]:
@@ -469,13 +540,15 @@ def inventory(
             terminal = bool(group) and all(d.get("state") in TERMINAL_STATES for d in group)
             if fid not in known or (fid not in closed and not terminal):
                 continue
+            seen: dict[str, Any] = {}
             try:
-                reasons = holds(
+                reasons, seen = removal_holds(
                     root,
                     checkout,
                     path,
                     branch,
                     fid,
+                    group,
                     default=default,
                     cwds=cwds,
                     session_id=session_id,
@@ -485,7 +558,11 @@ def inventory(
                     reasons.append(inventory_error)
             except (core.AgentError, OSError, subprocess.SubprocessError) as exc:
                 reasons = [f"inspection failed: {exc}"]
-            trees.append({**location, "path": str(path), "branch": branch, "feature": fid, "holds": reasons})
+            row = {**location, "path": str(path), "branch": branch, "feature": fid, "holds": reasons}
+            state = as_dict(seen.get("registration")).get("state")
+            if state and state != "present":
+                row["path_state"] = state
+            trees.append({**row, "identity": seen})
             if progress:
                 progress(f"{path}: {'; '.join(reasons) if reasons else 'safe to remove'}")
         output = repos.run_git(["for-each-ref", "--format=%(refname:short)", "refs/heads/"], checkout)
@@ -542,7 +619,8 @@ def run(
     session_id: str | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    from .dispatch.allocation import git_admin, git_admin_short
+    from .dispatch import state as dispatch_state
+    from .dispatch.allocation import alloc_guard, git_admin, git_admin_short
 
     context = ResolutionContext(root)
     listing = inventory(
@@ -555,20 +633,38 @@ def run(
             if row["holds"]:
                 continue
             main, default = Path(row["main"]), row["default_branch"]
-            with git_admin(root, git_admin_short(root, main)):
+            path = Path(row["path"])
+            seen = [
+                d
+                for d in context.records
+                if d.get("worktree") and Path(d["worktree"]).resolve() == path.resolve()
+            ]
+            short = git_admin_short(root, main)
+            # Rechecked just before the unlink with the path's whole membership read again. The
+            # allocation guard keeps a new or resumed dispatch off the path until it is gone (it
+            # precedes git-admin in the lock order); the records guard is never held while git runs.
+            with alloc_guard(root, short), git_admin(root, short):
                 context.refresh(main, default)
-                path = Path(row["path"])
+                group = [
+                    d
+                    for d in dispatch_state.load_all(root)
+                    if d.get("worktree") and Path(d["worktree"]).resolve() == path.resolve()
+                ]
                 try:
-                    row["holds"] = holds(
+                    row["holds"], _ = removal_holds(
                         root,
                         main,
                         path,
                         row["branch"],
                         row["feature"],
+                        group,
                         default=default,
+                        expect=row.get("identity"),
                         session_id=session_id,
                         context=context,
                     )
+                    if not row["holds"] and _revisions(seen) != _revisions(group):
+                        row["holds"] = ["its dispatch record changed while cleanup checked it; run again"]
                     if row["holds"]:
                         continue
                     worktree.unlink_links(path)
@@ -581,32 +677,122 @@ def run(
                 main, default = Path(row["main"]), row["default_branch"]
                 with git_admin(root, git_admin_short(root, main)):
                     context.refresh(main, default)
-                    checked = {w.get("branch") for w in repos.worktrees(main, strict=True)}
                     branch = row["branch"]
                     group = [d for d in context.records if d.get("branch") == branch]
-                    if (
-                        branch not in checked
-                        and not dispatch_holds(root, group)
-                        and resolved(root, main, branch, default, context=context)
-                    ):
-                        repos.run_git(["branch", "-D", branch], main)
+                    tip = branch_tip(main, branch)
+                    if tip and not branch_holds(root, main, branch, default, group, context=context):
+                        delete_branch(main, branch, tip)
                         deleted.append(branch)
+    for row in listing["trees"]:
+        row.pop("identity", None)
     return {**listing, "dry_run": not apply, "removed": removed, "branches_deleted": deleted}
 
 
-def operation(root: Path, *, apply: bool = False):
+def _revisions(records: list[dict[str, Any]]) -> dict[str, Any]:
+    return {str(d.get("id")): d.get("record_revision") for d in records}
+
+
+def branch_tip(main: Path, branch: str) -> str:
+    return (
+        repos.git_or_none(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"], main) or ""
+    ).strip()
+
+
+def branch_holds(
+    root: Path,
+    main: Path,
+    branch: str,
+    default: str,
+    records: list[dict[str, Any]],
+    *,
+    context: ResolutionContext | None = None,
+) -> list[str]:
+    """Why a branch ref stays: one rule for tidy and dispatch cleanup. Only a harness-owned branch
+    (agent/ or a dispatch's) that no registration checks out, including a missing one, whose
+    exact tip is resolved and that no active or owner-waiting dispatch needs is deleted."""
+    reasons: list[str] = []
+    if not branch.startswith(worktree.BRANCH_PREFIX) and not any(d.get("branch") == branch for d in records):
+        reasons.append("not a harness-owned branch")
+    for entry in repos.worktrees(main, strict=True):
+        if entry.get("branch") == branch:
+            reasons.append(f"checked out at {entry['path']}")
+    reasons.extend(dispatch_holds(root, records))
+    if not resolved(root, main, branch, default, context=context):
+        reasons.append("unresolved tip; kept")
+    return reasons
+
+
+def delete_branch(main: Path, branch: str, tip: str) -> None:
+    """Delete the branch only while it still points at the `tip` its holds were checked against."""
+    repos.run_git(["update-ref", "-d", f"refs/heads/{branch}", tip], main)
+
+
+def operation(root: Path, *, apply: bool = False, feature: int | None = None):
     from .ops._shared import Op
 
-    data = run(root, apply=apply, progress=lambda message: print(message, file=sys.stderr, flush=True))
+    data = run(
+        root,
+        apply=apply,
+        feature=feature,
+        progress=lambda message: print(message, file=sys.stderr, flush=True),
+    )
     return Op(data, format_result(data))
+
+
+EXAMPLES = 10
+TIDY_LISTS = ("trees", "branches", "removed", "branches_deleted")
+
+
+def bounded(data: dict[str, Any], keys: tuple[str, ...], evidence: Path | None) -> dict[str, Any]:
+    """`data` with each list in `keys` cut to EXAMPLES rows, `counts` of the full lists and the
+    `evidence` file holding them. The caller writes that file before cutting."""
+    counts = {key: len(data.get(key) or []) for key in keys}
+    cut = {key: list(data.get(key) or [])[:EXAMPLES] for key in keys}
+    return {**data, **cut, "counts": counts, **({"evidence": str(evidence)} if evidence else {})}
+
+
+def evidence_file(root: Path, kind: str, data: dict[str, Any]) -> Path:
+    """The complete result behind a bounded report, in the scratch area tool output spills to."""
+    import json
+    import uuid
+    from datetime import datetime
+
+    from . import scratch
+
+    directory = scratch.ensure(root) / "harness"
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    path = directory / f"{kind}-{stamp}-{uuid.uuid4().hex[:8]}.json"
+    path.write_text(json.dumps(data, indent=1, default=str), encoding="utf-8")
+    return path
+
+
+def report(root: Path, kind: str, data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """Bound a cleanup result for a tool: past EXAMPLES rows in any list, the full one goes to a file."""
+    long = any(len(data.get(key) or []) > EXAMPLES for key in keys)
+    return bounded(data, keys, evidence_file(root, kind, data) if long else None)
+
+
+def _more(lines: list[str], total: int, evidence: object) -> None:
+    if total > EXAMPLES:
+        where = f" in {evidence}" if evidence else ""
+        lines.append(f"... {total - EXAMPLES} more{where}")
 
 
 def format_result(data: dict[str, Any]) -> str:
     lines = ["tidy dry-run" if data["dry_run"] else "tidy apply"]
-    for row in data["trees"]:
+    counts = {key: int(str(value)) for key, value in as_dict(data.get("counts")).items()}
+    trees, branches = data["trees"], data["branches"]
+    if counts:
+        lines.append(
+            f"trees: {counts.get('trees', len(trees))}; branches: {counts.get('branches', len(branches))}; "
+            f"removed: {counts.get('removed', 0)}; branches deleted: {counts.get('branches_deleted', 0)}"
+        )
+    for row in trees[:EXAMPLES]:
         action = "; ".join(row["holds"]) if row["holds"] else "safe to remove"
         lines.append(f"{row['path']} ({row['branch']}): {action}")
-    for row in data["branches"]:
+    _more(lines, counts.get("trees", len(trees)), data.get("evidence"))
+    for row in branches[:EXAMPLES]:
         hint = f"; {row['hint']}" if row.get("hint") else ""
         action = "unresolved; keep"
         if row.get("holds"):
@@ -614,4 +800,5 @@ def format_result(data: dict[str, Any]) -> str:
         elif row["resolved"]:
             action = "resolved; checked out" if row.get("checked_out") else "resolved; safe to remove"
         lines.append(f"{row['branch']}: {action}{hint}")
+    _more(lines, counts.get("branches", len(branches)), data.get("evidence"))
     return "\n".join(lines)

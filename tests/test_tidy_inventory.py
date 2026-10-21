@@ -401,8 +401,9 @@ def test_inventory_git_cost_is_linear_in_branches_and_journals(repo: Path, monke
         assert calls[common] <= n + 3 and calls[scope] == 1
         total -= calls[common] + calls[scope]
         old_total -= old_calls[common] + old_calls[scope]
-    assert total <= 16 * n + 2 * m + 8
-    assert old_total > 16 * n + 2 * m + 8
+    # 17 per tree: the removal identity (HEAD and exact branch tip) is one more read.
+    assert total <= 17 * n + 2 * m + 8
+    assert old_total > 17 * n + 2 * m + 8
     print(
         f"N={n} M={m}: before={old_time:.3f}s/{old_calls.total()} git; after={elapsed:.3f}s/{calls.total()} git"
     )
@@ -423,7 +424,8 @@ def test_apply_rechecks_branch_tips_with_the_shared_context(repo: Path, monkeypa
     result = tidy.run(repo, apply=True)
     assert result["removed"] == []
     assert result["branches_deleted"] == []
-    assert result["trees"][0]["holds"] == [tidy.UNRESOLVED_BRANCH]
+    holds = result["trees"][0]["holds"]
+    assert tidy.UNRESOLVED_BRANCH in holds and any("changed while cleanup checked it" in h for h in holds)
 
 
 @pytest.mark.parametrize("landing", ["ancestry", "squash"])
@@ -470,7 +472,8 @@ def test_apply_shares_records_and_journals_through_removal_and_deletion(repo: Pa
     result = tidy.run(repo, apply=True)
     assert result["removed"] == [str(wt)]
     assert result["branches_deleted"] == ["agent/001-cleanup"]
-    assert calls == Counter({"records": 1, ("journals", repo): 1})
+    # One shared read, plus the guarded reread of each removed tree's whole membership.
+    assert calls == Counter({"records": 2, ("journals", repo): 1})
 
 
 def test_inventory_keeps_each_checkouts_journals_and_default_tree_separate(repo: Path, monkeypatch):

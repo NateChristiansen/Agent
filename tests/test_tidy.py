@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -569,3 +570,120 @@ def test_mcp_tidy_finishes_fast_or_returns_a_detached_log(repo: Path, monkeypatc
     import json
 
     assert json.loads(Path(result.data["result"]).read_text())["dry_run"] is True
+
+
+def _done(wt: Path, **extra) -> dict:
+    return {
+        "id": "001-mac-01",
+        "short": "harness",
+        "feature": 1,
+        "state": "done",
+        "worktree": str(wt),
+        "branch": "agent/001-cleanup",
+        **extra,
+    }
+
+
+def test_an_open_features_landed_dispatch_tree_goes_and_a_missing_path_is_only_reported(
+    repo: Path, monkeypatch
+):
+    from agent_cli import worktree
+    from agent_cli.dispatch import state
+
+    good = tree(repo)
+    squash(repo, good)
+    lost = tree(repo, "001-lost")
+    worktree.unlink_links(lost)
+    shutil.rmtree(lost)
+    records = [_done(good), _done(lost, id="001-mac-02", branch="agent/001-lost")]
+    monkeypatch.setattr(state, "load_all", lambda root: records)
+    monkeypatch.setattr(state, "load", lambda root, ident: next(r for r in records if r["id"] == ident))
+    assert features.resolve(repo, "1").is_open
+    preview = tidy.run(repo, feature=1)
+    rows = {Path(r["path"]).name: r for r in preview["trees"]}
+    assert rows["001-cleanup"]["holds"] == [] and "identity" not in rows["001-cleanup"]
+    assert rows["001-lost"]["path_state"] == "missing" and "not removed" in rows["001-lost"]["holds"][0]
+    assert preview["removed"] == [] and good.exists()
+    result = tidy.run(repo, apply=True, feature=1)
+    assert result["removed"] == [str(good)] and not good.exists()
+    assert "agent/001-lost" in git(["branch", "--list"], repo)
+    assert str(lost).replace("\\", "/") in git(["worktree", "list", "--porcelain"], repo).replace("\\", "/")
+
+
+def test_tidy_apply_rechecks_head_identity_after_inventory(repo: Path, monkeypatch):
+    wt = tree(repo)
+    squash(repo, wt)
+    close(repo)
+    real = tidy.inventory
+
+    def then_detach(*args, **kwargs):
+        listing = real(*args, **kwargs)
+        assert listing["trees"][0]["holds"] == []
+        git(["checkout", "--detach"], wt)
+        (wt / "unique.txt").write_text("unique work\n")
+        git(["add", "unique.txt"], wt)
+        git(["commit", "-m", "unique detached work"], wt)
+        return listing
+
+    monkeypatch.setattr(tidy, "inventory", then_detach)
+    result = tidy.run(repo, apply=True)
+    assert result["removed"] == [] and (wt / "unique.txt").exists()
+    assert any("not the exact tip" in h for h in result["trees"][0]["holds"])
+
+
+def test_tidy_holds_a_tree_whose_worker_cleanup_is_unconfirmed(repo: Path, monkeypatch):
+    from agent_cli.dispatch import state
+
+    wt = tree(repo)
+    squash(repo, wt)
+    record = _done(wt, worker_cleanup_pending=True)
+    monkeypatch.setattr(state, "load_all", lambda root: [record])
+    monkeypatch.setattr(state, "load", lambda root, ident: record)
+    result = tidy.run(repo, apply=True, feature=1)
+    assert result["removed"] == [] and wt.exists()
+    assert any("cleanup is unconfirmed" in h for h in result["trees"][0]["holds"])
+
+
+def test_tidy_output_is_bounded_with_the_full_list_in_evidence(repo: Path):
+    rows = [f"/tmp/tree-{i}" for i in range(12)]
+    out = tidy.report(repo, "probe", {"removed": rows, "skipped": []}, ("removed", "skipped"))
+    assert out["removed"] == rows[:10] and out["counts"] == {"removed": 12, "skipped": 0}
+    import json
+
+    assert json.loads(Path(out["evidence"]).read_text(encoding="utf-8"))["removed"] == rows
+    assert "evidence" not in tidy.report(repo, "probe", {"removed": rows[:3]}, ("removed",))
+    listing = {
+        "dry_run": True,
+        "trees": [{"path": f"/t/{i}", "branch": f"agent/{i}", "holds": []} for i in range(12)],
+        "branches": [],
+        "removed": [],
+        "branches_deleted": [],
+    }
+    text = tidy.format_result(tidy.bounded(listing, tidy.TIDY_LISTS, Path("/tmp/full.json")))
+    assert "trees: 12" in text and "... 2 more in /tmp/full.json" in text and "/t/10" not in text
+    assert parse(["tidy", "--feature", "1"]).feature == 1
+
+
+def test_tidy_apply_rereads_the_whole_membership_of_a_path(repo: Path, monkeypatch):
+    """A dispatch that joins the path after inventory, with cleanup unconfirmed and its lease
+    holder dead, still holds the guarded recheck."""
+    from agent_cli.dispatch import state
+
+    wt = tree(repo)
+    squash(repo, wt)
+    records = [_done(wt)]
+    monkeypatch.setattr(state, "load_all", lambda root: list(records))
+    monkeypatch.setattr(state, "load", lambda root, ident: next(r for r in records if r["id"] == ident))
+    real = tidy.inventory
+
+    def then_join(*args, **kwargs):
+        listing = real(*args, **kwargs)
+        assert listing["trees"][0]["holds"] == []
+        records.append(_done(wt, id="001-mac-02", state="failed", worker_cleanup_pending=True))
+        leases.take_marked(repo, "worktree:harness/001-cleanup", session_id="dispatch:001-mac-02", pid=999999)
+        return listing
+
+    monkeypatch.setattr(tidy, "inventory", then_join)
+    result = tidy.run(repo, apply=True, feature=1)
+    assert result["removed"] == [] and wt.exists()
+    assert any("cleanup is unconfirmed" in h for h in result["trees"][0]["holds"])

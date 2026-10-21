@@ -10,6 +10,7 @@ What a worktree must NOT isolate is coordination, which is what most of these te
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -176,13 +177,13 @@ def test_create_puts_the_worktree_under_the_parent(repo: Path):
 def test_remove_keeps_the_branch_and_refuses_a_dirty_worktree(repo: Path):
     path = worktree.worktree_path(repo, "w")
     _git(repo, "worktree", "add", "-b", "agent/w", str(path), "main")
-    (path / "scratch.txt").write_text("uncommitted work\n")
+    (path / "bin" / "agent").write_text("#!/bin/sh\n# tracked edit\n")
 
     with pytest.raises(AgentError) as err:
         worktree.remove(repo, "w")
-    assert "uncommitted changes" in str(err.value)
+    assert "uncommitted changes: bin/agent" in str(err.value)
 
-    result = worktree.remove(repo, "w", force=True)
+    result = worktree.remove(repo, "w", force=True)  # force waives a tracked edit
     assert result["removed"] and result["branch_kept"]
     assert not path.exists()
     # the branch outlives the worktree, because the work on it is the point and a worktree is
@@ -204,7 +205,7 @@ def test_a_forced_remove_never_deletes_through_a_link(repo: Path):
     (notes / "features").mkdir(parents=True)
     (notes / "features" / "plan.md").write_text("keep\n")
     links.make(path / "features", notes / "features", is_dir=True)
-    (path / "scratch.txt").write_text("uncommitted work\n")
+    (path / "bin" / "agent").write_text("#!/bin/sh\n# tracked edit\n")
 
     try:
         result = worktree.remove(repo, "l", force=True)
@@ -278,3 +279,154 @@ def test_a_name_must_be_one_directory_component(repo: Path, name: str):
     assert _git(repo, "branch", "--list") == before
     assert sorted(p.name for p in repo.parent.iterdir()) == siblings
     assert _git(repo, "worktree", "list").count("\n") == 0  # only the main checkout
+
+
+def _lose(path: Path) -> None:
+    """What the incident did: the directory vanished outside every safe route."""
+    worktree.unlink_links(path)
+    shutil.rmtree(path)
+
+
+def test_a_missing_detached_head_and_staged_index_must_be_pinned_before_reconcile(repo: Path):
+    """Reconcile drops one admin record, never a global prune, and only after the HEAD and the
+    staged index it holds are on refs."""
+    path = repo.parent / "detached"
+    other = repo.parent / "other-lost"
+    _git(repo, "worktree", "add", "--detach", str(path), "main")
+    _git(repo, "worktree", "add", "-b", "agent/other", str(other), "main")
+    (path / "work.txt").write_text("committed\n")
+    _git(path, "add", "work.txt")
+    _git(path, "commit", "-m", "detached work")
+    head = _git(path, "rev-parse", "HEAD")
+    (path / "work.txt").write_text("staged only\n")
+    _git(path, "add", "work.txt")
+    _lose(path)
+    _lose(other)
+    seen = worktree.registration(repo, path)
+    assert seen["state"] == "missing" and seen["head"] == head and seen["branch"] == ""
+    first = worktree.forget_missing(repo, repo, path, apply=True)
+    assert not first["reconciled"] and any("on no ref" in h for h in first["holds"])
+    _git(repo, "update-ref", "refs/recovery/test/head", head)
+    second = worktree.forget_missing(repo, repo, path, apply=True)
+    assert not second["reconciled"] and any("index differs" in h for h in second["holds"])
+    env = {**os.environ, "GIT_INDEX_FILE": str(Path(seen["admin"]) / "index")}
+    tree = subprocess.run(
+        ["git", "write-tree"], cwd=repo, env=env, capture_output=True, text=True, check=True
+    )
+    snap = _git(repo, "commit-tree", tree.stdout.strip(), "-p", head, "-m", "index snapshot")
+    _git(repo, "update-ref", "refs/recovery/test/index", snap)
+    assert worktree.forget_missing(repo, repo, path)["reconciled"] is False  # preview
+    assert Path(seen["admin"]).is_dir()
+    done = worktree.forget_missing(repo, repo, path, apply=True)
+    assert done["reconciled"] and done["staged_ref"] == "refs/recovery/test/index"
+    listed = _git(repo, "worktree", "list", "--porcelain")
+    assert str(path) not in listed and str(other) in listed  # the other lost one is untouched
+    assert _git(repo, "rev-parse", "refs/recovery/test/head") == head
+
+
+def test_an_occupied_or_unavailable_path_is_never_reconciled(repo: Path):
+    path = repo.parent / "occupied"
+    _git(repo, "worktree", "add", "-b", "agent/occupied", str(path), "main")
+    _lose(path)
+    path.mkdir()
+    (path / "new.txt").write_text("someone else\n")
+    result = worktree.forget_missing(repo, repo, path, apply=True)
+    assert result["state"] == "occupied" and not result["reconciled"]
+    assert (path / "new.txt").exists()
+    assert worktree.registration(repo, repo.parent / "gone-root" / "tree")["state"] == "root-unavailable"
+
+
+def test_manager_restore_recreates_a_lost_worktree_only_at_its_recorded_head(repo: Path):
+    created = worktree.create(repo, "lost", sync=False)
+    path = Path(created["path"])
+    (path / "work.txt").write_text("work\n")
+    _git(path, "add", "work.txt")
+    _git(path, "commit", "-m", "manager work")
+    head = _git(path, "rev-parse", "HEAD")
+    _lose(path)
+    with pytest.raises(AgentError, match="registered but missing"):
+        worktree.create(repo, "lost", sync=False)
+    moved = worktree.restore(repo, "lost", head="0" * 40, apply=True)
+    assert not moved["restored"] and any("moved" in h for h in moved["holds"]) and not path.exists()
+    preview = worktree.restore(repo, "lost", head=head)
+    assert not preview["restored"] and not path.exists()
+    assert worktree.LOST_FILES_WARNING in preview["warnings"]
+    done = worktree.restore(repo, "lost", head=head, apply=True, sync=False)
+    assert done["restored"] and _git(path, "rev-parse", "HEAD") == head
+    assert worktree.state_link_ok(path)[0]
+    assert worktree.restore(repo, "lost", head=head, apply=True, sync=False)["already"]
+
+
+def test_create_reports_or_refuses_an_existing_branch_not_at_base(repo: Path):
+    path = Path(worktree.create(repo, "ahead", sync=False)["path"])
+    (path / "work.txt").write_text("work\n")
+    _git(path, "add", "work.txt")
+    _git(path, "commit", "-m", "ahead of main")
+    worktree.remove(repo, "ahead")
+    with pytest.raises(AgentError, match="not at base refs/heads/main"):
+        worktree.create(repo, "ahead", base="refs/heads/main", sync=False)
+    assert not path.exists()
+    result = worktree.create(repo, "ahead", sync=False)
+    assert result["branch_differs"]["base"] == "main" and _git(path, "rev-parse", "HEAD") == _git(
+        repo, "rev-parse", "agent/ahead"
+    )
+    assert any("not at main" in s for s in result["steps"])
+
+
+def test_remove_refuses_a_locked_or_missing_worktree(repo: Path):
+    path = Path(worktree.create(repo, "locked", sync=False)["path"])
+    _git(repo, "worktree", "lock", str(path))
+    with pytest.raises(AgentError, match="locked"):
+        worktree.remove(repo, "locked", force=True)
+    assert path.exists()
+    _git(repo, "worktree", "unlock", str(path))
+    _lose(path)
+    with pytest.raises(AgentError, match="path missing: not removed"):
+        worktree.remove(repo, "locked", force=True)
+
+
+def test_forced_manager_removal_keeps_an_only_copy_and_unconfirmed_dispatch_cleanup(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agent_cli.dispatch import state
+
+    path = Path(worktree.create(repo, "notes", sync=False)["path"])
+    (path / "owner-notes.txt").write_text("the only copy\n")
+    with pytest.raises(AgentError, match="uncollected files: owner-notes.txt"):
+        worktree.remove(repo, "notes", force=True)
+    assert (path / "owner-notes.txt").read_text() == "the only copy\n"
+    (path / "owner-notes.txt").unlink()
+    record = {
+        "id": "001-mac-01",
+        "short": "harness",
+        "feature": 1,
+        "state": "failed",
+        "worktree": str(path),
+        "branch": "agent/notes",
+        "worker_cleanup_pending": True,
+    }
+    monkeypatch.setattr(state, "load_all", lambda root: [record])
+    monkeypatch.setattr(state, "load", lambda root, ident: record)
+    with pytest.raises(AgentError, match="cleanup is unconfirmed"):
+        worktree.remove(repo, "notes")
+    assert path.exists()
+    record["worker_cleanup_pending"] = False
+    assert worktree.remove(repo, "notes")["removed"] and not path.exists()
+
+
+def test_an_existing_checkout_is_checked_against_an_explicit_base(repo: Path):
+    base = _git(repo, "rev-parse", "main")
+    path = Path(worktree.create(repo, "present", sync=False)["path"])
+    (path / "work.txt").write_text("work\n")
+    _git(path, "add", "work.txt")
+    _git(path, "commit", "-m", "new work")
+    with pytest.raises(AgentError, match=f"not at base {base}"):
+        worktree.create(repo, "present", base=base, sync=False)
+    again = worktree.create(repo, "present", sync=False)
+    assert again["branch_differs"]["branch_tip"] == _git(path, "rev-parse", "HEAD")
+    assert (
+        worktree.create(repo, "present", base=_git(path, "rev-parse", "HEAD"), sync=False).get(
+            "branch_differs"
+        )
+        is None
+    )
