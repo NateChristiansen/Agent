@@ -138,6 +138,11 @@ def droot(
     # under load), and no dispatch test starts a process inside a tree it cleans. The scan
     # itself is `test_tidy.py`'s subject.
     monkeypatch.setattr(tidy, "process_cwds", lambda: [])
+    # A test that clears AGENT_NOW (notice_helpers' `wired`) turns tabs on, and its finalize then
+    # starts the detached tab drainer and snapshot watchdog, which outlive the test. pytest reuses
+    # a passed test's tmp_path name, so they wrote `.agent/tabs/eval.lock` into the next test's
+    # tree while `install` emptied it.
+    monkeypatch.setenv("AGENT_NO_TABS", "1")
     seeded.install(_droot_template, tmp_root.parent)
     os.chdir(tmp_root)  # the install replaced the directory tmp_root chdir'd into
     return tmp_root
