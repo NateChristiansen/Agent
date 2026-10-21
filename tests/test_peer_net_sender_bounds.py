@@ -18,11 +18,13 @@ from peer_net_route_fixture import paired  # noqa: F401 -- the fixture
 
 # Timed from when the guard hold starts. A connect that spent a fresh deadline on each step waits
 # for the guard (released at least the hold after that) and then a whole deadline on the held
-# write lock, so it ends at least their sum later, however late the test thread starts it. One
-# shared deadline ends near the deadline after connect starts; the guard hold is its headroom on
-# every platform, for that start delay and any overrun together.
+# write lock, so it ends at least their sum later. One shared deadline ends near the deadline
+# after connect starts; the slack covers the test thread starting connect late and connect's
+# last 10 ms retry sleep oversleeping. It stays well under the hold, so a fresh deadline per
+# step still fails.
 CONNECT_DEADLINE_S = 1.0
 GUARD_HOLD_S = 0.5
+CONNECT_SLACK_S = 0.2
 
 
 def _send(root, **kw):
@@ -61,7 +63,34 @@ def test_store_connect_spends_one_deadline_across_guard_and_setup(paired):
         holder.join(5)
         raw.execute("ROLLBACK")
         raw.close()
-    assert caught.value.code == "timeout" and elapsed < CONNECT_DEADLINE_S + GUARD_HOLD_S
+    assert caught.value.code == "timeout" and elapsed < CONNECT_DEADLINE_S + CONNECT_SLACK_S
+
+
+def test_a_setup_retry_does_not_start_after_an_oversleep_passes_the_deadline(tmp_path, monkeypatch):
+    db = tmp_path / "s.db"
+    raw = sqlite3.connect(db, isolation_level=None)
+    raw.execute("BEGIN IMMEDIATE")
+    conn = sqlite3.connect(db, timeout=0, isolation_level=None)
+    now = [0.0]
+
+    def left() -> float:
+        if now[0] >= 1.0:
+            raise PeerNetError("timeout", "store")
+        return 1.0 - now[0]
+
+    def oversleep(_seconds: float) -> None:
+        raw.execute("ROLLBACK")  # the lock frees while the sleep runs past the deadline
+        now[0] = 2.0
+
+    monkeypatch.setattr(time, "sleep", oversleep)
+    try:
+        with pytest.raises(PeerNetError) as caught:
+            store._execute_until(conn, "CREATE TABLE t (x)", left)
+        tables = conn.execute("SELECT name FROM sqlite_master").fetchall()
+    finally:
+        conn.close()
+        raw.close()
+    assert caught.value.code == "timeout" and tables == []
 
 
 @pytest.mark.parametrize(

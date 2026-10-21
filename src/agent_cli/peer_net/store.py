@@ -13,7 +13,7 @@ wake_coalesced.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,10 +143,13 @@ def connect(root: Path, *, timeout: float | None = None) -> sqlite3.Connection:
         path = root / STORE_REL
         with area_guard(root, "peer-net:store-init", timeout=30.0 if deadline is None else left()):
             prepare_private(path.parent, path)
-            conn = sqlite3.connect(path, timeout=min(10.0, left()), isolation_level=None)
+            conn = sqlite3.connect(path, timeout=10.0 if deadline is None else 0, isolation_level=None)
             for statement in ("PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", *SCHEMA):
-                conn.execute(f"PRAGMA busy_timeout={int(min(10.0, left()) * 1000)}")
-                conn.execute(statement)
+                if deadline is None:
+                    conn.execute("PRAGMA busy_timeout=10000")
+                    conn.execute(statement)
+                else:
+                    _execute_until(conn, statement, left)
     except AgentError as exc:  # the guard stayed busy past the caller's deadline
         _close_quietly(conn)
         raise PeerNetError("timeout", "store") from exc
@@ -159,6 +162,22 @@ def connect(root: Path, *, timeout: float | None = None) -> sqlite3.Connection:
             raise PeerNetError("timeout", "store") from exc
         raise PeerNetError("store-unavailable", "store") from exc
     return conn
+
+
+def _execute_until(conn: sqlite3.Connection, statement: str, left: Callable[[], float]) -> None:
+    """SQLite's busy handler stops once its planned sleeps add up to busy_timeout and never reads
+    a clock, so every oversleep extends the wait. No attempt here starts past the deadline."""
+    import time
+
+    while True:
+        left()
+        try:
+            conn.execute(statement)
+            return
+        except sqlite3.OperationalError as exc:
+            if exc.sqlite_errorcode & 0xFF not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
+        time.sleep(min(0.01, left()))
 
 
 def _close_quietly(conn: sqlite3.Connection | None) -> None:
