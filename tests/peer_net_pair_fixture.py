@@ -39,10 +39,11 @@ from agent_cli.peer_net import (
 from agent_cli.peer_net.errors import PeerNetError
 
 NAME = b"ssh-ed25519"
-# How much longer than its window a read waits while the other end is still working. Windows
-# only: under full-suite load a step there took just over its 1 s window. POSIX keeps a strict window.
-WINDOWS_PEER_WORKING_S = 3.0
-PEER_WORKING_S = WINDOWS_PEER_WORKING_S if sys.platform == "win32" else 0.0
+# How much longer than its window a read waits while the other end is still working. Under
+# full-suite load one step (a grant, a probe, an owner's hook) outlasts the 0.3 s POSIX window
+# as well as the 1 s Windows one. A lost message still times out at the window: its sender is
+# reading by then, so the wait ends at once.
+PEER_WORKING_S = 3.0
 
 
 def host_line(seed: int) -> str:
@@ -104,12 +105,15 @@ class Pipe:
     def __init__(self, drop: set[str]) -> None:
         self.q: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self.drop = drop
+        self.delivered = 0
+        self.taken = 0
 
-    def put(self, message: dict[str, Any]) -> None:
-        phase = str(message.get("phase"))
+    def put(self, message: dict[str, Any] | None) -> None:
+        phase = None if message is None else str(message.get("phase"))
         if phase in self.drop:
             self.drop.discard(phase)
             return
+        self.delivered += 1
         self.q.put(message)
 
 
@@ -145,24 +149,35 @@ class End:
 
     def _peer_silent(self) -> bool:
         peer = self.peer
-        return peer is None or peer.reading or peer.closed or peer.idle
+        if peer is None or peer.closed or peer.idle:
+            return True
+        # A peer still flagged as reading may already hold our last message, popped but not yet
+        # returned from its read. It is waiting on us only once it has taken all we sent; `taken`
+        # is read before `reading` because the peer clears `reading` before it counts.
+        return self.outbox.taken >= self.outbox.delivered and peer.reading
+
+    def _take(self, block: bool, timeout: float | None = None) -> dict[str, Any] | None:
+        message = self.inbox.q.get(block, timeout)
+        self.reading = False
+        self.inbox.taken += 1
+        return message
 
     def _next(self, timeout: float) -> dict[str, Any] | None:
         self.reading = True
         try:
             try:
-                return self.inbox.q.get(timeout=timeout)
+                return self._take(True, timeout)
             except queue.Empty:
                 if not PEER_WORKING_S:
                     raise
             deadline = time.monotonic() + PEER_WORKING_S
             while time.monotonic() < deadline and not self._peer_silent():
                 try:
-                    return self.inbox.q.get(timeout=0.02)
+                    return self._take(True, 0.02)
                 except queue.Empty:
                     pass
             # The peer queues its message before it reads or closes, so this sees it.
-            return self.inbox.q.get_nowait()
+            return self._take(False)
         except queue.Empty:
             raise PeerNetError("pair-timeout", "no reply in time") from None
         finally:
@@ -182,7 +197,7 @@ class End:
         return message
 
     def close(self) -> None:
-        self.outbox.q.put(None)
+        self.outbox.put(None)
         self.closed = True
 
 

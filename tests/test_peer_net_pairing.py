@@ -105,7 +105,6 @@ def test_b_dying_on_a_message_is_repaired_by_pairing_again(devices, phase):
 
 @pytest.mark.parametrize("side", ["A", "B"])
 def test_a_step_slower_than_the_message_window_is_not_a_lost_message(devices, monkeypatch, side):
-    monkeypatch.setattr(peer_net_pair_fixture, "PEER_WORKING_S", peer_net_pair_fixture.WINDOWS_PEER_WORKING_S)
     real = grants.install
 
     def slow(*args, **kwargs):
@@ -154,9 +153,21 @@ def test_a_working_peer_that_never_replies_times_out_at_the_fixture_bound(device
     assert devices.b_result == {"error": "pair-closed"}
 
 
-def test_on_posix_a_reply_after_the_window_is_a_lost_message(devices, monkeypatch):
+def test_a_lost_message_times_out_at_the_window_not_the_fixture_bound(devices, monkeypatch):
+    devices.drop_to_a.add("offer")  # B sent it and is reading, so A has nothing to wait for
+    took = _a_reads(monkeypatch)
+    assert devices.pair_error() == "pair-timeout"
+    assert len(took) == 1
+    assert (
+        pairing.MESSAGE_TIMEOUT_S
+        <= took[0]
+        < pairing.MESSAGE_TIMEOUT_S + peer_net_pair_fixture.PEER_WORKING_S / 2
+    )
+
+
+def test_with_a_strict_window_a_reply_after_the_window_is_a_lost_message(devices, monkeypatch):
     monkeypatch.setattr(pairing, "MESSAGE_TIMEOUT_S", 0.3)
-    monkeypatch.setattr(peer_net_pair_fixture, "PEER_WORKING_S", 0.0)  # POSIX's values
+    monkeypatch.setattr(peer_net_pair_fixture, "PEER_WORKING_S", 0.0)  # no headroom for a working peer
     real = grants.install
 
     def slow(*args, **kwargs):
@@ -190,9 +201,9 @@ class _LateWake(queue.Queue):
             raise
 
 
-def test_on_posix_a_reply_landing_after_the_window_expired_is_still_lost(devices, monkeypatch):
+def test_with_a_strict_window_a_reply_landing_after_the_window_expired_is_still_lost(devices, monkeypatch):
     monkeypatch.setattr(pairing, "MESSAGE_TIMEOUT_S", 0.3)
-    monkeypatch.setattr(peer_net_pair_fixture, "PEER_WORKING_S", 0.0)  # POSIX's values
+    monkeypatch.setattr(peer_net_pair_fixture, "PEER_WORKING_S", 0.0)  # no headroom for a working peer
     real_install, real_session = grants.install, devices.session
     inbox = _LateWake()
 
