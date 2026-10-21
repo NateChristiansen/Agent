@@ -97,7 +97,7 @@ from `agent.local.yaml`.
 | `env_allow` | list of names or `NAME_*` prefixes | `[]` | Variables the worker may inherit from your shell. Everything else is withheld, credentials included. |
 | `branch_template` | format string | `feature/{slug}{suffix}` | The worker's branch name, over `{slug}`, `{number}`, `{ticket}` and `{suffix}`. It must name one of the first three, and it must name `{suffix}`: that renders `-<tag>-SS`, such as `-mac-01`, so each machine's dispatches get their own branch (ADR-0036). `dispatch new` refuses a template without it. |
 | `repo_mcp` | list of server names | none | Servers from the repo's own `.mcp.json` a worker gets. Omitted, null or `[]` loads none. |
-| `diff_rules` | list of `{paths, change, forbid, doc, rule}` | `[]` | A change a worker's diff must not make: `paths` globs, `change` is `added`, `modified` or `any`, `forbid` a regex, and `doc` and `rule` quote where the repo says so. |
+| `diff_rules` | list of `{paths, change, forbid, doc, rule}`, each with optional `lines` | `[]` | A change a worker's diff must not make: `paths` globs, `change` is `added`, `modified` or `any`, `forbid` a regex no added line may match, and `doc` and `rule` quote where the repo says so. `lines: removed` checks removed lines instead, so a rule can forbid deleting what matches; `change` is then `modified`, `deleted` or `any`, and a finding names the line in the base file. `lines` defaults to `added`. |
 | `codex_network_access` | boolean | `false` | Lets a Codex worker's sandbox reach the network. |
 
 ## `worker_mcp:` profiles

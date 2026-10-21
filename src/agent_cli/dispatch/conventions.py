@@ -1,6 +1,6 @@
 """Compare the real base-to-head diff with repository conventions and list added comments for review.
 
-diff_rules_violations reads configured path globs, change kinds, forbidden added-line patterns and
+diff_rules_violations reads configured path globs, change kinds, forbidden added- or removed-line patterns and
 quoted governing sentences. Context or worker claims cannot establish that a diff follows those
 rules.
 
@@ -19,7 +19,7 @@ from typing import Any
 from .. import repos as repos_mod
 from ..records.narrow import dict_list
 
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 GWT_RE = re.compile(r"^(Given|When|Then|And)\b")
 _XML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
 # A self-closing reference tag in a doc comment is replaced by the name in its attribute, so
@@ -39,6 +39,7 @@ class FileDiff:
     path: str
     status: str  # "A" added, "M" modified, "D" deleted
     added: list[tuple[int, str]] = field(default_factory=list[tuple[int, str]])
+    removed: list[tuple[int, str]] = field(default_factory=list[tuple[int, str]])
 
 
 def squash(text: str) -> str:
@@ -47,18 +48,31 @@ def squash(text: str) -> str:
 
 def parse_diff(text: str) -> list[FileDiff]:
     """`git diff --unified=0 --no-renames` output as one `FileDiff` per file, with each added
-    line and its line number in the new file."""
+    line and its line number in the new file, and each removed line and its number in the old."""
     files: list[FileDiff] = []
     cur: FileDiff | None = None
-    line_no = 0
+    in_hunk = False
+    old_no = new_no = 0
     for raw in text.splitlines():
         if raw.startswith("diff --git "):
             cur = FileDiff(path="", status="M")
             files.append(cur)
+            in_hunk = False
             continue
         if cur is None:
             continue
-        if raw.startswith("new file mode"):
+        if m := _HUNK_RE.match(raw):
+            old_no, new_no = int(m.group(1)), int(m.group(2))
+            in_hunk = True
+        elif in_hunk:
+            # Inside a hunk, an added `++ x` or removed `-- x` line reads like a file header.
+            if raw.startswith("+"):
+                cur.added.append((new_no, raw[1:]))
+                new_no += 1
+            elif raw.startswith("-"):
+                cur.removed.append((old_no, raw[1:]))
+                old_no += 1
+        elif raw.startswith("new file mode"):
             cur.status = "A"
         elif raw.startswith("deleted file mode"):
             cur.status = "D"
@@ -70,11 +84,6 @@ def parse_diff(text: str) -> list[FileDiff]:
             source = raw[4:]
             if cur.status == "D" and source.startswith("a/"):
                 cur.path = source[2:]
-        elif m := _HUNK_RE.match(raw):
-            line_no = int(m.group(1))
-        elif raw.startswith("+"):
-            cur.added.append((line_no, raw[1:]))
-            line_no += 1
     return [f for f in files if f.path]
 
 
@@ -137,30 +146,38 @@ def _path_matches(path: str, glob: str) -> bool:
     return fnmatch.fnmatchcase(path, glob)
 
 
+_CHANGE_STATUSES = {"added": "A", "modified": "M", "deleted": "D", "any": "AMD"}
+
+
 def diff_rules_violations(files: list[FileDiff], rules: list[repos_mod.DiffRule]) -> list[dict[str, Any]]:
-    """One row per added line that a rule forbids, with the doc and sentence it breaks."""
+    """One row per checked line that a rule forbids, with the doc and sentence it breaks. A row
+    for a removed line carries `lines: "removed"`, and its `line` numbers the base file."""
     rows: list[dict[str, Any]] = []
     for rule in rules:
         rx = re.compile(rule.forbid)
+        removed = rule.lines == "removed"
         for f in files:
-            if f.status == "D" or not _path_matches(f.path, rule.paths):
+            if f.status not in _CHANGE_STATUSES[rule.change] or not _path_matches(f.path, rule.paths):
                 continue
-            if rule.change == "added" and f.status != "A":
-                continue
-            if rule.change == "modified" and f.status != "M":
-                continue
-            for line_no, text in f.added:
+            for line_no, text in f.removed if removed else f.added:
                 if rx.search(text):
-                    rows.append(
-                        {
-                            "path": f.path,
-                            "line": line_no,
-                            "text": text.strip(),
-                            "doc": rule.doc,
-                            "rule": rule.rule,
-                        }
-                    )
+                    row: dict[str, Any] = {
+                        "path": f.path,
+                        "line": line_no,
+                        "text": text.strip(),
+                        "doc": rule.doc,
+                        "rule": rule.rule,
+                    }
+                    if removed:
+                        row["lines"] = "removed"
+                    rows.append(row)
     return rows
+
+
+def violation_at(v: dict[str, Any]) -> str:
+    """`path:line` of a violation, marked when the line is one the branch removed from the base."""
+    at = f"{v['path']}:{v['line']}"
+    return f"{at} (removed from the base)" if v.get("lines") == "removed" else at
 
 
 # ------------------------------------------------------------------ comments
@@ -321,7 +338,11 @@ def prompt_section(repo_dir: Path, text: str, rules: list[repos_mod.DiffRule]) -
     if rules:
         lines.append("Checked on your diff at return; a `done` that breaks one comes back `blocked`:")
         lines.append("")
-        lines += [f'- `{r.paths}` ({r.change} files): {r.doc} says "{r.rule}"' for r in rules]
+        lines += [
+            f"- `{r.paths}` ({r.change} files{', removed lines' if r.lines == 'removed' else ''}): "
+            f'{r.doc} says "{r.rule}"'
+            for r in rules
+        ]
         lines.append("")
     lines.append(
         "Every `AGENTS.md` or `CLAUDE.md` above a file you change, the repo root's excepted, governs "
@@ -446,7 +467,7 @@ def gate(d: dict[str, Any], rp: repos_mod.Repo | None, ret: dict[str, Any] | Non
 def block_lines(result: dict[str, Any]) -> list[str]:
     """The `next_steps` lines a blocked return carries, one per rule violation and noisy comment."""
     lines = [
-        f'convention: {v["path"]}:{v["line"]} breaks {v["doc"]}: "{v["rule"]}" (line: {v["text"]})'
+        f'convention: {violation_at(v)} breaks {v["doc"]}: "{v["rule"]}" (line: {v["text"]})'
         for v in dict_list(result.get("violations"))
     ]
     lines += [

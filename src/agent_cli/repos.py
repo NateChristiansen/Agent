@@ -99,7 +99,10 @@ def verification_config(dispatch: Mapping[str, object]) -> VerificationConfig | 
 
 
 DIFF_RULE_CHANGES = ("added", "modified", "any")
+DIFF_RULE_REMOVED_CHANGES = ("modified", "deleted", "any")
+DIFF_RULE_LINES = ("added", "removed")
 DIFF_RULE_KEYS = {"paths", "change", "forbid", "doc", "rule"}
+DIFF_RULE_OPTIONAL_KEYS = {"lines"}
 
 
 @dataclass(frozen=True)
@@ -107,15 +110,18 @@ class DiffRule:
     """One convention a repo's own doc states, held on the diff at return.
 
     `paths` is an fnmatch glob from the repo root (`*` crosses `/`), `change` which files it
-    governs (`added`, `modified` or `any`), `forbid` a regex no added line may match, `doc` the
-    repo file that states the convention, and `rule` the sentence quoted from it. `doctor`
-    checks the quote is still in the doc, so a rule cannot outlive the convention it cites."""
+    governs, `forbid` a regex no checked line may match, `doc` the repo file that states the
+    convention, and `rule` the sentence quoted from it. `lines` picks the checked side: `added`
+    (the default) checks added lines of `added`, `modified` or `any` files; `removed` checks
+    removed lines of `modified`, `deleted` or `any` files. `doctor` checks the quote is still
+    in the doc, so a rule cannot outlive the convention it cites."""
 
     paths: str
     change: str
     forbid: str
     doc: str
     rule: str
+    lines: str = "added"
 
 
 def diff_rules(dispatch: Mapping[str, object]) -> list[DiffRule]:
@@ -128,16 +134,22 @@ def diff_rules(dispatch: Mapping[str, object]) -> list[DiffRule]:
     for index, raw in enumerate(rows):
         key = f"dispatch.diff_rules[{index}]"
         row = as_dict_or_none(raw)
-        if row is None or set(row) != DIFF_RULE_KEYS:
-            raise ValueError(f"{key} must contain exactly {', '.join(sorted(DIFF_RULE_KEYS))}")
+        if row is None or not DIFF_RULE_KEYS <= set(row) <= DIFF_RULE_KEYS | DIFF_RULE_OPTIONAL_KEYS:
+            raise ValueError(
+                f"{key} must contain exactly {', '.join(sorted(DIFF_RULE_KEYS))}, and optionally lines"
+            )
         values: dict[str, str] = {}
-        for k in DIFF_RULE_KEYS:
+        for k in sorted(DIFF_RULE_KEYS | (DIFF_RULE_OPTIONAL_KEYS & set(row))):
             v = row[k]
             if not isinstance(v, str) or not v.strip():
                 raise ValueError(f"{key}.{k} must be a non-empty string")
             values[k] = v
-        if values["change"] not in DIFF_RULE_CHANGES:
-            raise ValueError(f"{key}.change must be one of {', '.join(DIFF_RULE_CHANGES)}")
+        lines = values.get("lines", "added")
+        if lines not in DIFF_RULE_LINES:
+            raise ValueError(f"{key}.lines must be one of {', '.join(DIFF_RULE_LINES)}")
+        allowed = DIFF_RULE_REMOVED_CHANGES if lines == "removed" else DIFF_RULE_CHANGES
+        if values["change"] not in allowed:
+            raise ValueError(f"{key}.change must be one of {', '.join(allowed)} when lines is {lines}")
         try:
             re.compile(values["forbid"])
         except re.error as exc:

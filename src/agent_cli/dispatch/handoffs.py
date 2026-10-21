@@ -16,6 +16,7 @@ from ..core import agent_display, atomic_write, write_if_changed
 from ..records.dispatch import GitFacts, WorkerReturn, git_of, result_of, thread_of
 from ..records.narrow import as_float, as_list, dict_list
 from ..vault.dashboard import view_block
+from .conventions import violation_at
 from .ownership import foreign_reason
 from .prompt import manager_prompt, thread_heading
 from .state import (
@@ -282,7 +283,7 @@ def _conventions_lines(conv: dict[str, Any] | None) -> list[str]:
     if conv.get("error"):
         return lines + [f"diff_rules unreadable: {conv['error']}", ""]
     for v in dict_list(conv.get("violations")):
-        lines.append(f'- **breaks** `{v["doc"]}` at `{v["path"]}:{v["line"]}`: "{v["rule"]}"')
+        lines.append(f'- **breaks** `{v["doc"]}` at `{violation_at(v)}`: "{v["rule"]}"')
     for c in dict_list(conv.get("noise")):
         lines.append(f"- **comment noise** at `{c['path']}:{c['line']}`: {c['why']}")
     for c in dict_list(conv.get("unjustified")):  # records from before rows were dropped

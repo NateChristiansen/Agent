@@ -10,6 +10,7 @@ import pytest
 from agent_cli import repos as repos_mod
 from agent_cli.dispatch import conventions as c
 from agent_cli.dispatch.evaluate import _apply_conventions
+from agent_cli.dispatch.handoffs import _conventions_lines
 from agent_cli.dispatch.terminal import _account
 from agent_cli.doctor.checks_repos import _diff_rule_checks
 from agent_cli.repos_validate import validate_registry_data
@@ -68,6 +69,75 @@ def test_parse_diff_numbers_added_lines_and_marks_new_files():
     assert files["a.py"].status == "A" and files["a.py"].added == [(1, "line one"), (2, "line two")]
     assert files["b.py"].status == "M" and files["b.py"].added == [(11, "inserted")]
     assert files["c.py"].status == "D" and files["c.py"].added == []
+    assert files["c.py"].removed == [(1, "gone")]
+
+
+def test_parse_diff_reads_header_lookalikes_inside_a_hunk_as_lines():
+    text = "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -4 +4 @@\n--- a/x\n+++ b/x\n"
+    (f,) = c.parse_diff(text)
+    assert f.path == "b.py"
+    assert f.removed == [(4, "-- a/x")] and f.added == [(4, "++ b/x")]
+
+
+GUARD_RULE = {
+    "paths": "src/*.py",
+    "change": "any",
+    "forbid": r"#\s*guard:",
+    "doc": "tests/AGENTS.md",
+    "rule": "Test names describe the behavior",
+}
+
+
+@pytest.fixture
+def guarded(repo: Path) -> Path:
+    _commit(repo, "src/keep.py", "a = 1\n# guard: keep\nb = 2\n")
+    _commit(repo, "src/gone.py", "x = 1\n# guard: gone\n")
+    _git(repo, "branch", "-f", "base")
+    (repo / "src/keep.py").write_text("a = 1\nb = 2\n")
+    (repo / "src/gone.py").unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "drop guards")
+    return repo
+
+
+def test_a_removal_rule_catches_a_deleted_file_and_a_removal_only_hunk(guarded: Path):
+    files = c.read_diff(guarded, "base")
+    assert {f.path: f.status for f in files} == {"src/gone.py": "D", "src/keep.py": "M"}
+    rows = c.diff_rules_violations(files, _rp([{**GUARD_RULE, "lines": "removed"}]).diff_rules)
+    assert [(r["path"], r["line"], r["text"], r["lines"]) for r in rows] == [
+        ("src/gone.py", 2, "# guard: gone", "removed"),
+        ("src/keep.py", 2, "# guard: keep", "removed"),
+    ]
+    assert c.block_lines({"violations": rows})[0] == (
+        "convention: src/gone.py:2 (removed from the base) breaks tests/AGENTS.md: "
+        '"Test names describe the behavior" (line: # guard: gone)'
+    )
+    assert _conventions_lines({"violations": rows})[2] == (
+        "- **breaks** `tests/AGENTS.md` at `src/gone.py:2 (removed from the base)`: "
+        '"Test names describe the behavior"'
+    )
+
+
+def test_a_removal_rule_honors_its_change_kind(guarded: Path):
+    files = c.read_diff(guarded, "base")
+    for change, paths in (("deleted", ["src/gone.py"]), ("modified", ["src/keep.py"])):
+        rule = {**GUARD_RULE, "lines": "removed", "change": change}
+        assert [r["path"] for r in c.diff_rules_violations(files, _rp([rule]).diff_rules)] == paths
+
+
+def test_a_rule_without_lines_still_checks_added_lines_only(guarded: Path):
+    assert c.diff_rules_violations(c.read_diff(guarded, "base"), _rp([GUARD_RULE]).diff_rules) == []
+    _commit(guarded, "src/keep.py", "a = 1\nb = 2\n# guard: back\n")
+    rows = c.diff_rules_violations(c.read_diff(guarded, "base"), _rp([GUARD_RULE]).diff_rules)
+    assert rows == [
+        {
+            "path": "src/keep.py",
+            "line": 3,
+            "text": "# guard: back",
+            "doc": "tests/AGENTS.md",
+            "rule": "Test names describe the behavior",
+        }
+    ]
 
 
 def test_a_new_test_file_with_numbered_tests_breaks_the_rule(repo: Path):
@@ -308,6 +378,11 @@ def test_prompt_section_names_the_docs_and_the_rules(repo: Path):
         ({"change": "new"}, "change must be one of"),
         ({"forbid": "["}, "not a valid regex"),
         ({"doc": ""}, "doc must be a non-empty string"),
+        ({"lines": "both"}, "lines must be one of added, removed"),
+        ({"lines": ""}, "lines must be a non-empty string"),
+        ({"lines": "removed"}, "change must be one of modified, deleted, any when lines is removed"),
+        ({"change": "deleted"}, "change must be one of added, modified, any when lines is added"),
+        ({"side": "removed"}, "and optionally lines"),
     ],
 )
 def test_validate_rejects_a_bad_diff_rule(patch: dict[str, str], needle: str):
