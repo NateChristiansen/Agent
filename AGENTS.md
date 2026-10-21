@@ -109,6 +109,12 @@ and are loaded by the relevant skills.
 - **2026-09-24 — check client-specific recommendations.** Before recommending Claude-only or
   Codex-only behavior to the owner, ask a manager running that client to check it.
 
+- **2026-10-21 — blocked features need a reason and a resume condition.** Record why work
+  stopped, who or what it waits on, and the concrete evidence or action that lets it resume.
+  Pass the reason to `feature_set`; keep the current blocker in the plan and log. If it changes
+  while the feature stays blocked, append a new blocker entry; a same-status call does not log
+  the new reason. Set the feature active with a reason when the blocker clears.
+
 ## Record and tool boundaries
 
 Use typed `mcp__agent__*` tools. Models never run `bin/agent` in a shell. If a tool is missing or
