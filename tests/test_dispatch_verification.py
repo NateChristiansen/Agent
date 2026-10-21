@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -93,13 +93,37 @@ def finish(root: Path, d: dict[str, Any]) -> dict[str, Any]:
     return terminal.finalize(root, d, features.resolve(root, str(d["feature"])), outcome(root, d))
 
 
-def wait_for(predicate, timeout=12):
+# How long a controlled verifier gets to reach its barrier. Unloaded it takes about 0.5 s (1.4 s
+# with 32 xdist workers on one Mac), yet a loaded macOS runner once passed 12 s. The verifier's
+# own deadline was 12 s too, so its guardian would have given up as the barrier did: the verifier
+# timeouts below sit past the barrier, and `running` reports an `execute` that ended first.
+BARRIER_S = 60
+
+
+def wait_for(predicate, timeout=BARRIER_S, ended=lambda: None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
+        if (why := ended()) is not None:
+            pytest.fail(f"fixture ended before its controlled barrier: {why}")
         time.sleep(0.02)
     pytest.fail("fixture did not reach its controlled barrier")
+
+
+def ended_early(future: Future[None], root: Path, dispatch_id: str) -> str | None:
+    if not future.done():
+        return None
+    if (error := future.exception()) is not None:
+        return f"gate.execute raised {error!r}"
+    current = load(root, dispatch_id)
+    value = gate.metadata(current)
+    life = verification.load_status(root, value[0]).lifecycle if value is not None else {}
+    return (
+        f"gate.execute returned; verification_result={current.get('verification_result')!r}, "
+        f"verification_wait={current.get('verification_wait')!r}, "
+        f"verifier phase={life.get('phase')!r} reason={life.get('reason')!r}"
+    )
 
 
 @contextmanager
@@ -109,15 +133,20 @@ def running(ready):
     command = (
         f"touch {shlex.quote(str(marker))}; while ! test -f {shlex.quote(str(release))}; do sleep .02; done"
     )
-    _set_alpha_dispatch(root, verify=[{"command": command, "timeout_seconds": 10}], verify_timeout_seconds=12)
+    _set_alpha_dispatch(
+        root,
+        verify=[{"command": command, "timeout_seconds": 2 * BARRIER_S}],
+        verify_timeout_seconds=3 * BARRIER_S,
+    )
     with ThreadPoolExecutor(1) as pool:
         future = pool.submit(gate.execute, root, d["id"], d["attempt"])
         try:
-            wait_for(marker.exists)
+            wait_for(marker.exists, ended=lambda: ended_early(future, root, d["id"]))
             yield root, load(root, d["id"])
         finally:
             release.touch()
-            future.result(timeout=15)
+            wait([future], timeout=BARRIER_S)
+        future.result(timeout=0)
 
 
 def test_done_and_collect_wait_for_a_live_verifier_and_preserve_the_lease(ready):
