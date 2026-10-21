@@ -105,6 +105,40 @@ def test_a_heading_in_the_ask_is_refused(tmp_root: Path):
     assert not features.feature_dirs(tmp_root)
 
 
+def _edit_unchanged(root: Path, f: features.Feature) -> dict[str, Any]:
+    """The document-editing preview of plan.md with its own bytes, as a manager's edit starts."""
+    source = root / ".agent" / "scratch" / "plan.md"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(f.plan_path.read_bytes())
+    return documents.edit(root, target=f"features/{f.dir.name}/plan.md", source=source)
+
+
+def test_an_ask_or_result_that_would_break_document_editing_is_refused(tmp_root: Path):
+    """A literal `<!--` reads as an unclosed comment to the protected-section scan, so the plan it
+    landed in could no longer be edited. It is refused before anything is written."""
+    with pytest.raises(AgentError, match="hide plan.md's Tasks or Handoffs"):
+        request_ops.request_new(
+            tmp_root,
+            slug="html-review",
+            title="X",
+            ask="How does it handle `<!--`?",
+            category="review",
+            use=False,
+        )
+    assert not features.feature_dirs(tmp_root)
+    op = request_ops.request_new(
+        tmp_root, slug="html-review", title="X", ask="Is `<!-- x -->` stripped?", category="review", use=False
+    )
+    req = features.resolve(tmp_root, str(op.data["id"]))
+    assert _edit_unchanged(tmp_root, req)["changed"] is False
+    before = req.plan_path.read_bytes()
+    with pytest.raises(AgentError, match="hide plan.md's Tasks or Handoffs"):
+        request_ops.request_complete(tmp_root, request="1", result="It mishandles `<!--` openers.")
+    assert req.plan_path.read_bytes() == before and features.resolve(tmp_root, "1").status == "active"
+    request_ops.request_complete(tmp_root, request="1", result="It strips `<!-- x -->` correctly.")
+    assert _edit_unchanged(tmp_root, features.resolve(tmp_root, "1"))["changed"] is False
+
+
 def test_capture_is_proposed_and_keeps_the_mapping(tmp_root: Path, run):
     run(["feature", "new", "host", "--title", "Host", "--use", "--session-id", "s1"])
     op = request_ops.request_capture(

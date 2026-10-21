@@ -37,6 +37,27 @@ def _block(text: str | None, what: str) -> str:
     return value
 
 
+def _editable(body: str) -> bool:
+    from . import documents
+
+    try:
+        for rendered in (False, True):
+            documents.plan_sections(body, rendered=rendered)
+    except AgentError:
+        return False
+    return True
+
+
+def _refuse_uneditable(before: str, after: str, what: str) -> None:
+    """Refuse text that would leave plan.md failing the protected-section scan document editing
+    runs, such as an unclosed `<!--`, which hides the sections after it."""
+    if _editable(before) and not _editable(after):
+        raise AgentError(
+            f"{what} would hide plan.md's Tasks or Handoffs section from document editing "
+            "(an unclosed `<!--` does that); close it with `-->` or reword it"
+        )
+
+
 def new(
     root: Path,
     *,
@@ -50,6 +71,9 @@ def new(
     if category not in CATEGORIES:
         raise AgentError(f"category must be one of {', '.join(CATEGORIES)}; got {category!r}")
     request = {"category": category, "ask": _block(ask, "the ask")}
+    plain = templates.request_body("000", "Request", category, "ask")
+    filled = templates.request_body("000", title.strip(), category, request["ask"])
+    _refuse_uneditable(plain, filled, "the title or ask")
     return features_mod.new(root, slug, title, status, None, list(repos or []), None, request=request)
 
 
@@ -111,7 +135,9 @@ def with_result(body: str, result: str) -> str:
         anchors = (f"## {templates.REQUEST_ROUNDS}", "## Handoffs")
         at = next((i for i, line in enumerate(lines) if line.strip() in anchors), len(lines))
         lines[at:at] = [heading, "", *text.splitlines(), ""]
-    return "\n".join(lines) + "\n"
+    after = "\n".join(lines) + "\n"
+    _refuse_uneditable(body, after, "the result")
+    return after
 
 
 # ---------------------------------------------------------------- completion
