@@ -125,7 +125,7 @@ def capture(root: Path, kind: str, payload: dict[str, Any], session_id: str | No
         "dispatch_id": dispatch_id,
         "extra": extra,
     }
-    from .hooks import retention, retention_job
+    from .hooks import transcript_retention as retention
 
     record_out["retention_reports"] = retention.reports(record_out)
     day = ts.strftime("%Y-%m-%d")
@@ -152,7 +152,7 @@ def capture(root: Path, kind: str, payload: dict[str, Any], session_id: str | No
         new_unassigned = target.parent == root / UNASSIGNED and not target.exists()
         append_line(target, json.dumps(_utf8_strings(record_out), ensure_ascii=False) + "\n", mode=0o600)
     try:
-        retention_job.enqueue(root, record_out)
+        retention.enqueue(root, record_out)
     except OSError:
         # The raw event remains the durable recovery reference if launch fails.
         pass
@@ -196,10 +196,10 @@ def _adopt_locked(root: Path, feature: features_mod.Feature, session_id: str) ->
                     feature.raw_dir / path.name, json.dumps(rec, ensure_ascii=False) + "\n", mode=0o600
                 )
                 moved_here += 1
-                from .hooks import retention_job
+                from .hooks import transcript_retention as retention
 
                 try:
-                    retention_job.enqueue(root, rec)
+                    retention.enqueue(root, rec)
                 except OSError:
                     pass
             else:
@@ -306,17 +306,17 @@ def preserve_transcripts(root: Path, feature: features_mod.Feature) -> list[Path
     import shutil
     import time
 
-    from .hooks import retention, retention_job
+    from .hooks import transcript_retention as retention
 
     copied: list[Path] = []
-    with retention_job.lock(root, "writer.lock", retention_job.JOB_MAX):
+    with retention.lock(root, "writer.lock", retention.JOB_MAX):
         records = [record for path in sorted(feature.raw_dir.glob("*.jsonl")) for record in read_jsonl(path)]
         names: dict[str, set[str]] = {}
         for record in records:
             for source in retention.references(record):
                 names.setdefault(Path(source).name, set()).add(retention.key(record, source))
         for record in records:
-            refreshed = retention.retain(root, record, deadline=time.monotonic() + retention_job.JOB_MAX)
+            refreshed = retention.retain(root, record, deadline=time.monotonic() + retention.JOB_MAX)
             for source in retention.references(record):
                 ident = retention.key(record, source)
                 canonical = root / retention.BASE / "transcripts" / f"{ident}.jsonl"

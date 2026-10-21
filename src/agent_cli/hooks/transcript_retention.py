@@ -1,17 +1,38 @@
-"""Machine-local full evidence, independent of record lifecycle and capture routing."""
+"""Machine-local transcript retention, detached refresh, and preservation reports.
+
+`enqueue(root, record)` is the bounded integration API for capture and completion
+callers. It accepts `session_id` (the native Codex thread id for rollout discovery),
+`feature` (numeric id or None), `dispatch_id`, optional `transcript_path`, and optional
+`extra.agent_transcript_path`. It queues references and launches a detached consumer;
+it never scans history or copies transcript contents in the caller. OSError can be
+handled by a fail-open completion caller; queued requests survive launch failure.
+
+Raw capture events link `reports(record)` beneath `.agent/raw/retained/reports/`.
+Reports distinguish preserved, partial, missing and unavailable evidence and link
+native descendants. The archive is local; a backfill of captured references is not
+a census of all conversations. Unknown native identities cannot be reconstructed.
+
+Codex dispatch completion must call this API separately: its isolated worker hooks
+do not run manager capture. That terminal integration is supplied by its caller.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import time
+import uuid
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from .. import core
 from ..records.narrow import as_dict
+from ..usage.codex import FOLDERS, codex_home
 
 BASE = core.agent_path(Path(), "raw", "retained")
 
@@ -172,8 +193,6 @@ def related(record: dict[str, Any]) -> list[dict[str, Any]]:
 def refresh(
     root: Path, record: dict[str, Any], threads: dict[str, list[tuple[Path, str]]], deadline: float
 ) -> None:
-    from .retention_sources import related as codex_related
-
     available = related(record) + codex_related(record, threads)
     linked = sorted({p for child in available for p in reports(child)} - set(reports(record)))
     for child in available:
@@ -206,3 +225,155 @@ def backfill(root: Path, deadline: float, threads: dict[str, list[tuple[Path, st
             feature = as_dict(as_dict(mapped).get("feature")).get("id")
             if feature and feature != record.get("feature"):
                 retain(root, {**record, "feature": feature}, deadline=deadline)
+
+
+def native_index(deadline: float) -> dict[str, list[tuple[Path, str]]]:
+    threads: dict[str, list[tuple[Path, str]]] = {}
+    for folder in FOLDERS:
+        for path in (codex_home(Path.home()) / folder).glob("**/rollout-*.jsonl"):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("native transcript discovery deadline")
+            try:
+                with path.open("rb") as inp:
+                    line = inp.readline(1024 * 1024)
+                record = as_dict(json.loads(line))
+            except OSError, ValueError, UnicodeError:
+                continue
+            if record.get("type") != "session_meta":
+                continue
+            meta = as_dict(record.get("payload"))
+            ident = str(meta.get("id") or "")
+            spawn = as_dict(as_dict(as_dict(meta.get("source")).get("subagent")).get("thread_spawn"))
+            parent = str(meta.get("parent_thread_id") or spawn.get("parent_thread_id") or "")
+            if ident:
+                threads.setdefault(ident, []).append((path, parent))
+    return threads
+
+
+def codex_related(record: dict[str, Any], threads: dict[str, list[tuple[Path, str]]]) -> list[dict[str, Any]]:
+    sid = str(record.get("session_id") or "")
+    if not sid or not threads:
+        return []
+    selected = {sid}
+    while True:
+        children = {
+            ident for ident, paths in threads.items() if any(parent in selected for _, parent in paths)
+        }
+        if children <= selected:
+            break
+        selected.update(children)
+    return [
+        {**record, "transcript_path": str(path), "extra": {}, "native_session_id": ident}
+        for ident in selected
+        for path, _ in threads.get(ident, [])
+    ]
+
+
+TRIGGER_WAIT = 0.05
+JOB_MAX = 600.0
+
+
+@contextmanager
+def lock(root: Path, name: str, wait: float) -> Generator[None]:
+    if not root.is_dir():
+        raise FileNotFoundError(root)
+    directory = root / BASE
+    directory.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        from .. import win_lock
+
+        fd = win_lock.open_lock_file(root, (*BASE.parts, name))
+        try:
+            with win_lock.exclusive(fd, timeout=wait):
+                yield
+        finally:
+            os.close(fd)
+        return
+    import fcntl
+
+    with (directory / name).open("a") as fh:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(name) from None
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def enqueue(root: Path, record: dict[str, Any]) -> None:
+    """Queue native references for detached retention; see the module integration contract."""
+    from ..usage.job import spawn
+
+    # Tests share the detached-job off switch. Synchronous entry points stay testable.
+    if os.environ.get("AGENT_NO_USAGE") or os.environ.get("AGENT_NOW"):
+        return
+    record = {
+        **{k: record.get(k) for k in ("session_id", "feature", "dispatch_id", "transcript_path")},
+        "extra": {"agent_transcript_path": as_dict(record.get("extra")).get("agent_transcript_path")},
+    }
+    spool = root / BASE / "pending" / f"{uuid.uuid4().hex}.json"
+
+    def start(wait: float) -> None:
+        spawn([sys.executable, "-m", "agent_cli.hooks.transcript_retention", str(root), str(wait)], root)
+
+    try:
+        with lock(root, "coord.lock", TRIGGER_WAIT):
+            save(spool, record)
+            start(0)
+    except TimeoutError:
+        save(spool, record)
+        # A claimant must wait: the consumer may already have made its final queue read.
+        start(JOB_MAX)
+
+
+def run(root: Path, wait: float = 0) -> None:
+    deadline = time.monotonic() + JOB_MAX
+    try:
+        writer = lock(root, "writer.lock", wait)
+        writer.__enter__()
+    except TimeoutError, FileNotFoundError:
+        return
+    try:
+        threads = native_index(deadline)
+        marker = root / BASE / "backfill.json"
+        if not marker.exists():
+            backfill(root, deadline, threads)
+            save(marker, {"status": "captured references scanned; not a census of conversations"})
+        # Refresh known native sources too: later tails need not bring a new pointer.
+        for path in list((root / BASE / "reports").glob("*.json")):
+            data = load(path)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("retention refresh deadline")
+            for association in data.get("associations", []):
+                record = {**association, "transcript_path": data.get("source")}
+                refresh(root, record, threads, deadline)
+        while root.is_dir() and time.monotonic() < deadline:
+            with lock(root, "coord.lock", max(0, deadline - time.monotonic())):
+                pending = list((root / BASE / "pending").glob("*.json"))
+                if not pending:
+                    # A trigger holds this same lock through enqueue and spawn. Release the
+                    # writer before it can start a child, closing the final-read race.
+                    writer.__exit__(None, None, None)
+                    writer = None
+                    return
+            for path in pending:
+                record = load(path)
+                refresh(root, record, threads, deadline)
+                path.unlink(missing_ok=True)
+    except (OSError, TimeoutError) as exc:
+        if root.is_dir():
+            save(root / BASE / "failure.json", {"detail": str(exc)})
+    finally:
+        if writer is not None:
+            writer.__exit__(None, None, None)
+
+
+if __name__ == "__main__":
+    run(Path(sys.argv[1]), float(sys.argv[2]))
