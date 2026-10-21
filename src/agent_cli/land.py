@@ -396,7 +396,7 @@ def land(
         raise
     _op_event(main, trail, asked, "done")
     # After the landing is done and released: a held or failed cleanup stays on the journal.
-    return followups.retry_cleanup(root, current=journal) or journal
+    return followups.retry_cleanup(root, current=journal, main=main) or journal
 
 
 def _op_event(main: Path, trail: dict[str, Any], asked: float, outcome: str, why: str = "") -> None:

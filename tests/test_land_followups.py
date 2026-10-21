@@ -316,6 +316,44 @@ def test_same_second_landings_are_ordered_by_git_not_by_id(
     assert len(_rows(tmp_root)) == 2
 
 
+def test_cleanup_uses_the_main_and_harness_it_is_given_and_resolves_them_otherwise(
+    tmp_root: Path, landed, monkeypatch: pytest.MonkeyPatch
+):
+    looked: list[str] = []
+    cleaned: list[str] = []
+    monkeypatch.setattr("agent_cli.land.main_of", lambda root: looked.append("main") or root)
+    monkeypatch.setattr(
+        "agent_cli.verify_record.harness_repo",
+        lambda root: looked.append("harness") or SimpleNamespace(name="Harness"),
+    )
+    monkeypatch.setattr(
+        followups,
+        "_clean",
+        lambda root, journal, d: cleaned.append(d["id"]) or {"id": d["id"], "state": "held"},
+    )
+    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), "worktree": str(tmp_root / "wt")})
+    journal = _journal()
+    jn.write(tmp_root, journal)
+
+    followups.retry_cleanup(tmp_root, current=journal, main=tmp_root, harness="Harness")  # a landing
+    assert looked == [] and cleaned == ["001-mac-01"]
+    followups.retry_cleanup(tmp_root)  # an allocation passes neither
+    assert looked == ["main", "harness"] and cleaned == ["001-mac-01", "001-mac-01"]
+    followups.retry_cleanup(tmp_root, current=journal, main=tmp_root, harness="Other")
+    assert len(looked) == 2 and len(cleaned) == 2
+
+
+def test_cleanup_looks_up_the_harness_only_when_a_dispatch_is_on_a_landed_branch(
+    tmp_root: Path, landed, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("agent_cli.verify_record.harness_repo", lambda root: pytest.fail("harness looked up"))
+    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), "worktree": str(tmp_root / "wt")})
+    journal = _journal(branch="agent/002-other-mac-01")
+    jn.write(tmp_root, journal)
+    followups.retry_cleanup(tmp_root, current=journal, main=tmp_root)
+    assert journal["obligations"]["cleanup"] == "done"
+
+
 def test_the_landing_session_is_the_sender_so_its_own_notice_is_not_rung(tmp_root: Path, landed, monkeypatch):
     rung: list[str] = []
     monkeypatch.setattr("agent_cli.ops.peers._ring_socket", lambda path: rung.append(path))

@@ -114,18 +114,26 @@ def newer_mark(root: Path, held: dict[str, Any], journal: dict[str, Any]) -> boo
 
 
 def retry_cleanup(
-    root: Path, *, current: dict[str, Any] | None = None, keep: tuple[str, ...] = ()
+    root: Path,
+    *,
+    current: dict[str, Any] | None = None,
+    keep: tuple[str, ...] = (),
+    main: Path | None = None,
+    harness: str | None = None,
 ) -> dict[str, Any] | None:
     """Settle the cleanup that done landings still owe, least recently tried first and at most
     `RETRY_LIMIT` of them. Takes the land flock without waiting: a landing that holds it retries
     them itself. `current` is a journal the caller holds, settled in place; `keep` are worktree
-    paths about to be reused, left for a later try. Never raises; returns `current`."""
+    paths about to be reused, left for a later try. `main` and `harness` are the main checkout
+    and harness repo name when the caller already has them; otherwise they are resolved here.
+    Never raises; returns `current`."""
     from .dispatch.allocation import worktree_key
 
     try:
-        from .land import main_of
+        if main is None:
+            from .land import main_of
 
-        main = main_of(root)
+            main = main_of(root)
         if current is None and not any(cleanup_owed(j) for j in jn.every(main)):
             return None
         with jn.flock(main):
@@ -135,13 +143,20 @@ def retry_cleanup(
             owed.sort(key=lambda j: str(as_dict(j.get("cleanup")).get("tried") or ""))
             kept = {worktree_key(p) for p in keep}
             for journal in owed[:RETRY_LIMIT]:
-                settle_cleanup(root, main, journal, keep=kept)
+                settle_cleanup(root, main, journal, keep=kept, harness=harness)
     except Exception:  # noqa: BLE001, S110 — the landing stands; what is owed stays pending
         pass
     return current
 
 
-def settle_cleanup(root: Path, main: Path, journal: dict[str, Any], *, keep: set[str] | None = None) -> None:
+def settle_cleanup(
+    root: Path,
+    main: Path,
+    journal: dict[str, Any],
+    *,
+    keep: set[str] | None = None,
+    harness: str | None = None,
+) -> None:
     """One cleanup attempt for each of the journal's unsettled candidates, then save what each
     one is now. The caller holds the land flock. A failure is recorded on the journal."""
     from .dispatch.allocation import worktree_key
@@ -152,7 +167,7 @@ def settle_cleanup(root: Path, main: Path, journal: dict[str, Any], *, keep: set
     skipped = False
     try:
         seen: set[str] = set()
-        for d in _cleanup_candidates(root, journal):
+        for d in _cleanup_candidates(root, journal, harness=harness):
             ident = str(d["id"])
             seen.add(ident)
             if rows.get(ident, {}).get("state") in SETTLED:
@@ -209,18 +224,23 @@ def cleanup_text(journal: dict[str, Any]) -> str:
     return text
 
 
-def _cleanup_candidates(root: Path, journal: dict[str, Any]) -> list[dict[str, Any]]:
-    """The harness dispatches with a worktree on a branch this journal landed."""
+def _cleanup_candidates(
+    root: Path, journal: dict[str, Any], *, harness: str | None = None
+) -> list[dict[str, Any]]:
+    """The harness dispatches with a worktree on a branch this journal landed. The harness repo
+    is looked up only when some dispatch is on one of those branches."""
     from . import verify_record
     from .dispatch import state as dispatch_state
 
-    harness = verify_record.harness_repo(root).name
     branches = set(_branches(journal))
-    return [
-        d
-        for d in dispatch_state.load_all(root)
-        if d.get("branch") in branches and d.get("repo") == harness and d.get("worktree")
+    on_branch = [
+        d for d in dispatch_state.load_all(root) if d.get("branch") in branches and d.get("worktree")
     ]
+    if not on_branch:
+        return []
+    if harness is None:
+        harness = verify_record.harness_repo(root).name
+    return [d for d in on_branch if d.get("repo") == harness]
 
 
 def _landed_tip(journal: dict[str, Any], branch: str) -> str:
