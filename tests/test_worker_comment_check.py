@@ -75,7 +75,7 @@ def test_both_providers_deny_a_comment_citing_a_feature_id(droot: Path, repo, mo
 
 
 @pytest.mark.parametrize(
-    "cited", ["feature 028", "Feature 028", "001-mac-01", "001-mac-01.", "L-20261004-17"]
+    "cited", ["feature 028", "Feature 028", "001-mac-01", "001-mac-01.", "L-20261004-17", "L-20261021-mac-01"]
 )
 def test_each_kind_of_id_is_refused(cited: str):
     rows = noisy([{"path": "a.py", "line": 1, "end": 1, "text": f"See {cited} for why."}])

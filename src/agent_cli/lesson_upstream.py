@@ -22,7 +22,7 @@ from .core import AgentError
 from .records.narrow import as_dict_or_none, as_str, dig
 
 TITLE_PREFIX = "[lesson]"
-MARKER = re.compile(r"^harness-lesson: L-\d{8}-\d{2}$")
+MARKER = re.compile(r"^harness-lesson: L-\d{8}-(?:[a-z][a-z0-9]{0,7}-)?\d{2,}$")
 #: The whole encoded fallback URL. A chosen conservative budget, not a measured browser limit.
 URL_BUDGET = 8000
 _HOST = "github.com"

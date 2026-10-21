@@ -20,12 +20,12 @@ from .conventions import GWT_RE, FileDiff
 from .conventions import squash as squash
 
 #: A cited id: `feature NNN` (exactly three digits), a dispatch id with a host part such as
-#: `NNN-mac-SS`, or a lesson id `L-YYYYMMDD-N`. Bare `NNN-NN`, `task N` and `dispatch N` read as
-#: ordinary prose or numbers, so they pass.
+#: `NNN-mac-SS`, or a lesson id `L-YYYYMMDD-N` or `L-YYYYMMDD-mac-N`. Bare `NNN-NN`, `task N`
+#: and `dispatch N` read as ordinary prose or numbers, so they pass.
 ID_RE = re.compile(
     r"\bfeature\s+\d{3}\b"
     r"|\b\d{3}-[a-z]+-\d{2}\b"
-    r"|\bL-\d{8}-\d+\b",
+    r"|\bL-\d{8}-(?:[a-z][a-z0-9]*-)?\d+\b",
     re.IGNORECASE,
 )
 #: Comments a tool reads, which repeat across files by design.

@@ -9,7 +9,10 @@ created on first write, because an existing notes repo never receives a new exam
 from `notes link`.
 
 The file has `## Open` and `## Resolved`; only Open counts toward the session-start nudge.
-Ids are unique per machine, so every add and resolve takes one lock.
+New ids read `L-YYYYMMDD-<tag>-NN` with this machine's dispatch label (ADR-0036), so two
+machines sharing one notes repo never mint the same id; without a label they fall back to the
+legacy `L-YYYYMMDD-NN`. Both forms stay valid. Ids are allocated per machine, so every add and
+resolve takes one lock, and `resolve` refuses an id that names two entries.
 """
 
 from __future__ import annotations
@@ -36,7 +39,8 @@ _HEADER = (
     "product repo or a local fix.\n"
 )
 _FIELDS = ("origin", "kind", "source", "found", "evidence", "home", "resolved", "disposition")
-_ENTRY = re.compile(r"^### (L-(\d{8})-(\d{2})) — (.*)$")
+#: The tag is dispatch's `TAG_PATTERN` (ADR-0036), spelled out to keep `dispatch` unimported.
+_ENTRY = re.compile(r"^### (L-\d{8}-(?:[a-z][a-z0-9]{0,7}-)?\d{2,}) — (.*)$")
 _FIELD = re.compile(r"^- (\w+): ?(.*)$")
 _SECTIONS = ("## Open", "## Resolved")
 
@@ -91,7 +95,7 @@ def _parse_text(text: str | None) -> tuple[str, list[Entry], list[str]]:
             continue
         m = _ENTRY.match(line)
         if m and section in _SECTIONS:
-            current = Entry(m.group(1), m.group(4).strip(), resolved=section == "## Resolved")
+            current = Entry(m.group(1), m.group(2).strip(), resolved=section == "## Resolved")
             entries.append(current)
             continue
         f = _FIELD.match(line)
@@ -148,12 +152,17 @@ def open_entries(root: Path) -> list[Entry]:
 
 
 def _next_id(root: Path) -> str:
-    day = today().strftime("%Y%m%d")
+    """Two machines sharing one notes repo once minted the same id and notes sync kept both;
+    the label in the id keeps each machine's sequence apart."""
+    from .dispatch import machine
+
+    tag = machine.resolve(root).tag
+    prefix = f"L-{today().strftime('%Y%m%d')}-{tag + '-' if tag else ''}"
     taken = {e.id for e in load(root)}
     n = 1
-    while f"L-{day}-{n:02d}" in taken:
+    while f"{prefix}{n:02d}" in taken:
         n += 1
-    return f"L-{day}-{n:02d}"
+    return f"{prefix}{n:02d}"
 
 
 def _lock(root: Path):
@@ -213,9 +222,15 @@ def resolve(root: Path, *, entry_id: str, disposition: str, note: str) -> Entry:
         )
     with _lock(root):
         preamble, entries = _load_for_write(root)
-        match = next((e for e in entries if e.id == entry_id), None)
-        if match is None:
+        matches = [e for e in entries if e.id == entry_id]
+        if not matches:
             raise AgentError(f"no lesson {entry_id!r} in the queue; see `agent lesson list`")
+        if len(matches) > 1:
+            titles = "; ".join(e.title for e in matches)
+            raise AgentError(
+                f"{entry_id} names {len(matches)} entries ({titles}); give one a free id in {QUEUE}, then retry"
+            )
+        match = matches[0]
         if match.resolved:
             raise AgentError(f"{entry_id} is already resolved: {match.fields.get('disposition')}")
         match.resolved = True

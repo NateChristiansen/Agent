@@ -150,6 +150,7 @@ def test_the_draft_must_carry_its_title_prefix_and_marker(tmp_root: Path, fake: 
         _check(tmp_root, title="check the question hold")
     with pytest.raises(AgentError, match="harness-lesson"):
         _check(tmp_root, body="no marker here\n")
+    assert _check(tmp_root, body="detail\n\nharness-lesson: L-20260903-mac-01\n")["marker"]
 
 
 def test_a_short_body_gives_the_whole_draft_in_the_url(tmp_root: Path, fake: Fake):

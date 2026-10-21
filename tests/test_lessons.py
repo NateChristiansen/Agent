@@ -25,7 +25,7 @@ def test_add_list_resolve_round_trip_in_the_local_queue(tmp_root: Path):
     first = _add(tmp_root, scope="harness")
     second = _add(tmp_root, scope="private", kind="practice", title="name who builds and when")
     third = _add(tmp_root, title="no scope at all")
-    assert [first.id, second.id, third.id] == ["L-20260903-01", "L-20260903-02", "L-20260903-03"]
+    assert [first.id, second.id, third.id] == ["L-20260903-mac-01", "L-20260903-mac-02", "L-20260903-mac-03"]
     assert (tmp_root / LOCAL).exists()
     assert not (tmp_root / LEGACY).exists(), "nothing writes the retired tracked queue"
     assert "scope" not in first.as_dict()
@@ -73,6 +73,33 @@ def test_resolve_needs_a_note_and_a_known_id(tmp_root: Path):
         lessons.resolve(tmp_root, entry_id=entry.id, disposition="filed", note="x")
 
 
+def test_two_machines_mint_distinct_ids_and_an_ambiguous_id_refuses(tmp_root: Path):
+    """Two machines sharing one notes repo once minted the same id on the same day."""
+    local = tmp_root / "agent.local.yaml"
+    local.write_text("machine: mac\n", encoding="utf-8")
+    mac = _add(tmp_root, title="from the mac")
+    local.write_text("machine: pc\n", encoding="utf-8")
+    pc = _add(tmp_root, title="from the pc")
+    assert [mac.id, pc.id] == ["L-20260903-mac-01", "L-20260903-pc-01"]
+    assert [e.id for e in lessons.open_entries(tmp_root)] == [mac.id, pc.id]
+
+    path = tmp_root / LOCAL
+    legacy = "### L-20260901-01 — {}\n- kind: lesson\n\n"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.replace("## Open\n", "## Open\n" + legacy.format("one") + legacy.format("two")))
+    before = path.read_text(encoding="utf-8")
+    with pytest.raises(AgentError, match="names 2 entries"):
+        lessons.resolve(tmp_root, entry_id="L-20260901-01", disposition="dropped", note="x")
+    assert path.read_text(encoding="utf-8") == before
+    done = lessons.resolve(tmp_root, entry_id=pc.id, disposition="dropped", note="x")
+    assert done.resolved and done.title == "from the pc"
+
+
+def test_without_a_label_ids_fall_back_to_the_legacy_form(tmp_root: Path):
+    (tmp_root / "agent.local.yaml").write_text("{}\n", encoding="utf-8")
+    assert _add(tmp_root).id == "L-20260903-01"
+
+
 def test_concurrent_adds_get_distinct_ids_and_all_land(tmp_root: Path):
     ids: list[str] = []
     errors: list[Exception] = []
@@ -115,7 +142,7 @@ def test_hand_edits_survive_the_next_add_and_resolve(tmp_root: Path):
     assert all(not e.extra for i, e in by_id.items() if i != entry.id)
     # a second write leaves the file byte-identical: no blank lines accumulate
     _add(tmp_root, title="third")
-    lessons.resolve(tmp_root, entry_id="L-20260903-03", disposition="dropped", note="x")
+    lessons.resolve(tmp_root, entry_id="L-20260903-mac-03", disposition="dropped", note="x")
     once = path.read_text(encoding="utf-8")
     lessons._write(tmp_root, *lessons._load_for_write(tmp_root))
     assert path.read_text(encoding="utf-8") == once
@@ -184,13 +211,22 @@ def test_add_and_resolve_rewrite_the_dashboard_count(tmp_root: Path, run):
 def test_cli_round_trip(tmp_root: Path, run):
     r = run(["--json", "lesson", "add", "a finding", "--scope", "harness", "--evidence", EVIDENCE])
     assert r.code == 0, r
-    assert r.json["id"] == "L-20260903-01"
+    assert r.json["id"] == "L-20260903-mac-01"
     r = run(["--json", "lesson", "add", "another", "--evidence", EVIDENCE])
     assert r.code == 0, r
     r = run(["--json", "lesson", "list", "--scope", "private"])
     assert r.json["count"] == 2
     r = run(
-        ["--json", "lesson", "resolve", "L-20260903-01", "--disposition", "upstream", "--note", "https://x/1"]
+        [
+            "--json",
+            "lesson",
+            "resolve",
+            "L-20260903-mac-01",
+            "--disposition",
+            "upstream",
+            "--note",
+            "https://x/1",
+        ]
     )
     assert r.code == 0 and r.json["state"] == "resolved" and r.json["resolved"] == "2026-09-03"
     assert run(["--json", "lesson", "list"]).json["count"] == 1
