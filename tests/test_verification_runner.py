@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ from agent_cli import links
 from agent_cli.core import AgentError
 from agent_cli.dispatch import verification as runner
 from agent_cli.dispatch import verification_process as procs
-from agent_cli.dispatch.verification_evidence import Binding
+from agent_cli.dispatch.verification_evidence import Binding, TreeState
 from agent_cli.dispatch.verification_store import Store
 from harness_root import rewrite
 from verification_fixtures import (
@@ -553,7 +554,9 @@ def test_guardian_death_during_fifo_git_observation_self_expires(fixture):
     os.mkfifo(original)
     handle = None
     try:
-        handle = start(fixture, config("touch forbidden"))
+        # The orphaned query's alarm is the observation's deadline, so a short total lets it
+        # expire inside `wait`'s cleanup window.
+        handle = start(fixture, config("touch forbidden", total=4.0))
         deadline = time.monotonic() + 5
         git_pid = None
         while git_pid is None:
@@ -667,3 +670,195 @@ def test_gitlink_is_explicitly_unsupported_before_diff_or_nested_git(fixture, mo
     assert result.lifecycle["reason"] == "unsupported_tree"
     assert result.cleanup_confirmed
     assert not (worktree / "forbidden").exists()
+
+
+def _fail_lifecycle(monkeypatch):
+    original = Store.lifecycle
+
+    def lifecycle(self, value):
+        if value["phase"] == "observing":
+            raise OSError("disk full under /private/secret")
+        original(self, value)
+
+    monkeypatch.setattr(Store, "lifecycle", lifecycle)
+
+
+def _fail_observe(monkeypatch):
+    def observe(*args, **kwargs):
+        raise AgentError("verification requires an existing commit")
+
+    monkeypatch.setattr(runner, "observe_tree", observe)
+
+
+def _fail_evidence(monkeypatch):
+    original = Store.evidence
+
+    def evidence(self, value):
+        if value.state == "running" and value.before is not None:
+            raise ValueError("evidence carried command output")
+        original(self, value)
+
+    monkeypatch.setattr(Store, "evidence", evidence)
+
+
+def _fail_clean_check(monkeypatch):
+    def clean_at(self, sha):
+        raise RuntimeError("configured output")
+
+    monkeypatch.setattr(TreeState, "clean_at", clean_at)
+
+
+def _fail_unsupported(monkeypatch):
+    def observe(*args, **kwargs):
+        raise procs.UnsupportedTree("gitlink/submodule differs from immutable launch base")
+
+    monkeypatch.setattr(runner, "observe_tree", observe)
+
+
+def _fail_every_evidence(monkeypatch):
+    def evidence(self, value):
+        raise OSError("disk full under /private/secret")
+
+    monkeypatch.setattr(Store, "evidence", evidence)
+
+
+def _fail_terminal_evidence(monkeypatch):
+    original = Store.evidence
+
+    def evidence(self, value):
+        if value.state != "running":
+            raise OSError("disk full under /private/secret")
+        original(self, value)
+
+    monkeypatch.setattr(Store, "evidence", evidence)
+
+
+def _guardian(fixture, monkeypatch, settings):
+    """Prepare a run and hand `guardian_main`, run in this process, the request its launch sends."""
+    root, worktree, sha = fixture
+    prepared = runner.prepare(root, worktree, dispatch_id="001-01", attempt=1, final_sha=sha, config=settings)
+    request = {
+        "root": str(prepared.root),
+        "worktree": str(prepared.worktree),
+        "binding": asdict(prepared.binding),
+        "config": asdict(prepared.config),
+        "environment": prepared.environment,
+        "launch_base": None,
+        **prepared.tools,
+    }
+    monkeypatch.setattr(procs, "read_request", lambda: json.loads(json.dumps(request)))
+    monkeypatch.setattr(procs, "parent_gone", lambda: False)
+    return prepared
+
+
+@pytest.mark.parametrize(
+    ("inject", "reason", "step", "kind", "message"),
+    [
+        (_fail_lifecycle, "runner_error", "lifecycle", "OSError", None),
+        (
+            _fail_observe,
+            "runner_error",
+            "observe_tree",
+            "AgentError",
+            "verification requires an existing commit",
+        ),
+        (
+            _fail_unsupported,
+            "unsupported_tree",
+            "observe_tree",
+            "UnsupportedTree",
+            "gitlink/submodule differs from immutable launch base",
+        ),
+        (_fail_evidence, "runner_error", "evidence", "ValueError", None),
+        (_fail_every_evidence, "runner_error", "evidence", "OSError", None),
+        (_fail_clean_check, "runner_error", "clean_check", "RuntimeError", None),
+    ],
+)
+def test_guardian_records_the_step_and_class_of_a_pre_command_failure(
+    fixture, monkeypatch, inject, reason, step, kind, message
+):
+    prepared = _guardian(fixture, monkeypatch, config("touch ran"))
+    closed = []
+    original_close = Store.close
+    monkeypatch.setattr(Store, "close", lambda self: closed.append(original_close(self)))
+    inject(monkeypatch)
+    runner.guardian_main()
+    assert closed
+    life = runner.load_status(fixture[0], prepared.binding).lifecycle
+    assert life["phase"] == "finished"
+    assert life["reason"] == reason
+    assert life["command_index"] is None
+    assert life["error"] == {"step": step, "type": kind, "message": message}
+    assert "secret" not in json.dumps(life) and "output" not in json.dumps(life)
+    assert not (fixture[1] / "ran").exists()
+
+
+def test_guardian_keeps_its_lifecycle_when_terminal_evidence_fails(fixture, monkeypatch):
+    prepared = _guardian(fixture, monkeypatch, config("touch ran"))
+    _fail_terminal_evidence(monkeypatch)
+    runner.guardian_main()
+    life = runner.load_status(fixture[0], prepared.binding).lifecycle
+    assert life["phase"] == "finished"
+    assert life["reason"] == "runner_error"
+    assert life["error"] == {"step": "terminal_evidence", "type": "OSError", "message": None}
+    assert (fixture[1] / "ran").exists()
+
+
+def test_guardian_observation_is_capped_at_thirty_seconds_inside_the_run(fixture, monkeypatch):
+    _guardian(fixture, monkeypatch, config("true", total=100.0))
+    original = runner.observe_tree
+    given = []
+
+    def observe(*args, timeout, **kwargs):
+        given.append(timeout)
+        return original(*args, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(runner, "observe_tree", observe)
+    runner.guardian_main()
+    assert len(given) == 2 and all(29 < timeout <= runner.OBSERVE_SECONDS == 30 for timeout in given)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows starts queries through its job spawn")
+def test_observation_deadline_counts_a_slow_process_start(fixture, monkeypatch):
+    original = subprocess.Popen
+
+    def slow_popen(argv, *args, **kwargs):
+        if "--cached" in argv:
+            time.sleep(1.5)
+        return original(argv, *args, **kwargs)
+
+    monkeypatch.setattr(procs.subprocess, "Popen", slow_popen)
+    with pytest.raises(AgentError, match="timed out"):
+        runner.observe_tree(fixture[1], timeout=1.0)
+
+
+def test_observation_queries_share_one_deadline(fixture, monkeypatch):
+    worktree = fixture[1]
+    original = procs.capture
+    given = []
+
+    def slow_start(argv, cwd, env, timeout, *args, **kwargs):
+        # A query that needs 2.5 s to start: more than one query's old 2 s cap, within the total.
+        given.append(timeout)
+        if timeout < 2.5:
+            raise AgentError("verification observation timed out")
+        return original(argv, cwd, env, timeout, *args, **kwargs)
+
+    monkeypatch.setattr(procs, "capture", slow_start)
+    tree = runner.observe_tree(worktree, timeout=10)
+    assert tree.clean_at(fixture[2])
+    assert len(given) >= 5 and given == sorted(given, reverse=True) and given[0] <= 10
+
+
+def test_observation_total_still_ends_the_check(fixture, monkeypatch):
+    original = procs.capture
+
+    def slow(argv, cwd, env, timeout, *args, **kwargs):
+        time.sleep(0.4)
+        return original(argv, cwd, env, timeout - 0.4, *args, **kwargs)
+
+    monkeypatch.setattr(procs, "capture", slow)
+    started = time.monotonic()
+    with pytest.raises(AgentError, match="deadline expired|timed out"):
+        runner.observe_tree(fixture[1], timeout=1.0)
+    assert time.monotonic() - started < 3

@@ -34,6 +34,24 @@ LIMIT = 2 * 1024 * 1024
 OBSERVED = "observed.json"
 REPLACE_ATTEMPTS = 50
 REPLACE_PAUSE = 0.01
+ERROR_STEPS = frozenset(
+    {"lifecycle", "observe_tree", "evidence", "clean_check", "commands", "final_observe", "terminal_evidence"}
+)
+ERROR_MESSAGE_LIMIT = 500
+
+
+def _lifecycle_error(raw: Any) -> bool:
+    return (
+        isinstance(raw, dict)
+        and set(raw) == {"step", "type", "message"}  # pyright: ignore[reportUnknownArgumentType]
+        and raw["step"] in ERROR_STEPS
+        and isinstance(raw["type"], str)
+        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,99}", raw["type"]) is not None
+        and (
+            raw["message"] is None
+            or (isinstance(raw["message"], str) and len(raw["message"]) <= ERROR_MESSAGE_LIMIT)
+        )
+    )
 
 
 class Store:
@@ -320,7 +338,7 @@ class Store:
         }
         if (
             raw is None
-            or set(raw) != fields
+            or set(raw) - {"error"} != fields
             or type(raw["schema_version"]) is not int
             or raw["schema_version"] != 1
             or not self._matches_binding(raw["binding"])
@@ -368,6 +386,8 @@ class Store:
             "final_tree_changed",
         }:
             raise ValueError("invalid verifier lifecycle reason")
+        if "error" in raw and not _lifecycle_error(raw["error"]):
+            raise ValueError("invalid verifier lifecycle error")
         if raw["finished"] != (raw["phase"] == "finished"):
             raise ValueError("inconsistent verifier lifecycle completion")
         return raw

@@ -22,9 +22,11 @@ from . import verification_process as procs
 from . import verification_status
 from .verification_evidence import Binding, CommandOutcome, Evidence, config_digest
 from .verification_status import RunStatus, load_status
-from .verification_store import Store
+from .verification_store import ERROR_MESSAGE_LIMIT, Store
 
 LOG_LIMIT = 65536
+#: Cap on one tree observation, all of its Git queries together, inside the run's own deadline.
+OBSERVE_SECONDS = 30
 
 
 observe_tree = procs.observe_tree
@@ -435,20 +437,25 @@ def guardian_main() -> None:
     before = after = None
     results: list[CommandOutcome] = []
     state: Literal["interrupted", "cancelled", "complete"] = "interrupted"
+    step = "lifecycle"
     try:
         life.update(phase="observing", reason="observing", cleanup_confirmed=True)
         store.lifecycle(life)
+        step = "observe_tree"
         before = observe_tree(
             Path(request["worktree"]),
-            timeout=min(5, deadline - time.monotonic()),
+            timeout=min(OBSERVE_SECONDS, deadline - time.monotonic()),
             guardian_group=True,
             launch_base=request.get("launch_base"),
             git=request.get("git"),
         )
+        step = "evidence"
         store.evidence(Evidence(1, binding, "running", before, None, (), time.monotonic() - started))
+        step = "clean_check"
         if not before.clean_at(binding.final_sha):
             life["reason"] = "initial_tree_changed"
         else:
+            step = "commands"
             with os.fdopen(procs.open_output_log(store), "wb") as log:
                 for index, command in enumerate(config.commands):
                     if _cancelled(store) or procs.parent_gone():
@@ -478,29 +485,46 @@ def guardian_main() -> None:
                 else:
                     state = "complete"
                     life["reason"] = "commands_complete"
+            step = "final_observe"
             after = observe_tree(
                 Path(request["worktree"]),
-                timeout=min(5, deadline - time.monotonic()),
+                timeout=min(OBSERVE_SECONDS, deadline - time.monotonic()),
                 guardian_group=True,
                 launch_base=request.get("launch_base"),
                 git=request.get("git"),
             )
-    except procs.UnsupportedTree:
+    except procs.UnsupportedTree as exc:
         state = "interrupted"
         life["reason"] = "unsupported_tree"
-    except Exception:  # noqa: BLE001 — never persist raw exceptions/configured output as metadata
+        _record_error(life, step, exc)
+    except Exception as exc:  # noqa: BLE001 — never persist raw exceptions/configured output as metadata
         state = "interrupted"
         if life["reason"] not in {"cleanup_unconfirmed", "parent_interrupted"}:
             life["reason"] = "runner_error"
+        _record_error(life, step, exc)
     finally:
-        if _cancelled(store):
-            state = "cancelled"
-        elif procs.parent_gone():
-            state = "interrupted"
-            life["reason"] = "parent_interrupted"
-        store.evidence(
-            Evidence(1, binding, state, before, after, tuple(results), max(0, time.monotonic() - started))
-        )
-        life.update(phase="finished", finished=True)
-        store.lifecycle(life)
-        store.close()
+        try:
+            if _cancelled(store):
+                state = "cancelled"
+            elif procs.parent_gone():
+                state = "interrupted"
+                life["reason"] = "parent_interrupted"
+            store.evidence(
+                Evidence(1, binding, state, before, after, tuple(results), max(0, time.monotonic() - started))
+            )
+        except Exception as exc:  # noqa: BLE001 — the lifecycle must still be written
+            if "error" not in life:
+                if life["reason"] not in {"cleanup_unconfirmed", "parent_interrupted"}:
+                    life["reason"] = "runner_error"
+                _record_error(life, "terminal_evidence", exc)
+        try:
+            life.update(phase="finished", finished=True)
+            store.lifecycle(life)
+        finally:
+            store.close()
+
+
+def _record_error(life: dict[str, Any], step: str, exc: Exception) -> None:
+    # An AgentError's message is a fixed string from src; any other text may carry output.
+    message = exc.message[:ERROR_MESSAGE_LIMIT] if isinstance(exc, AgentError) else None
+    life["error"] = {"step": step, "type": type(exc).__name__[:100], "message": message}

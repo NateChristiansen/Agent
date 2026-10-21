@@ -147,10 +147,15 @@ def capture(
     """Bound time and bytes independently; never return stderr or interpolate it in errors."""
     if timeout <= 0:
         raise AgentError("verification observation deadline expired")
+    # Fixed before the process starts, so a slow start counts against the caller's deadline.
+    deadline = time.monotonic() + timeout
     if os.name == "nt":
         from .verification_win import capture as capture_windows
 
-        return capture_windows(argv, cwd, env, timeout, limit, POLL)
+        result = capture_windows(argv, cwd, env, timeout, limit, POLL)
+        if time.monotonic() > deadline:
+            raise AgentError("verification observation timed out")
+        return result
     # POSIX preserves this real-time timer across exec. Trusted Git/ps self-expire even
     # if their Python parent is SIGKILLed and cannot execute its finally block.
     code = "import os,signal,sys; signal.signal(signal.SIGALRM,signal.SIG_DFL); signal.setitimer(signal.ITIMER_REAL,float(sys.argv[1])); os.execv(sys.argv[2],sys.argv[2:])"
@@ -165,7 +170,6 @@ def capture(
         close_fds=True,
     )
     output = bytearray()
-    deadline = time.monotonic() + timeout
     try:
         assert proc.stdout is not None
         while True:
@@ -433,12 +437,14 @@ def _hardened(
     }
     args: list[str] = list(argv or ())
 
+    # Every query shares the caller's one deadline: with a per-query cap, one slow cold `git` start
+    # on a loaded runner could fail the whole observation while the total still had time left.
     def query(tail: list[str], limit: int = 8 * 1024 * 1024) -> tuple[int, bytes]:
         return capture(
             args + tail,
             worktree,
             env,
-            min(2.0, deadline - time.monotonic()),
+            deadline - time.monotonic(),
             limit,
             own_group=not guardian_group,
         )

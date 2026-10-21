@@ -63,6 +63,14 @@ def mutate(raw, key, value):
         ("reason", []),
         ("started", True),
         ("unrecognized", "extra"),
+        ("error", None),
+        ("error", "AgentError: raw text"),
+        ("error", {"step": "observe_tree", "type": "AgentError"}),
+        ("error", {"step": "elsewhere", "type": "AgentError", "message": None}),
+        ("error", {"step": "observe_tree", "type": "not a class", "message": None}),
+        ("error", {"step": "observe_tree", "type": "AgentError", "message": 7}),
+        ("error", {"step": "observe_tree", "type": "AgentError", "message": "x" * 501}),
+        ("error", {"step": "observe_tree", "type": "AgentError", "message": None, "detail": "x"}),
     ],
 )
 def test_lifecycle_rejects_malformed_equal_values(store, key, value):
@@ -133,6 +141,24 @@ def test_a_lifecycle_write_waits_out_a_reader_holding_the_file(store):
         done.set()
         thread.join()
     assert store.load_lifecycle()["reason"] == "runner_error"
+
+
+def test_lifecycle_error_is_optional(store):
+    store.write("lifecycle.json", {"schema_version": 1, "binding": asdict(store.binding), **lifecycle()})
+    assert "error" not in store.load_lifecycle()
+    failed = {
+        **lifecycle(),
+        "reason": "runner_error",
+        "error": {
+            "step": "observe_tree",
+            "type": "AgentError",
+            "message": "verification requires an existing commit",
+        },
+    }
+    store.lifecycle(failed)
+    assert store.load_lifecycle()["error"] == failed["error"]
+    store.lifecycle({**failed, "error": {"step": "evidence", "type": "OSError", "message": None}})
+    assert store.load_lifecycle()["error"]["message"] is None
 
 
 def test_typed_metadata_round_trip(store):
