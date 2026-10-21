@@ -39,12 +39,37 @@ if (log) {
   }
 }
 
-const parts = [
-  `**${page.status}**`,
-  `tasks ${done}/${tasks.length} done` + (superseded ? `, ${superseded} superseded` : ""),
-  `${handoffs.length} dispatch${handoffs.length === 1 ? "" : "es"} · $${spend.toFixed(2)}`,
-];
+// A request (`record_kind: request`) leads with its identity, ask and result; tasks are optional,
+// so its header shows a count only when it has some.
+const isRequest = page.record_kind === "request";
+function section(text, name) {
+  const lines = (text || "").split("\n");
+  const start = lines.findIndex((l) => l.trim() === `## ${name}`);
+  if (start < 0) return "";
+  const out = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.startsWith("## ")) break;
+    out.push(line);
+  }
+  return out.join(" ").replace(/\s+/g, " ").trim();
+}
+const clip = (s) => (s.length > 200 ? s.slice(0, 197) + "…" : s);
+
+const parts = isRequest
+  ? [`**Request ${String(page.id).padStart(3, "0")}**`, `**${page.status}**`, page.category || "request"]
+  : [`**${page.status}**`];
+if (!isRequest || tasks.length || superseded) {
+  parts.push(`tasks ${done}/${tasks.length} done` + (superseded ? `, ${superseded} superseded` : ""));
+}
+parts.push(`${handoffs.length} dispatch${handoffs.length === 1 ? "" : "es"} · $${spend.toFixed(2)}`);
 if (running) parts.push(`⚙ ${running} running`);
 if (waiting) parts.push(`⏸ ${waiting} waiting on you`);
 dv.paragraph(parts.join(" · "));
+if (isRequest) {
+  const plan = await dv.io.load(page.file.path);
+  const ask = section(plan, "Context").replace(/^Ask \([a-z]+\): /, "");
+  const result = section(plan, "Result");
+  dv.paragraph(`ask: ${clip(ask) || "—"}`);
+  dv.paragraph(`result: ${result ? clip(result) : "not delivered yet"}`);
+}
 if (last) dv.paragraph(`last log: \`${last.ts}\` **${last.kind}** — ${last.text}`);

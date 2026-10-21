@@ -32,15 +32,35 @@ function showEmpty(message) {
   root.createDiv({ text: message, cls: "agent-index-empty" });
 }
 
-if (section === "closed") {
+if (section === "closed" || section === "resolved-requests") {
+  const requests = section === "resolved-requests";
   const pages = dv
     .pages('"features"')
     .where((p) => p.file.name === "plan" && ["done", "abandoned"].includes(p.status))
+    .where((p) => (p.record_kind === "request") === requests)
     .sort((p) => date(p.closed)?.toMillis() || 0, "desc");
-  if (!pages.length) showEmpty("No closed features.");
+  if (!pages.length) showEmpty(requests ? "No resolved requests." : "No closed features.");
   for (const page of pages) {
     const closed = date(page.closed);
-    entry(page, `${String(page.id).padStart(3, "0")} · ${page.title}`, [page.status, closed?.toISODate()].filter(Boolean).join(" · "));
+    const label = `${requests ? "Request " : ""}${String(page.id).padStart(3, "0")} · ${page.title}`;
+    entry(page, label, [page.status, requests ? page.category : null, closed?.toISODate()].filter(Boolean).join(" · "));
+  }
+} else if (section === "requests") {
+  // Active requests and proposed captures, from the Python snapshot's `requests` rows.
+  let snapshot = null;
+  try {
+    snapshot = JSON.parse(await app.vault.adapter.read(".agent/status.json"));
+  } catch {
+    showEmpty("Request snapshot unavailable. Ask the manager to check status render.");
+  }
+  const order = { active: 0, blocked: 1, proposed: 2 };
+  const rows = ((snapshot && snapshot.requests) || [])
+    .filter((r) => r.status in order)
+    .sort((a, b) => order[a.status] - order[b.status] || a.id - b.id);
+  if (snapshot && !rows.length) showEmpty("No active or captured requests.");
+  for (const r of rows) {
+    const page = { file: { path: `${r.dir}/plan.md` } };
+    entry(page, `Request ${String(r.id).padStart(3, "0")} · ${r.title}`, `${r.status} · ${r.category || "request"} · ${r.ask || "—"} · next: ${r.next_action}`);
   }
 } else if (section === "adrs") {
   const pages = dv.pages('"adrs"').where((p) => typeof p.id === "number").sort((p) => p.id, "desc");

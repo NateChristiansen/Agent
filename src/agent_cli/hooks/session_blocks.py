@@ -68,6 +68,8 @@ def open_tasks_block(root: Path, feature: dict[str, Any], limit: int | None = OP
                 "restarts it per its plan's restart note."
             )
         tasks = [t for t in features_mod.list_tasks(f.body) if t.is_open]
+        if f.is_request:
+            return _request_block(f, tasks)
     except Exception:  # noqa: BLE001
         return ""
     if not tasks:
@@ -85,6 +87,19 @@ def open_tasks_block(root: Path, feature: dict[str, Any], limit: int | None = OP
         lines.append(
             f"  … {len(tasks) - len(shown)} more: task_list with open_only=true, or the full-list file"
         )
+    return "\n".join(lines)
+
+
+def _request_block(f: Any, tasks: list[Any]) -> str:
+    """A mapped request's ask, status and next action instead of a task prompt: its contract is
+    the ask and the result, and tasks are optional."""
+    from .. import requests as requests_mod
+
+    lines = [
+        f"\n{f.label} [{f.status}] {f.meta.get('category') or ''}: {requests_mod.short(requests_mod.ask_of(f), OPEN_TASK_CHARS)}",
+        f"next: {requests_mod.next_action(f)} (`request` tool, action `complete`, with the result)",
+    ]
+    lines += [f"  open task #{t.index} {t.text[:OPEN_TASK_CHARS]}" for t in tasks]
     return "\n".join(lines)
 
 
@@ -208,7 +223,7 @@ def lesson_nag(root: Path) -> str:
     except Exception:  # noqa: BLE001
         feats = []
     for f in feats:
-        if f.status != "active" or (f.dir / "retro.md").exists():
+        if f.is_request or f.status != "active" or (f.dir / "retro.md").exists():
             continue
         tasks = f.tasks()
         if tasks["done"] and not tasks["open"]:
@@ -228,13 +243,24 @@ def lesson_nag(root: Path) -> str:
 
 
 def dispatches_since_last_retro(root: Path) -> int:
-    """Count real dispatch records newer than the last `retro.md`, or all if none exists."""
+    """Count real dispatch records newer than the last `retro.md`, or all if none exists. A
+    request needs no retro, so its dispatches are not counted."""
     from .. import dispatch as dispatch_mod
+    from .. import features as features_mod
 
     dispatches_dir = dispatch_mod.dispatches_dir(root)
     if not dispatches_dir.exists():
         return 0
-    files = [p for p in dispatches_dir.glob("*.json") if dispatch_mod.ID_RE.match(p.stem)]
+    skip: set[int] = set()
+    try:
+        skip = {f.id for f in features_mod.load_all(root) if f.is_request}
+    except Exception:  # noqa: BLE001, S110 — an unreadable store counts every dispatch, as before
+        pass
+    files = [
+        p
+        for p in dispatches_dir.glob("*.json")
+        if (m := dispatch_mod.ID_RE.match(p.stem)) and int(m.group("feature")) not in skip
+    ]
     if not files:
         return 0
     retros = list((root / "features").glob("*/retro.md"))

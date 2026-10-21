@@ -42,6 +42,38 @@ writes src/agent_cli/dispatch/)". Everything whose needs have landed runs at onc
 """
 
 
+REQUEST_RESULT = "Result"
+REQUEST_ROUNDS = "Review rounds"
+# The feature plan sections a request lacks; `requests.promote` adds them in this order.
+FEATURE_ONLY_SECTIONS = ("Decisions", "Open questions", "Verification")
+
+
+def request_body(number: str, title: str, category: str, ask: str) -> str:
+    """A request's plan: the ask is the Context a worker reads, Tasks is optional and starts empty,
+    Result holds what was delivered. Tasks and Handoffs stay canonical for the parsers and the
+    document protection that read every plan."""
+    return f"""# Request {number} — {title}
+
+```dataviewjs
+await dv.view("harness/obsidian/views/feature")
+```
+
+## Context
+
+Ask ({category}): {ask.strip()}
+
+## Tasks
+
+## {REQUEST_RESULT}
+
+## {REQUEST_ROUNDS}
+
+## Handoffs
+{HANDOFFS_VIEW}
+## Notes
+"""
+
+
 def log_header(number: str, slug: str) -> str:
     return f"# Log — {number} {slug}\n"
 

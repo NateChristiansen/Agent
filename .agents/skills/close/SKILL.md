@@ -10,6 +10,14 @@ allowed-tools: mcp__agent__*, Read, Edit, AskUserQuestion
 
 Input: $ARGUMENTS (feature ref) or the current feature.
 
+A request record does not use this skill. The manager completes it once the ask is delivered:
+`request` tool, action `complete`, with the delivered `result` (and `status: abandoned` when the
+owner drops it). It is refused, with nothing changed, while any of its dispatches is queued or
+running, waits on an answer, an unread verdict or a branch decision, or has worker or verifier
+cleanup pending, and while an added task is open. It needs no retro, no lesson-queue room and no
+journal step; `feature_close` on a request applies the same checks. Cleanup, transcript copying,
+logs and handoffs work as for a feature.
+
 1. Read the feature's plan.md. Walk `## Verification` and `## Tasks`.
 2. Anything unchecked or unverified: ask the owner, close anyway or not yet. Do not close on a
    guess.

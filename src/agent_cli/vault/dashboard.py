@@ -69,6 +69,14 @@ generated_by: agent status render
 
 {view_block("index", '{ section: "closed" }')}
 
+## Requests
+
+{view_block("index", '{ section: "requests" }')}
+
+## Resolved requests
+
+{view_block("index", '{ section: "resolved-requests" }')}
+
 ## Decisions
 
 {view_block("index", '{ section: "adrs" }')}

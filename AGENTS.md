@@ -26,8 +26,8 @@ Every incoming task goes through this loop, in order:
    otherwise show the question and call `owner_question(summary=...)`. Resolve manual questions
    explicitly as answered, withdrawn or replaced; after a non-answer, call `owner_question` again
    with the same summary. Never use `request_user_input_async`. Plain questions stop here.
-2. **Ensure a feature.** Match an open feature by its plan's Context and `tickets:`, not its
-   title; ask the owner where a ticket belongs if none lists it. Use `/intake` for new work.
+2. **Ensure a record.** Match an open feature by its Context and `tickets:`, not its title; ask
+   where a ticket belongs if none lists it. `/intake` opens new work as a feature or a `request`.
 3. **Map the session.** Use `feature_use` for assigned work; `switch=true` asserts the owner's ask.
    Inspect, answer or clean up another feature's worker with explicit `feature`/`dispatch_id` arguments;
    keep the mapping. Resolve `task_check` flags before dispatch. Unmapped captures go to `.agent/raw/unassigned/`.
@@ -74,7 +74,7 @@ Every incoming task goes through this loop, in order:
 
 If a request does not fit this loop, ask. `/close` is user-invoked only. Run
 `/retro` before closing a feature unless the owner says to skip it, and for a closed feature that
-lacks one. Run `/journal today` after a close and when the journal nudge lists milestones.
+lacks one. Run `/journal today` after a feature close and when the journal nudge lists milestones.
 
 ## Standing rules
 
