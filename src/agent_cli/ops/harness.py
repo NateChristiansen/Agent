@@ -207,6 +207,10 @@ def land(
     )
     if warning := land_warning.text(journal.get("restart")):
         text += "\n" + warning
+    from .. import land_followups
+
+    if cleanup := land_followups.cleanup_text(journal):
+        text += "\n" + cleanup
     _tell_asker(root, op, f"landing {op}: {text}")
     return Op(journal, text)
 
@@ -277,12 +281,14 @@ def _land_detached(
 def _land_status(root: Path) -> Op:
     """The most recent landings, newest first, and any still unfinished."""
     from .. import land as land_mod
+    from .. import land_followups
     from .. import land_journal as jn
 
     main = land_mod.main_of(root)
     journals = jn.every(main)[-5:][::-1]
     rows = [
         {k: j.get(k) for k in ("id", "state", "branch", "strategy", "record", "record_reused", "ts")}
+        | ({"cleanup_held": land_followups.held(j)} if land_followups.cleanup_owed(j) else {})
         for j in journals
     ]
     ops = [_settled(o) for o in jn.ops_recent(main)]
@@ -290,7 +296,15 @@ def _land_status(root: Path) -> Op:
         f"op {o.get('id')} {o.get('state')} {o.get('branch')}" + (f": {o['why']}" if o.get("why") else "")
         for o in ops
     ]
-    lines += [f"{r['id']} {r['state']} {r['branch']}" for r in rows]
+    lines += [
+        f"{j['id']} {j['state']} {j.get('branch')}"
+        + (
+            f" (cleanup pending, {len(land_followups.held(j))} held)"
+            if land_followups.cleanup_owed(j)
+            else ""
+        )
+        for j in journals
+    ]
     return Op({"operations": ops, "landings": rows}, "\n".join(lines) or "no landings")
 
 

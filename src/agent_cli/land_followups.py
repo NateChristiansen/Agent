@@ -5,6 +5,12 @@ landing and recovery without replaying Git or raising.
 A landing is not task acceptance, so notify the launching manager and live local feature managers
 about unticked work rather than tick it. Messages request relay for remote ownership. Aborted
 journals owe nothing; legacy journals without obligation fields are not backfilled.
+
+The `cleanup` obligation removes the landed dispatches' worktrees through dispatch cleanup's
+policy, never inside the transaction and never from `reconcile`: `retry_cleanup` settles it under
+the land flock after a landing and before an allocation. A held candidate stays on the journal with
+its reasons, and the obligation stays pending until every candidate is removed, gone or owned by a
+later landing, with no age limit.
 """
 
 from __future__ import annotations
@@ -18,17 +24,27 @@ from .core import AgentError
 from .records.narrow import as_dict, as_list
 
 PENDING = "pending"
+CLEANUP = "cleanup"
+SETTLED = ("removed", "gone", "superseded")
+RETRY_LIMIT = 8
 
 
 def initial() -> dict[str, str]:
     """The obligations a prepared journal starts with."""
-    return {"milestone": PENDING, "notices": PENDING}
+    return {"milestone": PENDING, "notices": PENDING, CLEANUP: PENDING}
 
 
 def outstanding(journal: dict[str, Any]) -> bool:
-    """A successful landing that still owes something. Aborted and legacy journals never do."""
-    obligations = as_dict(journal.get("obligations"))
+    """A successful landing that still owes its metadata. Aborted and legacy journals never do;
+    cleanup is `cleanup_owed`, which recovery's metadata pass does not replay."""
+    obligations = {k: v for k, v in as_dict(journal.get("obligations")).items() if k != CLEANUP}
     return journal.get("state") == "done" and PENDING in obligations.values()
+
+
+def cleanup_owed(journal: dict[str, Any]) -> bool:
+    """A successful landing whose worktree cleanup is still pending. Only journals prepared with
+    the obligation owe it: older ones are never backfilled into destructive work."""
+    return journal.get("state") == "done" and as_dict(journal.get("obligations")).get(CLEANUP) == PENDING
 
 
 def reconcile(root: Path, main: Path, journal: dict[str, Any]) -> dict[str, Any]:
@@ -47,7 +63,8 @@ def reconcile(root: Path, main: Path, journal: dict[str, Any]) -> dict[str, Any]
             read_landed_reviews(root, journal)  # their verdicts were read for this landing
         except Exception:  # noqa: BLE001, S110 — best effort, like the integration marks
             pass
-    obligations = {**initial(), **as_dict(journal.get("obligations"))} if "obligations" in journal else {}
+    stored = as_dict(journal.get("obligations"))
+    obligations = {"milestone": PENDING, "notices": PENDING, **stored} if "obligations" in journal else {}
     if not obligations or journal.get("state") != "done":
         return obligations
     try:
@@ -94,6 +111,175 @@ def newer_mark(root: Path, held: dict[str, Any], journal: dict[str, Any]) -> boo
         except OSError, subprocess.SubprocessError, AgentError:
             pass
     return held_journal > str(journal["id"])
+
+
+def retry_cleanup(
+    root: Path, *, current: dict[str, Any] | None = None, keep: tuple[str, ...] = ()
+) -> dict[str, Any] | None:
+    """Settle the cleanup that done landings still owe, least recently tried first and at most
+    `RETRY_LIMIT` of them. Takes the land flock without waiting: a landing that holds it retries
+    them itself. `current` is a journal the caller holds, settled in place; `keep` are worktree
+    paths about to be reused, left for a later try. Never raises; returns `current`."""
+    from .dispatch.allocation import worktree_key
+
+    try:
+        from .land import main_of
+
+        main = main_of(root)
+        if current is None and not any(cleanup_owed(j) for j in jn.every(main)):
+            return None
+        with jn.flock(main):
+            owed = [j for j in jn.every(main) if cleanup_owed(j)]
+            if current is not None:
+                owed = [current if j["id"] == current["id"] else j for j in owed]
+            owed.sort(key=lambda j: str(as_dict(j.get("cleanup")).get("tried") or ""))
+            kept = {worktree_key(p) for p in keep}
+            for journal in owed[:RETRY_LIMIT]:
+                settle_cleanup(root, main, journal, keep=kept)
+    except Exception:  # noqa: BLE001, S110 — the landing stands; what is owed stays pending
+        pass
+    return current
+
+
+def settle_cleanup(root: Path, main: Path, journal: dict[str, Any], *, keep: set[str] | None = None) -> None:
+    """One cleanup attempt for each of the journal's unsettled candidates, then save what each
+    one is now. The caller holds the land flock. A failure is recorded on the journal."""
+    from .dispatch.allocation import worktree_key
+
+    record = as_dict(journal.get("cleanup"))
+    rows = {str(as_dict(r).get("id")): as_dict(r) for r in as_list(record.get("candidates"))}
+    error = ""
+    skipped = False
+    try:
+        seen: set[str] = set()
+        for d in _cleanup_candidates(root, journal):
+            ident = str(d["id"])
+            seen.add(ident)
+            if rows.get(ident, {}).get("state") in SETTLED:
+                continue
+            if worktree_key(str(d["worktree"])) in (keep or set()):
+                skipped = True
+                continue
+            rows[ident] = _clean(root, journal, d)
+        for ident, row in rows.items():
+            if ident not in seen and row.get("state") not in SETTLED:
+                rows[ident] = {**row, "state": "gone", "holds": []}
+    except Exception as exc:  # noqa: BLE001 — recorded, and retried at the next opportunity
+        error = f"cleanup failed: {exc}"
+    journal["cleanup"] = {
+        "tried": jn.now(),
+        "candidates": list(rows.values()),
+        **({"error": error} if error else {}),
+    }
+    if not error and not skipped and all(r.get("state") in SETTLED for r in rows.values()):
+        journal["obligations"] = {**as_dict(journal.get("obligations")), CLEANUP: "done"}
+    try:
+        jn.write(main, journal)
+    except OSError:
+        pass
+
+
+def held(journal: dict[str, Any]) -> list[dict[str, Any]]:
+    """The journal's cleanup candidates still kept, with their reasons."""
+    rows = as_list(as_dict(journal.get("cleanup")).get("candidates"))
+    return [as_dict(r) for r in rows if as_dict(r).get("state") not in SETTLED]
+
+
+def cleanup_text(journal: dict[str, Any]) -> str:
+    """One line on the journal's worktree cleanup, or "" when it owes none."""
+    obligation = as_dict(journal.get("obligations")).get(CLEANUP)
+    if obligation is None:
+        return ""
+    record = as_dict(journal.get("cleanup"))
+    rows = [as_dict(r) for r in as_list(record.get("candidates"))]
+    removed = [r for r in rows if r.get("state") == "removed"]
+    kept = held(journal)
+    if obligation == PENDING and not record:
+        return "cleanup: queued; it runs at the next landing or dispatch allocation"
+    text = f"cleanup: removed {len(removed)}, held {len(kept)}"
+    if kept:
+        text += ": " + "; ".join(
+            f"{r.get('worktree')} [{r.get('id')}] ({', '.join(str(h) for h in as_list(r.get('holds')))})"
+            for r in kept
+        )
+    if record.get("error"):
+        text += f"; {record['error']}"
+    if obligation == PENDING:
+        text += "; retried at the next landing or dispatch allocation"
+    return text
+
+
+def _cleanup_candidates(root: Path, journal: dict[str, Any]) -> list[dict[str, Any]]:
+    """The harness dispatches with a worktree on a branch this journal landed."""
+    from . import verify_record
+    from .dispatch import state as dispatch_state
+
+    harness = verify_record.harness_repo(root).name
+    branches = set(_branches(journal))
+    return [
+        d
+        for d in dispatch_state.load_all(root)
+        if d.get("branch") in branches and d.get("repo") == harness and d.get("worktree")
+    ]
+
+
+def _landed_tip(journal: dict[str, Any], branch: str) -> str:
+    members = as_list(journal.get("members")) or [
+        {"branch": journal.get("branch"), "tip": journal.get("tip")}
+    ]
+    for member in members:
+        if str(as_dict(member).get("branch") or "").removeprefix("refs/heads/") == branch:
+            return str(as_dict(member).get("tip") or "")
+    return ""
+
+
+def _clean(root: Path, journal: dict[str, Any], d: dict[str, Any]) -> dict[str, Any]:
+    """Apply dispatch cleanup to one candidate, rechecked first against this landing's exact tip."""
+    from . import repos as repos_mod
+    from . import tidy
+    from .dispatch import state as dispatch_state
+    from .dispatch.worktrees import cleanup
+
+    row: dict[str, Any] = {"id": d["id"], "worktree": str(Path(d["worktree"])), "branch": d["branch"]}
+
+    def keep(*reasons: str) -> dict[str, Any]:
+        return {**row, "state": "held", "holds": list(reasons)}
+
+    integration = as_dict(d.get("integration"))
+    if newer_mark(root, integration, journal):
+        return {**row, "state": "superseded", "holds": []}  # the later landing owns its cleanup
+    if d.get("worktree_removed"):
+        return {**row, "state": "gone", "holds": []}
+    if integration.get("journal") != journal["id"]:
+        return keep(f"not marked landed by {journal['id']} yet")
+    landed = _landed_tip(journal, str(d["branch"])) or str(integration.get("tip") or "")
+    rp = repos_mod.load_registry(root).find(d["repo"])
+    if rp is None:
+        return keep(f"repo {d['repo']} is not registered")
+    tip = tidy.branch_tip(rp.abs_path(root), str(d["branch"]))
+    if not landed or tip != landed:
+        return keep(
+            f"{d['branch']} is at {tip[:12] or 'no commit'}, not the landed {landed[:12] or 'tip'}; "
+            "kept until that exact head lands"
+        )
+    try:
+        result = cleanup(root, dispatch_id=str(d["id"]))
+    except AgentError as exc:
+        return keep(str(exc))
+    except Exception as exc:  # noqa: BLE001 — recorded on the candidate; the landing stands
+        return keep(f"cleanup failed: {exc}")
+    if row["worktree"] in as_list(result.get("removed")):
+        return {**row, "state": "removed", "holds": []}
+    reasons = [
+        str(as_dict(r).get("reason"))
+        for key in ("skipped", "blocked", "missing")
+        for r in as_list(result.get(key))
+    ]
+    if reasons:
+        return keep(*reasons)
+    if dispatch_state.load(root, str(d["id"])).get("worktree_removed"):
+        return {**row, "state": "gone", "holds": []}
+    return keep("cleanup removed nothing; retried later")
 
 
 def _day(journal: dict[str, Any]) -> date:

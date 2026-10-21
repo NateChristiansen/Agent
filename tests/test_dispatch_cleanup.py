@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_cli import cli, dispatch, links, ops, tidy, worktree
+from agent_cli import cli, dispatch, land_followups, links, ops, tidy, worktree
 from agent_cli.core import AgentError, Output
 from agent_cli.dispatch import worktrees
 from agent_cli.mcp import specs_dispatch
@@ -390,6 +390,213 @@ def test_cleanup_output_is_bounded_and_the_cli_renders_it(droot, fake_claude, mo
     assert args.delete_branches is True
     assert cli.dispatch_cleanup(droot, args, Output()) == 0
     assert "/tmp/tree-0" in capsys.readouterr().out
+
+
+def _landable(droot: Path, monkeypatch, fake_claude, count: int = 2) -> list[dict]:
+    """`count` finished dispatches on alpha, which lands in-process as the harness repo would:
+    its clone is the main checkout and any candidate counts as certified."""
+    from types import SimpleNamespace
+
+    from agent_cli import land
+
+    fake_claude.scenario([one(envelope(), commit=f"T-42 work {i}") for i in range(count)])
+    ds = [_new_fast(droot) for _ in range(count)]
+    assert len({d["worktree"] for d in ds}) == count
+    for i, d in enumerate(ds[1:], start=1):  # distinct files, so a batch merges cleanly
+        wt = Path(d["worktree"])
+        git(["mv", "worker.txt", f"worker-{i}.txt"], wt)
+        git(["commit", "-q", "--amend", "--no-edit"], wt)
+    name = ds[0]["repo"]
+    monkeypatch.setattr("agent_cli.land.main_of", lambda root: droot / MAIN)
+    monkeypatch.setattr("agent_cli.verify_record.harness_repo", lambda root: SimpleNamespace(name=name))
+    monkeypatch.setattr(
+        land, "_certificate", lambda root, cand: {"run_id": "certified-in-test", "reused": True}
+    )
+    return ds
+
+
+def _journal_of(droot: Path) -> dict:
+    from agent_cli import land_journal as jn
+
+    [found] = [j for j in jn.every(droot / MAIN) if j["state"] == "done"]
+    return found
+
+
+def test_a_landing_queues_cleanup_and_removes_the_tree_only_after_it_is_done(droot, fake_claude, monkeypatch):
+    from agent_cli import land_journal as jn
+
+    d1, d2 = _landable(droot, monkeypatch, fake_claude)
+    main = droot / MAIN
+    seen: list[tuple] = []
+    advance, real = jn.advance, worktrees.cleanup
+
+    def advancing(m, journal, state, **extra):
+        seen.append(("advance", state, journal["obligations"]["cleanup"], Path(d1["worktree"]).is_dir()))
+        return advance(m, journal, state, **extra)
+
+    def cleaning(root, **kw):
+        [journal] = [j for j in jn.every(main) if j.get("obligations")]
+        seen.append(("cleanup", journal["state"], jn.lock_file(main).exists(), kw.get("dry_run", False)))
+        return real(root, **kw)
+
+    monkeypatch.setattr(jn, "advance", advancing)
+    monkeypatch.setattr(worktrees, "cleanup", cleaning)
+    op = ops.land(droot, branch=d1["branch"])
+    # Queued before the transaction began, applied once the landing was done and its lock released.
+    assert seen[0] == ("advance", "prepared", "pending", True)
+    assert seen[-1] == ("cleanup", "done", False, False)
+    assert [s for s in seen if s[0] == "cleanup"] == [seen[-1]]
+    assert not Path(d1["worktree"]).exists() and Path(d2["worktree"]).is_dir()
+    assert dispatch.load(droot, d1["id"])["worktree_removed"] is True
+    journal = _journal_of(droot)
+    assert journal["obligations"]["cleanup"] == "done"
+    assert journal["cleanup"]["candidates"] == [
+        {"id": d1["id"], "worktree": d1["worktree"], "branch": d1["branch"], "state": "removed", "holds": []}
+    ]
+    assert "cleanup: removed 1, held 0" in op.text and "retried" not in op.text
+    calls = len(seen)
+    land_followups.retry_cleanup(droot)  # a repeat finds nothing owed and removes nothing
+    _new_fast(droot)  # nor does an allocation
+    assert [s for s in seen[calls:] if s[0] == "cleanup"] == []
+
+
+def test_a_held_candidate_is_reported_kept_and_removed_at_a_later_allocation(droot, fake_claude, monkeypatch):
+    d1, d2 = _landable(droot, monkeypatch, fake_claude)
+    wt = Path(d1["worktree"])
+    (wt / "notes.txt").write_text("worker output\n")
+    _set(droot, d1["id"], setup=[{"exit": 1}])  # never reused, so allocation may clean it
+    op = ops.land(droot, branch=d1["branch"])
+    assert op.data["state"] == "done" and wt.is_dir()
+    [row] = land_followups.held(_journal_of(droot))
+    assert row["id"] == d1["id"] and "uncollected files" in row["holds"][0]
+    assert "held 1" in op.text and "uncollected files" in op.text and "retried at the next" in op.text
+    status = ops.land(droot, status=True)
+    assert status.data["landings"][0]["cleanup_held"] == [row] and "1 held" in status.text
+
+    (wt / "notes.txt").unlink()
+    before = {d["id"] for d in dispatch.state.load_all(droot)}
+    real, records = worktrees.cleanup, []
+
+    def cleaning(root, **kw):
+        records.append({d["id"] for d in dispatch.state.load_all(droot)})
+        return real(root, **kw)
+
+    monkeypatch.setattr(worktrees, "cleanup", cleaning)
+    _new_fast(droot)
+    assert records == [before]  # retried before the new dispatch's record existed
+    assert not wt.exists() and Path(d2["worktree"]).is_dir()
+    assert _journal_of(droot)["obligations"]["cleanup"] == "done"
+
+
+def test_a_failed_cleanup_leaves_the_landing_successful_and_is_retried(droot, fake_claude, monkeypatch):
+    d1, _ = _landable(droot, monkeypatch, fake_claude)
+    real = worktrees.cleanup
+
+    def broken(root, **kw):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(worktrees, "cleanup", broken)
+    op = ops.land(droot, branch=d1["branch"])
+    journal = _journal_of(droot)
+    assert op.data["state"] == "done" and journal["state"] == "done"
+    assert git(["rev-parse", "main"], droot / MAIN).strip() == journal["cand"]
+    assert "cleanup failed: disk on fire" in op.text and Path(d1["worktree"]).is_dir()
+    assert journal["obligations"]["cleanup"] == "pending"
+    monkeypatch.setattr(worktrees, "cleanup", real)
+    land_followups.retry_cleanup(droot)
+    assert not Path(d1["worktree"]).exists()
+    assert _journal_of(droot)["obligations"]["cleanup"] == "done"
+
+
+def test_a_landing_stopped_after_done_is_cleaned_at_the_next_opportunity(droot, fake_claude, monkeypatch):
+    from agent_cli import land
+
+    d1, _ = _landable(droot, monkeypatch, fake_claude)
+    _set(droot, d1["id"], setup=[{"exit": 1}])  # never reused, so allocation may clean it
+    real = land.followups.retry_cleanup
+    monkeypatch.setattr(land.followups, "retry_cleanup", lambda root, **kw: None)  # stopped here
+    ops.land(droot, branch=d1["branch"])
+    assert Path(d1["worktree"]).is_dir() and _journal_of(droot)["obligations"]["cleanup"] == "pending"
+    monkeypatch.setattr(land.followups, "retry_cleanup", real)
+    _new_fast(droot)
+    assert not Path(d1["worktree"]).exists()
+    assert _journal_of(droot)["obligations"]["cleanup"] == "done"
+
+
+def test_failed_aborted_previewed_and_legacy_landings_queue_no_cleanup(droot, fake_claude, monkeypatch):
+    from agent_cli import land
+    from agent_cli import land_journal as jn
+
+    d1, _ = _landable(droot, monkeypatch, fake_claude)
+    calls: list[dict] = []
+    monkeypatch.setattr(worktrees, "cleanup", lambda root, **kw: calls.append(kw) or {})
+
+    def refused(root, cand):
+        raise AgentError("the record failed")
+
+    monkeypatch.setattr(land, "_certificate", refused)
+    with pytest.raises(AgentError, match="the record failed"):
+        ops.land(droot, branch=d1["branch"])
+    _new_fast(droot, dry_run=True)
+    main = droot / MAIN
+    tip = git(["rev-parse", d1["branch"]], main).strip()
+    base = {"branch": d1["branch"], "tip": tip, "cand": tip, "record": "r", "ts": jn.now()}
+    aborted = {
+        **base,
+        "id": "20261020T010000-aaaaaa",
+        "state": "aborted",
+        "obligations": land_followups.initial(),
+    }
+    legacy = {
+        **base,
+        "id": "20261020T020000-bbbbbb",
+        "state": "done",
+        "obligations": {"milestone": "pending"},
+    }
+    for journal in (aborted, legacy):
+        jn.write(main, journal)
+    land_followups.retry_cleanup(droot)
+    _new_fast(droot)
+    assert calls == [] and Path(d1["worktree"]).is_dir()
+
+
+def test_a_batch_cleans_each_member_and_leaves_other_work(droot, fake_claude, monkeypatch):
+    d1, d2, d3 = _landable(droot, monkeypatch, fake_claude, count=3)
+    op = ops.land(droot, branch=d1["branch"], extra=[d2["branch"]])
+    assert op.data["state"] == "done" and "cleanup: removed 2, held 0" in op.text
+    assert not Path(d1["worktree"]).exists() and not Path(d2["worktree"]).exists()
+    assert Path(d3["worktree"]).is_dir()
+    rows = _journal_of(droot)["cleanup"]["candidates"]
+    assert {r["id"]: r["state"] for r in rows} == {d1["id"]: "removed", d2["id"]: "removed"}
+
+
+def test_an_active_verifier_and_a_resumed_head_hold_until_their_exact_head_lands(
+    droot, fake_claude, monkeypatch
+):
+    d1, d2 = _landable(droot, monkeypatch, fake_claude)
+    _set(droot, d2["id"], worker_cleanup_pending=True)  # its verifier's cleanup is unconfirmed
+    first = ops.land(droot, branch=d1["branch"], extra=[d2["branch"]])
+    holds = {r["id"]: r["holds"] for r in land_followups.held(first.data)}
+    assert list(holds) == [d2["id"]] and "unconfirmed" in holds[d2["id"]][0]
+    assert Path(d2["worktree"]).is_dir() and not Path(d1["worktree"]).exists()
+
+    _set(droot, d2["id"], worker_cleanup_pending=False, state="blocked")
+    wt = Path(d2["worktree"])
+    (wt / "resumed.txt").write_text("resumed work\n")
+    git(["add", "resumed.txt"], wt)
+    git(["commit", "-q", "-m", "resumed"], wt)
+    _set(droot, d2["id"], state="done")
+    land_followups.retry_cleanup(droot)  # the old landing's mark cannot remove the resumed head
+    [row] = land_followups.held(_journal_of(droot))
+    assert "kept until that exact head lands" in row["holds"][0] and wt.is_dir()
+
+    second = ops.land(droot, branch=d2["branch"])
+    assert not wt.exists() and "cleanup: removed 1" in second.text
+    from agent_cli import land_journal as jn
+
+    older = jn.read(droot / MAIN, first.data["id"])
+    assert older["obligations"]["cleanup"] == "done"
+    assert {r["id"]: r["state"] for r in older["cleanup"]["candidates"]}[d2["id"]] == "superseded"
 
 
 @pytest.mark.parametrize("reason", ["completed", "budget_exhausted", "max_turns"])
