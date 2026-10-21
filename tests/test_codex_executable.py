@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -115,10 +118,29 @@ def test_real_windows_codex_version_catalog_and_stdio_handshake():
     )
     assert isinstance(json.loads(catalog.stdout).get("models"), list)
 
-    async def handshake(cwd: Path) -> None:
+    psutil = importlib.import_module("psutil")
+
+    async def handshake(cwd: Path) -> list[Any]:
         async with CodexAppServer(cwd) as rpc:
             assert rpc.process is not None and rpc.process.returncode is None
+            leader = psutil.Process(rpc.process.pid)
+            return [leader, *leader.children(recursive=True)]
 
     # A fresh directory has no untrusted project hooks or config to muddy the stdio probe.
-    with tempfile.TemporaryDirectory() as directory:
-        asyncio.run(handshake(Path(directory)))
+    directory = Path(tempfile.mkdtemp())
+    try:
+        tree = asyncio.run(handshake(directory))
+        # The app-server only waits for the node launcher; TerminateProcess on codex.exe returns
+        # before its handles, cwd included, are closed. A process that is still alive here leaked.
+        _, alive = psutil.wait_procs(tree, timeout=10)
+        assert not alive, f"Codex app-server left processes running: {alive}"
+    finally:
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                shutil.rmtree(directory)
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
