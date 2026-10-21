@@ -243,6 +243,18 @@ tests = [
 ]
 
 [[bundle]]
+name = "requests"
+# Request records ride the feature store: their consumers are the feature lifecycle, the status
+# snapshot and views, the session-start digest, and the typed tool and CLI route.
+paths = ["src/agent_cli/requests.py", "src/agent_cli/ops/requests.py", "src/agent_cli/cli/request.py"]
+tests = [
+  "tests/test_requests.py", "tests/test_features.py", "tests/test_feature_close_retro.py",
+  "tests/test_status.py", "tests/test_task_views.py", "tests/test_documents.py", "tests/test_hooks_session.py",
+  "tests/test_mcp_server.py", "tests/test_mcp_contract.py", "tests/test_mcp_wording.py",
+  "tests/test_cli_parser_reuse.py", "tests/test_ops_cases.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
 name = "peers"
 paths = [
   "src/agent_cli/peers.py", "src/agent_cli/peer_net/**",

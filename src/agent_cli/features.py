@@ -31,6 +31,11 @@ TASK_SUFFIX_RE = re.compile(r"\s+(?:\{[^{}\n]*\}\s+)?\^t\d+$")
 # later tasks.
 LINE_SEPARATORS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85  "
 RESERVED_SLUGS = {"current", "all", "new", "list", "default"}
+# A request shares this store and its numbering; its plan.md says so in `record_kind`. A plan
+# without the field is a feature, so every older record keeps its meaning.
+KIND_FIELD = "record_kind"
+REQUEST_KIND = "request"
+REQUEST_TAG = "request"
 
 
 @dataclass
@@ -68,6 +73,19 @@ class Feature:
     @property
     def is_open(self) -> bool:
         return self.status in OPEN_STATUSES
+
+    @property
+    def is_request(self) -> bool:
+        return self.meta.get(KIND_FIELD) == REQUEST_KIND
+
+    @property
+    def label(self) -> str:
+        """`Request NNN` or `Feature NNN`, for output that names the record."""
+        return f"{'Request' if self.is_request else 'Feature'} {self.number}"
+
+    @property
+    def type_tag(self) -> str:
+        return REQUEST_TAG if self.is_request else TYPE_TAG
 
     def rel_dir(self, root: Path) -> str:
         return self.dir.relative_to(root).as_posix()
@@ -356,7 +374,11 @@ def new(
     repos: list[str] | None = None,
     tags: list[str] | None = None,
     opened: date | None = None,
+    *,
+    request: dict[str, Any] | None = None,
 ) -> Feature:
+    """`request` makes a request record (`requests.new`): its frontmatter fields and `ask`, which
+    the compact template puts in Context. The id comes from the same claim either way."""
     slug = feature_slug(slug)
     if status not in OPEN_STATUSES:
         raise AgentError(f"new features must be one of {', '.join(OPEN_STATUSES)}; got {status!r}")
@@ -369,7 +391,7 @@ def new(
     from . import notes_claims
 
     fid = notes_claims.claim(root, "feature", slug).id
-    return write_folder(root, fid, slug, title, status, tickets, repos, tags, opened)
+    return write_folder(root, fid, slug, title, status, tickets, repos, tags, opened, request=request)
 
 
 def write_folder(
@@ -382,10 +404,12 @@ def write_folder(
     repos: list[str],
     tags: list[str] | None,
     opened: date | None,
+    *,
+    request: dict[str, Any] | None = None,
 ) -> Feature:
     number = f"{fid:03d}"
     fdir = features_dir(root) / f"{number}-{slug}"
-    meta = {
+    meta: dict[str, Any] = {
         "id": fid,
         "slug": slug,
         "title": title.strip(),
@@ -396,11 +420,16 @@ def write_folder(
         "repos": repos,
         "adrs": [],
         "decisions": [],
-        "tags": with_type_tag(tags),
+        "tags": with_type_tag(tags, REQUEST_TAG if request is not None else TYPE_TAG),
         "links": [],
     }
+    if request is None:
+        body = templates.plan_body(number, title.strip())
+    else:
+        meta = {KIND_FIELD: REQUEST_KIND, **meta, "category": request["category"]}
+        body = templates.request_body(number, title.strip(), request["category"], request["ask"])
     fdir.mkdir(parents=True, exist_ok=False)
-    frontmatter.dump(fdir / "plan.md", meta, templates.plan_body(number, title.strip()))
+    frontmatter.dump(fdir / "plan.md", meta, body)
     (fdir / "log.md").write_text(templates.log_header(number, slug), encoding="utf-8")
     return load_dir(fdir)
 
@@ -447,26 +476,40 @@ def refuse_open_tasks(feature: Feature) -> None:
     still_open = [t.index for t in list_tasks(feature.body) if t.is_open]
     if still_open:
         raise AgentError(
-            f"feature {feature.number} has {len(still_open)} open task(s): "
+            f"{feature.label.lower()} has {len(still_open)} open task(s): "
             + ", ".join(f"#{n}" for n in still_open)
             + ". Before closing, tick each one done (task_done) or supersede it with a reason and a link "
             "(task_supersede; a task moved to another feature links to it there)."
         )
 
 
+def refuse_terminal(root: Path, feature: Feature, status: str) -> None:
+    """Every route to a terminal status checks here before it writes. A feature needs its tasks
+    settled and room in the lesson queue; a request needs its tasks settled and no unfinished
+    dispatch work, and `done` needs its delivered result (`requests.refuse_unfinished`)."""
+    refuse_open_tasks(feature)
+    if feature.is_request:
+        from . import requests
+
+        requests.refuse_unfinished(root, feature, status)
+    else:
+        lessons.refuse_full_queue(root)
+
+
 def close(root: Path, feature: Feature, status: str = "done", closed: date | None = None) -> Feature:
     if status not in TERMINAL_STATUSES:
         raise AgentError(f"close status must be one of {', '.join(TERMINAL_STATUSES)}")
     if feature.status in TERMINAL_STATUSES:
-        raise AgentError(f"feature {feature.number} is already {feature.status}")
-    refuse_open_tasks(feature)
-    lessons.refuse_full_queue(root)
+        raise AgentError(f"{feature.label.lower()} is already {feature.status}")
+    refuse_terminal(root, feature, status)
     feature.meta["status"] = status
     feature.meta["closed"] = closed or today()
     feature.save()
-    from .journal import pending as journal_pending
+    if not feature.is_request:
+        # A request's close is journal evidence through its record, not a pending milestone.
+        from .journal import pending as journal_pending
 
-    journal_pending.record(root, "feature-close", f"{feature.number} {feature.slug}", status)
+        journal_pending.record(root, "feature-close", f"{feature.number} {feature.slug}", status)
     return feature
 
 
@@ -495,8 +538,7 @@ def set_fields(
         # Whatever the current status: done -> abandoned with a task reopened after the close
         # went through too.
         if status in TERMINAL_STATUSES:
-            refuse_open_tasks(feature)
-            lessons.refuse_full_queue(root)
+            refuse_terminal(root, feature, status)
         meta["status"] = status
         if status in TERMINAL_STATUSES and not meta.get("closed"):
             meta["closed"] = today()
@@ -514,8 +556,8 @@ def set_fields(
         _edit_list(meta, "repos", adds, removes)
     _edit_list(meta, "adrs", add_adr, remove_adr)
     _edit_list(meta, "decisions", add_decision, remove_decision)
-    _edit_list(meta, "tags", add_tag, [t for t in (remove_tag or []) if t != TYPE_TAG])
-    meta["tags"] = with_type_tag(meta.get("tags"))
+    _edit_list(meta, "tags", add_tag, [t for t in (remove_tag or []) if t != feature.type_tag])
+    meta["tags"] = with_type_tag(meta.get("tags"), feature.type_tag)
     feature.save()
     if status is not None and status != old_status and feature.log_path.exists():
         # Record each status change with its reason so later work can detect a stale blocked

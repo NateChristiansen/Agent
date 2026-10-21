@@ -35,6 +35,7 @@ def add_parser(sub: Subparsers) -> None:
     fl = f.add_parser("list", help="list features")
     fl.add_argument("--status", nargs="*", action="extend", choices=features_mod.STATUSES)
     fl.add_argument("--all", action="store_true", help="include closed features")
+    fl.add_argument("--include-requests", action="store_true", help="include request records")
     fs = f.add_parser("show", help="show one feature")
     fs.add_argument("feature")
     fs.add_argument("--session-id")
@@ -131,7 +132,11 @@ def feature_new(root: Path, args: argparse.Namespace, out: Output) -> int:
 
 
 def feature_list(root: Path, args: argparse.Namespace, out: Output) -> int:
-    return out.done(ops.feature_list(root, status=args.status, include_closed=args.all))
+    return out.done(
+        ops.feature_list(
+            root, status=args.status, include_closed=args.all, include_requests=args.include_requests
+        )
+    )
 
 
 def feature_show(root: Path, args: argparse.Namespace, out: Output) -> int:

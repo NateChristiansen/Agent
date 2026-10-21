@@ -15,6 +15,11 @@ to the harness, how two of them share the vault, and how they talk.
   name, with busy or idle and an age. A running worker is in that list under its dispatch id
   (`<id>`), because the SDK passes the id as the session name. The harness adds what
   Claude Code cannot know: which feature each session holds and which areas.
+- A session may map to a request record instead of a feature: the same mapping, shown as
+  `Request NNN` with its ask and next action at session start. `request` action `new` maps the
+  calling manager by default; `capture` leaves the mapping alone; `use` switches it under the same
+  rules as `feature_use`. The session-start digest lists open requests under `## Requests`, apart
+  from the open features.
 
 ## Names
 

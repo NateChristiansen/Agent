@@ -117,6 +117,33 @@ def status_digest(data: dict[str, Any], limit: int | None = DIGEST_BYTES) -> str
     if not opened:
         lines.append("_nothing in flight_")
     text = "\n".join(lines)
+    text = clip(text, limit) if limit is not None else text
+    requests = request_digest(data, REQUEST_DIGEST_BYTES if limit is not None else None)
+    return f"{text}\n{requests}" if requests else text
+
+
+REQUEST_DIGEST_BYTES = 800
+
+
+def request_digest(data: dict[str, Any], limit: int | None = REQUEST_DIGEST_BYTES) -> str:
+    """Active requests and proposed captures, one compact row each: identity, status, category,
+    ask and next action. Resolved requests stay out; `request` action `list` has them."""
+    order = {"active": 0, "blocked": 1, "proposed": 2}
+    rows = [r for r in (as_dict_or_none(item) for item in as_list(data.get("requests"))) if r is not None]
+    shown = sorted(
+        (r for r in rows if r.get("status") in features.OPEN_STATUSES),
+        key=lambda r: (order.get(str(r["status"]), 9), str(r.get("id")).zfill(6)),
+    )
+    if not shown:
+        return ""
+    lines = [f"## Requests ({len(shown)})"]
+    for r in shown:
+        row = f"Request {r['id']:03d} [{r['status']}] {r.get('category') or ''}: {r.get('ask') or '—'} next: {r.get('next_action')}"
+        row = row.replace("\n", " ")
+        if limit is not None and len(row) > DIGEST_ROW_CHARS + 40:
+            row = row[: DIGEST_ROW_CHARS + 39] + "…"
+        lines.append("  " + row)
+    text = "\n".join(lines)
     return clip(text, limit) if limit is not None else text
 
 

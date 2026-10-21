@@ -49,6 +49,7 @@ from . import peer as peer_cli
 from . import peer_net as peer_net_cli
 from . import procs as procs_cli
 from . import repos as repos_cli
+from . import request as request_cli
 from . import scratch as scratch_cli
 from . import session as session_cli
 from . import status as status_cli
@@ -227,6 +228,7 @@ _MODULES = (
     land_cli,
     tidy_cli,
     telemetry_cli,
+    request_cli,
 )
 
 HANDLERS: dict[tuple[str, str | None], Handler] = {}
@@ -267,6 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     land_cli.add_parser(sub)
     tidy_cli.add_parser(sub)
     telemetry_cli.add_parser(sub)
+    request_cli.add_parser(sub)
     return p
 
 

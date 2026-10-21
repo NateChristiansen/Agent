@@ -110,6 +110,7 @@ const page = {
     name: "plan", path: "features/001-work/plan.md", folder: "features/001-work",
     tasks: array(plan.tasks), link: { withDisplay: (s) => s },
   },
+  ...(plan.page || {}),
 };
 function DateTimeOf(iso) {
   const d = new Date(iso);
@@ -126,12 +127,12 @@ const dv = {
   paragraph: (text) => out.paragraphs.push(text),
   container: element(out.card),
   luxon: { DateTime: { now: () => DateTimeOf("2026-10-13"), fromISO: DateTimeOf } },
-  io: { load: async () => null },
+  io: { load: async (path) => (plan.files || {})[path] ?? null },
 };
 const source = fs.readFileSync(viewPath, "utf8");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const app = {vault:{adapter:{read:async()=>JSON.stringify(plan.snapshot)}}};
-new AsyncFunction("dv", "app", source)(dv, app).then(() => process.stdout.write(JSON.stringify(out)));
+new AsyncFunction("dv", "app", "input", source)(dv, app, plan.input).then(() => process.stdout.write(JSON.stringify(out)));
 """
 
 
@@ -255,6 +256,50 @@ def test_the_markdown_parser_confirms_the_structure():
             if t.type == "list_item_open"
         ]
         assert len(items) == 2 and items[0].level == items[1].level
+
+
+def _node(view: str, plan: dict[str, Any]) -> dict[str, Any]:
+    payload = json.dumps(plan, default=str)
+    result = subprocess.run(
+        ["node", "-e", HARNESS, str(VIEWS / view), payload], capture_output=True, text=True, check=True
+    )
+    return json.loads(result.stdout)
+
+
+@pytest.mark.usefixtures("notes_remote")
+def test_a_request_renders_with_its_identity_ask_and_result_and_no_task_graph(tmp_root: Path):
+    from agent_cli import requests
+    from agent_cli.ops import requests as request_ops
+
+    request_ops.request_new(
+        tmp_root, slug="look-at", title="Look", ask="Is the parser safe?", category="review", use=False
+    )
+    capture = request_ops.request_capture(
+        tmp_root, slug="an-idea", title="Idea", ask="cache the index", category="idea"
+    )
+    req = features.resolve(tmp_root, "1")
+    snapshot = status.collect(tmp_root)
+    assert snapshot["features"] == [] and [r["id"] for r in snapshot["requests"]] == [1, 2]
+    page = {"record_kind": "request", "category": "review"}
+    files = {"features/001-work/plan.md": req.body}  # the harness page's path
+    out = _node(
+        "feature.js", {"tasks": dataview_tasks(req.body), "page": page, "files": files, "snapshot": {}}
+    )
+    header, ask, result = out["paragraphs"][:3]
+    assert header.startswith("**Request 001** · **active** · review") and "tasks" not in header
+    assert ask == "ask: Is the parser safe?" and result == "result: not delivered yet"
+    assert features.list_tasks(req.body) == [] and requests.result_of(req) == ""
+    feature_header = _node("feature.js", {"tasks": dataview_tasks(BODY), "snapshot": {}})["paragraphs"][0]
+    assert feature_header.startswith("**active** · tasks 2/6 done")
+    plain = json.loads(json.dumps(snapshot, default=str))
+    cards = _node("index.js", {"tasks": [], "snapshot": plain, "input": {"section": "requests"}})["card"]
+    assert cards == [
+        "Request 001 · Look",
+        "active · review · Is the parser safe? · next: deliver the ask, then complete it with the result",
+        "Request 002 · Idea",
+        f"proposed · idea · cache the index · next: {capture.data['next_action']}",
+    ]
+    assert _node("features.js", {"tasks": [], "snapshot": plain})["card"] == []
 
 
 def test_status_json_and_real_pane_keep_all_task_counting_cases(tmp_root: Path):

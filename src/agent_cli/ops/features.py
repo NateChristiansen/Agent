@@ -29,6 +29,7 @@ def _feature_dict(root: Path, f: features_mod.Feature) -> dict[str, Any]:
         "id": f.id,
         "number": f.number,
         "slug": f.slug,
+        "record_kind": features_mod.REQUEST_KIND if f.is_request else "feature",
         "dir": f.rel_dir(root),
         "title": f.meta.get("title"),
         "status": f.status,
@@ -93,8 +94,15 @@ def feature_new(
     return Op(result, f"created {f.rel_dir(root)}{tail}")
 
 
-def feature_list(root: Path, *, status: list[str] | None = None, include_closed: bool = False) -> Op:
-    feats = features_mod.load_all(root)
+def feature_list(
+    root: Path,
+    *,
+    status: list[str] | None = None,
+    include_closed: bool = False,
+    include_requests: bool = False,
+) -> Op:
+    """Features only, unless `include_requests`: requests have their own list (`request_list`)."""
+    feats = [f for f in features_mod.load_all(root) if include_requests or not f.is_request]
     if status:
         feats = [f for f in feats if f.status in status]
     elif not include_closed:
@@ -109,7 +117,7 @@ def feature_show(root: Path, *, feature: str = "current", session_id: str | None
     data = _feature_dict(root, f)
     data["recent_log"] = [{"ts": e.ts, "kind": e.kind, "text": e.text} for e in entries]
     lines = [
-        f"{f.number} {f.slug} — {data['title']} [{f.status}]",
+        f"{f.label if f.is_request else f.number} {f.slug} — {data['title']} [{f.status}]",
         f"opened {data['opened']}  closed {data['closed']}",
     ]
     lines.append(

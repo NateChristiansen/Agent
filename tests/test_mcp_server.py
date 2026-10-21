@@ -75,7 +75,8 @@ async def test_list_tools_shape_and_enums(seeded: Path):
     # read-only pickup check that `feature_use` and dispatch also run.
     # A plan adds strict config validation through the read-only repos_validate tool.
     # Audit 10 plan.md:113,115 (K1/K3) retire status_show and feature_current.
-    assert len(tools) == 28, sorted(tools)
+    # `request` joined: one routed tool over request records in the feature store.
+    assert len(tools) == 29, sorted(tools)
     assert {"status_show", "feature_current"}.isdisjoint(tools)
     gone = {
         "raw_adopt",

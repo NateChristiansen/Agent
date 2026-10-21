@@ -15,6 +15,7 @@ from . import features as features_mod
 from . import frontmatter, maintenance
 from . import log as log_mod
 from . import repos as repos_mod
+from . import requests as requests_mod
 from .capture import UNASSIGNED
 from .core import (
     GENERATED_VIEWS,
@@ -44,6 +45,9 @@ def collect(root: Path) -> dict[str, Any]:
     except AgentError:
         registry = None
     feats: list[dict[str, Any]] = []
+    # Requests share the store but not the feature views: they go to `requests`, which feature
+    # counts, cards and the session digest's feature list never read.
+    reqs: list[dict[str, Any]] = []
     parked = set(maintenance.parked(root))
     dispatches = _dispatches(root)
     landed = _landed_tasks(root, dispatches)
@@ -61,39 +65,45 @@ def collect(root: Path) -> dict[str, Any]:
         for name in str_list(f.meta.get("repos")):
             repo = registry.find(name) if registry else None
             shorts.append(repo.short if repo else name)
-        feats.append(
-            {
-                "id": f.id,
-                "dir": f.rel_dir(root),
-                "slug": f.slug,
-                "title": f.meta.get("title", ""),
-                "status": f.status,
-                "parked": f"{f.id:03d}" in parked,
-                "repos": list(f.meta.get("repos") or []),
-                "repo_shorts": shorts,
-                "tickets": tickets_of(f.meta),
-                "adrs": list(f.meta.get("adrs") or []),
-                "opened": coerce_date(f.meta.get("opened")),
-                "closed": coerce_date(f.meta.get("closed")),
-                "last_log": {"ts": last.ts, "kind": last.kind} if last else None,
-                "next_task": tasks["next"],
-                "landed_unticked": landed_open,
-                "open_tasks": tasks["open"],
-                "open_task_items": [{"index": t.index, "text": t.text} for t in task_items if t.is_open],
-                "done_tasks": tasks["done"],
-                "blocked_since": {"ts": since[0], "reason": since[1]} if since else None,
-                "blocked_work": blocked_work,
-                "_hash_src": (
-                    frontmatter.join(f.meta, "")
-                    + (last.ts + last.kind if last else "")
-                    + "|".join(tasks["open_items"])
-                    + json.dumps([(t.index, t.state, t.text) for t in task_items])
-                    + f"|open={tasks['open']}|done={tasks['done']}|parked={f'{f.id:03d}' in parked}"
-                    + f"|landed={landed_open}"
-                    + (f"|blocked={since}|work={blocked_work}" if f.status == "blocked" else "")
-                ),
-            }
-        )
+        entry: dict[str, Any] = {
+            "id": f.id,
+            "dir": f.rel_dir(root),
+            "slug": f.slug,
+            "title": f.meta.get("title", ""),
+            "status": f.status,
+            "parked": f"{f.id:03d}" in parked,
+            "repos": list(f.meta.get("repos") or []),
+            "repo_shorts": shorts,
+            "tickets": tickets_of(f.meta),
+            "adrs": list(f.meta.get("adrs") or []),
+            "opened": coerce_date(f.meta.get("opened")),
+            "closed": coerce_date(f.meta.get("closed")),
+            "last_log": {"ts": last.ts, "kind": last.kind} if last else None,
+            "next_task": tasks["next"],
+            "landed_unticked": landed_open,
+            "open_tasks": tasks["open"],
+            "open_task_items": [{"index": t.index, "text": t.text} for t in task_items if t.is_open],
+            "done_tasks": tasks["done"],
+            "blocked_since": {"ts": since[0], "reason": since[1]} if since else None,
+            "blocked_work": blocked_work,
+            "_hash_src": (
+                frontmatter.join(f.meta, "")
+                + (last.ts + last.kind if last else "")
+                + "|".join(tasks["open_items"])
+                + json.dumps([(t.index, t.state, t.text) for t in task_items])
+                + f"|open={tasks['open']}|done={tasks['done']}|parked={f'{f.id:03d}' in parked}"
+                + f"|landed={landed_open}"
+                + (f"|blocked={since}|work={blocked_work}" if f.status == "blocked" else "")
+            ),
+        }
+        if f.is_request:
+            view = requests_mod.row(root, f)
+            entry.update({k: view[k] for k in ("label", "category", "ask", "has_result", "next_action")})
+            entry["record_kind"] = features_mod.REQUEST_KIND
+            entry["_hash_src"] += json.dumps(view, default=str)
+            reqs.append(entry)
+        else:
+            feats.append(entry)
     adr_list: list[dict[str, Any]] = []
     for a in adrs_mod.load_all(root):
         adr_list.append(
@@ -130,7 +140,13 @@ def collect(root: Path) -> dict[str, Any]:
         "latest": files[-1].stem if files else None,
         "_names": [p.name for p in files],
     }
-    return {"features": feats, "adrs": adr_list, "decisions": decisions, "unassigned_raw": unassigned}
+    return {
+        "features": feats,
+        "requests": reqs,
+        "adrs": adr_list,
+        "decisions": decisions,
+        "unassigned_raw": unassigned,
+    }
 
 
 def _dispatches(root: Path) -> list[dict[str, Any]]:
@@ -164,6 +180,8 @@ def source_hash(data: dict[str, Any]) -> str:
     for a in data["decisions"]:
         h.update(a["_hash_src"].encode("utf-8"))
     h.update("|".join(data["unassigned_raw"].get("_names") or []).encode("utf-8"))
+    for r in data["requests"]:
+        h.update(r["_hash_src"].encode("utf-8"))
     return h.hexdigest()[:12]
 
 
@@ -204,6 +222,7 @@ def render(root: Path) -> dict[str, Any]:
         "rendered_at": iso(ts),
         "source_hash": digest,
         "features": [_strip(f) for f in data["features"]],
+        "requests": [_strip(r) for r in data["requests"]],
         "adrs": [_strip(a) for a in data["adrs"]],
         "decisions": [_strip(a) for a in data["decisions"]],
         "unassigned_raw": _strip(data["unassigned_raw"]),

@@ -82,10 +82,78 @@ def feature_new(
     )
 
 
-def feature_list(ctx: Ctx, status: list[FeatureStatus] | None = None, include_closed: bool = False) -> Op:
+def feature_list(
+    ctx: Ctx,
+    status: list[FeatureStatus] | None = None,
+    include_closed: bool = False,
+    include_requests: bool = False,
+) -> Op:
     return ops.feature_list(
-        ctx.root, status=list(status) if status is not None else None, include_closed=include_closed
+        ctx.root,
+        status=list(status) if status is not None else None,
+        include_closed=include_closed,
+        include_requests=include_requests,
     )
+
+
+RequestAction = Literal["new", "capture", "use", "show", "list", "complete", "promote"]
+RequestCategory = Literal["ask", "review", "research", "fix", "bug", "idea"]
+
+
+def request(
+    ctx: Ctx,
+    action: RequestAction,
+    request: str = "current",
+    slug: str | None = None,
+    title: str | None = None,
+    ask: str | None = None,
+    category: RequestCategory | None = None,
+    repos: list[str] | None = None,
+    use: bool | None = None,
+    switch: bool = False,
+    result: str | None = None,
+    status: TerminalStatus = "done",
+    note: str | None = None,
+    reason: str | None = None,
+    include_closed: bool = False,
+    session_id: str | None = None,
+) -> Op:
+    """One routed tool over request records, the way `lesson` is over the queue (see ADR-0007)."""
+    from ..core import AgentError
+    from ..ops import requests as request_ops
+
+    if action == "list":
+        return request_ops.request_list(ctx.root, include_closed=include_closed)
+    if action in ("new", "capture"):
+        if not slug or not title or not ask or not category:
+            raise AgentError(f"{action} needs slug, title, ask and category")
+        mapped = use if use is not None else action == "new"
+        create = request_ops.request_new if action == "new" else request_ops.request_capture
+        return create(
+            ctx.root,
+            slug=slug,
+            title=title,
+            ask=ask,
+            category=category,
+            repos=repos,
+            use=mapped,
+            session_id=ctx.session_id(session_id, required=mapped),
+        )
+    if action == "use":
+        sid = ctx.session_id(session_id, required=True)
+        return request_ops.request_use(ctx.root, request=request, session_id=sid, switch=switch)
+    sid = ctx.session_for(request, session_id)
+    if action == "show":
+        return request_ops.request_show(ctx.root, request=request, session_id=sid)
+    if action == "complete":
+        if not result:
+            raise AgentError("complete needs result: what was delivered")
+        return request_ops.request_complete(
+            ctx.root, request=request, result=result, status=status, note=note, session_id=sid
+        )
+    if not reason:
+        raise AgentError("promote needs reason: the owner's approval for the broader work")
+    return request_ops.request_promote(ctx.root, request=request, reason=reason, session_id=sid)
 
 
 def feature_show(ctx: Ctx, feature: str = "current", session_id: str | None = None) -> Op:
@@ -244,8 +312,22 @@ FEATURE_TOOLS: dict[str, ToolSpec] = {
     "feature_list": ToolSpec(
         feature_list,
         "List features",
-        "List open features (all statuses with include_closed=True, or filter with `status`). Returns items and count.",
+        "List open features (all statuses with include_closed=True, or filter with `status`). Requests are left "
+        "out unless include_requests=True; the `request` tool lists them. Returns items and count.",
         read_only=True,
+    ),
+    "request": ToolSpec(
+        request,
+        "Request records",
+        "A request is an ask, review, research or bounded fix too small for a feature: same numbered store, "
+        "log, captures, handoffs and dispatch, but its contract is the ask and the delivered result, with no task "
+        "graph, lesson-queue gate or retro. `new` (slug, title, ask, category ask|review|research|fix|bug|idea, "
+        "optional repos) maps this session unless use=false. `capture` (category bug|idea) records it `proposed` "
+        "and keeps the mapping; capture is not authorization: set it active with `feature_set` only when the owner "
+        "asks to execute it. `use`, `show`, `list` (include_closed). `complete` (result, status done|abandoned, "
+        "note) is refused while a dispatch runs, waits on an answer, read or branch decision, or has cleanup "
+        "pending, or a task is open. `promote` (reason: the owner's approval) makes it a feature in place for "
+        "broader work. " + FEATURE_REF + " " + SESSION_ARG,
     ),
     "feature_show": ToolSpec(
         feature_show,
@@ -277,6 +359,7 @@ FEATURE_TOOLS: dict[str, ToolSpec] = {
         "Close a feature as done or abandoned; sets the closed date and re-renders the vault views. `note` writes a closing decision entry first. Only when the owner says to close. "
         "Refused while a task is open: tick it or supersede it first. "
         "Run `/retro` first unless the owner says to skip it; the close does not check. "
+        "A request completes through the `request` tool; closing one here runs the same request checks. "
         "After closing, write today's journal (`/journal today`) on the journal machine. " + FEATURE_REF,
     ),
     "task_list": ToolSpec(

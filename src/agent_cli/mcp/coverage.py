@@ -8,7 +8,7 @@ import re
 import shlex
 
 # (command, subcommand) -> the manager MCP tool that covers it. An `action`-routed tool
-# (`dispatch`, `dispatch_read`, `harness`, `lease`, `lesson`, `peer`) covers several subcommands.
+# (`dispatch`, `dispatch_read`, `harness`, `lease`, `lesson`, `peer`, `request`) covers several subcommands.
 # The read-only dispatch subcommands route to `dispatch_read`, which writes nothing;
 # `dispatch` keeps them as aliases for one release.
 CLI_TO_MCP: dict[tuple[str, str | None], str] = {
@@ -20,6 +20,13 @@ CLI_TO_MCP: dict[tuple[str, str | None], str] = {
     ("feature", "current"): "feature_show",
     ("feature", "set"): "feature_set",
     ("feature", "close"): "feature_close",
+    ("request", "new"): "request",
+    ("request", "capture"): "request",
+    ("request", "use"): "request",
+    ("request", "show"): "request",
+    ("request", "list"): "request",
+    ("request", "complete"): "request",
+    ("request", "promote"): "request",
     ("task", "list"): "task_list",
     ("task", "done"): "task_done",
     ("task", "supersede"): "task_supersede",
@@ -135,7 +142,7 @@ def tool_for(cmd: str | None, sub: str | None) -> tuple[str, str | None] | None:
             tool = CLI_TO_MCP[key]
             if tool == "harness":
                 return tool, ACTION[key]
-            if tool in {"dispatch", "dispatch_read", "lease", "lesson", "peer"}:
+            if tool in {"dispatch", "dispatch_read", "lease", "lesson", "peer", "request"}:
                 return tool, ROUTED_ACTION.get(key, sub)
             return tool, None
     return None

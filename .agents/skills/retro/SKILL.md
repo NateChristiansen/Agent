@@ -16,10 +16,14 @@ zero or more findings routed through `/lesson`. A retro is hindsight for the own
 six months:
 what it cost, what hurt, what worked, what changes.
 
+Request records (`record_kind: request`) need no retro: completing one does not ask for it and
+session start does not count their dispatches toward the retro cadence. Run one on a request
+only when the owner asks; its plan, log, handoffs and raw captures sit where a feature's do.
+
 ## 0. Gather, do not read
 
 With no feature ref, use `feature_list` with `include_closed: true`, list closed features whose
-folders lack `retro.md`, and ask which to review.
+folders lack `retro.md`, and ask which to review. That list leaves requests out.
 
 List the material and its sizes; the reading is the subagent's job (step 2):
 
@@ -111,7 +115,8 @@ Frontmatter: `tags: [retro]`, `links: ["[[features/NNN-slug/plan|NNN slug]]"]`, 
 ## 6. `harness` mode
 
 Same steps over every feature closed since the newest `features/*/retro.md` (or all of them if
-none exist), plus changed mechanisms and feature tasks for the period.
+none exist), plus changed mechanisms and feature tasks for the period. Requests resolved in the
+period count as evidence (`request` action `list` with `include_closed: true`), without a retro each.
 The subagent's questions gain one: which tracked findings found a home, and which installed
 mechanisms had their symptom recur. Output goes to `harness/owner/retro-YYYY-MM-DD.md`.
 

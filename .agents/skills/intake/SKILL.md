@@ -1,6 +1,6 @@
 ---
 name: intake
-description: "Turn a prompt, pasted ticket, error, or question into a tracked feature: clarify with the owner first, then feature_new + feature_use, write the plan.md body, log the first entry. Use whenever a task arrives that has no feature in Dashboard.md."
+description: "Turn a prompt, pasted ticket, error, or question into a tracked feature or request: clarify with the owner first, then feature_new + feature_use (or the request tool for a standalone ask, review, research or bounded fix), write the plan.md body, log the first entry. Use whenever a task arrives that has no feature or request in Dashboard.md or Index.md."
 user-invocable: true
 allowed-tools: mcp__agent__*, Read, Edit, Write, Glob, Grep, AskUserQuestion
 ---
@@ -50,6 +50,27 @@ matches an open feature, call `feature_use`. Inspecting, answering or cleaning u
 feature's worker keeps the mapping: use explicit `feature`/`dispatch_id` arguments with
 `dispatch_read` or `dispatch`. A peer message does not assign ownership. Mapping from one,
 or switching away from open work, needs the owner's ask and `switch=true`.
+
+## 1b. Feature or request
+
+A standalone ask, review, research question or one agreed bounded fix becomes a **request**, not
+a feature: the `request` tool, action `new`, with `slug`, `title`, `ask` (the owner's ask in their
+words; the worker reads it as Context), `category` (`ask`, `review`, `research`, `fix`) and any
+registered `repos`. It shares the feature numbers, log, captures, handoffs and dispatch, and maps
+this session by default. It needs no task graph, Decisions or Verification sections; the ask and
+the delivered result are its contract. Log the opening decision as for a feature (the tool writes
+one), then work or dispatch. A bounded fix still takes the normal verification, fresh review and
+landing route.
+
+A bug or an idea the owner mentions for later is `capture` (category `bug` or `idea`): it is
+recorded `proposed` and the session keeps its mapping. Capture is not authorization. Execute it
+only when the owner asks, and then set it active with `feature_set` (`status: active`, `reason`
+naming the ask). Lessons still go to the lesson queue (`/lesson`).
+
+Work that grows past the ask (a new deliverable, coordinated broader work, a contract change) needs
+the owner's approval, then `request` action `promote` with that approval as `reason`. The record
+becomes a feature in place, keeping its folder, id, log, captures, handoffs and result; add its
+Decisions, Verification and tasks before the broader work starts. Plain questions stay chat.
 
 ## 2. Create and map
 

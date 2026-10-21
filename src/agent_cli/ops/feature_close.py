@@ -10,7 +10,6 @@ from pathlib import Path
 from .. import capture as capture_mod
 from .. import dispatch as dispatch_mod
 from .. import features as features_mod
-from .. import lessons as lessons_mod
 from .. import log as log_mod
 from ..core import AgentError
 from ..records.narrow import as_dict, as_list
@@ -44,14 +43,36 @@ def feature_close(
     session_id: str | None = None,
 ) -> Op:
     f = features_mod.resolve(root, feature, session_id)
+    return close_record(root, f, status=status, note=note, session_id=session_id)
+
+
+def close_record(
+    root: Path,
+    f: features_mod.Feature,
+    *,
+    status: str,
+    note: str | None = None,
+    session_id: str | None = None,
+    result: str | None = None,
+) -> Op:
+    """Close a feature or a request, then run the safe cleanup both share: worktrees, chat
+    pending, transcripts. A request is refused before anything changes while its dispatches owe
+    work (`requests.refuse_unfinished`), and needs no retro and no journal step. `result` is a
+    request's delivered result, written with the status."""
     if status not in features_mod.TERMINAL_STATUSES:
         raise AgentError(f"close status must be one of {', '.join(features_mod.TERMINAL_STATUSES)}")
     if f.status in features_mod.TERMINAL_STATUSES:
-        raise AgentError(f"feature {f.number} is already {f.status}")
+        raise AgentError(f"{f.label.lower()} is already {f.status}")
+    if result is not None:
+        from .. import requests as requests_mod
+
+        f.body = requests_mod.with_result(f.body, result)
     # Before the closing note is logged; `features.close` checks again.
-    features_mod.refuse_open_tasks(f)
-    lessons_mod.refuse_full_queue(root)
-    retro = "present" if (f.dir / "retro.md").exists() else "missing"
+    features_mod.refuse_terminal(root, f, status)
+    if f.is_request:
+        retro = "not required"
+    else:
+        retro = "present" if (f.dir / "retro.md").exists() else "missing"
     # Closed features leave Workers view; clear their unanswered dispatch questions so no hidden
     # hand remains.
     left_open = [
@@ -104,7 +125,10 @@ def feature_close(
         sys.stderr.write(f"note: feature closed, but transcript preservation failed: {exc}\n")
         transcripts = []
     data["transcripts_preserved"] = len(transcripts)
-    summary = f"closed {f.number} {f.slug} as {status}"
+    if f.is_request:
+        summary = f"{'completed' if status == 'done' else 'closed'} {f.label} {f.slug} as {status}"
+    else:
+        summary = f"closed {f.number} {f.slug} as {status}"
     if data["worktrees_removed"]:
         summary += f"; removed {len(data['worktrees_removed'])} worktree(s)"
     if data["worktrees_kept"]:
@@ -142,7 +166,7 @@ def feature_close(
     # failure cannot make a completed close fail.
     from ..journal import is_writer
 
-    if is_writer(root):
+    if not f.is_request and is_writer(root):
         data["next"] = "/journal today"
         summary += "\nNext: write today's journal (`/journal today`)."
     return Op(data, summary)

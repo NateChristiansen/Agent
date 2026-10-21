@@ -39,6 +39,12 @@ headings visible outside fences and comments, so an ambiguous, duplicated or hid
 heading refuses, and a fenced example cannot stand in for a real Tasks section. Other editable
 documents replace their whole contents.
 
+A request record is a `plan.md` in the same folder shape, with `record_kind: request` in its
+CLI-owned frontmatter (a plan without it is a feature). Its ask sits in `## Context`, which
+workers read; `## Tasks` may stay empty; `## Result` holds what was delivered, written by the
+`request` tool's `complete`; `## Review rounds` is narrative. The same Tasks and Handoffs
+protection applies. Promotion to a feature adds the missing feature sections in place.
+
 ## Filesystem and concurrency limits
 
 This works on plain features and on the single setup-managed link into the remembered notes
