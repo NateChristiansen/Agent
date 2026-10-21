@@ -233,6 +233,68 @@ def test_timeout_kills_background_descendant(fixture):
     assert result.evidence.commands[0].outcome == "timeout"
 
 
+#: The real watchdog as a loaded machine runs it: its kill lands after the runner has seen the
+#: deadline, and every `ps` it runs answers past its bound.
+BLIND_WATCHDOG = """import sys, time
+sys.path.insert(0, {source!r})
+from agent_cli.core import AgentError
+from agent_cli.dispatch import verification_process as procs
+def timed_out(*args, **kwargs):
+    raise AgentError("verification observation timed out")
+kill_group = procs.kill_group
+def late(pgid):
+    time.sleep(0.5)
+    return kill_group(pgid)
+procs.capture, procs.kill_group = timed_out, late
+procs.watchdog_main()
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows confirms cleanup through the job, not ps")
+def test_timeout_cleanup_is_confirmed_without_ps(fixture, monkeypatch):
+    """A timed-out command killed by its watchdog is gone once its parent reaps it. The runner
+    reaped it only after the watchdog had finished, so the group still held its zombie, which
+    `killpg(pgid, 0)` reports as present (EPERM on macOS): confirmation fell to `ps`, and a `ps`
+    slower than its 1 s bound turned the timeout into an unconfirmed-cleanup error."""
+    root, worktree, sha = fixture
+    prepared = runner.prepare(
+        root, worktree, dispatch_id="001-01", attempt=1, final_sha=sha, config=config("sleep 30")
+    )
+    source = str(Path(__file__).resolve().parents[1] / "src")
+    real_launch = procs.launch
+
+    def launch(role, **kwargs):
+        if role != "watchdog":
+            return real_launch(role, **kwargs)
+        return subprocess.Popen(
+            [sys.executable, "-I", "-c", BLIND_WATCHDOG.format(source=source)],
+            cwd=kwargs["cwd"],
+            env=kwargs["env"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    def timed_out(*args, **kwargs):
+        raise AgentError("verification observation timed out")
+
+    monkeypatch.setattr(procs, "launch", launch)
+    monkeypatch.setattr(procs, "capture", timed_out)
+    monkeypatch.setattr(procs, "parent_gone", lambda: False)  # pytest owns this process's stdin
+    store = Store(prepared.root, prepared.binding)
+    life = {k: v for k, v in store.load_lifecycle().items() if k not in {"binding", "schema_version"}}
+    request = {"environment": prepared.environment, "worktree": str(prepared.worktree)}
+    try:
+        with (root / "output.log").open("wb") as log:
+            result = runner._command(store, life, request, 0, "sleep 30", 1.0, time.monotonic() + 15, log)
+        cleanup = store.cleanup_record(life)
+    finally:
+        store.close()
+    assert cleanup is not None and cleanup["cleanup_confirmed"] and life["cleanup_confirmed"]
+    assert (result.outcome, result.exit_code) == ("timeout", None)
+
+
 def test_cancel_stops_verifier_despite_finished_worker_record(fixture):
     settings = config(DESCENDANT)
     handle = start(fixture, settings)

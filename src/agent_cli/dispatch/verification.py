@@ -280,6 +280,22 @@ def _close_control(process: subprocess.Popen[bytes]) -> None:
         pass
 
 
+def _await_watchdog(
+    watchdog: subprocess.Popen[bytes], child: subprocess.Popen[bytes] | None, timeout: float
+) -> None:
+    """Wait for the watchdog, reaping the command as soon as its kill lands. Unreaped, the killed
+    command is a zombie in its own group, which `killpg(pgid, 0)` reports as present (EPERM on
+    macOS), so the watchdog could confirm cleanup only through `ps`, and a `ps` slower than its
+    bound turned a plain timeout into unconfirmed cleanup."""
+    deadline = time.monotonic() + timeout
+    while watchdog.poll() is None:
+        if child is not None:
+            child.poll()
+        if time.monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(watchdog.args, timeout)
+        time.sleep(procs.POLL)
+
+
 def _command(
     store: Store,
     life: dict[str, Any],
@@ -378,7 +394,7 @@ def _command(
         if watchdog is not None:
             _close_control(watchdog)
             try:
-                watchdog.wait(timeout=procs.CLEANUP_SECONDS + 3)
+                _await_watchdog(watchdog, child, procs.CLEANUP_SECONDS + 3)
             except subprocess.TimeoutExpired:
                 watchdog.kill()
                 watchdog.wait(timeout=2)
