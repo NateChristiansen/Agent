@@ -291,7 +291,7 @@ MISSING = {"cost_usd": 0.0}
 COST_CASES = [
     ([PROVIDER, PROVIDER_LATER], "provider", 0.6),
     ([PROVIDER, ESTIMATE], "estimate", 0.5),
-    ([ESTIMATE, PROVIDER], "estimate", 0.5),
+    ([ESTIMATE, PROVIDER], "estimate", 0.3),
     ([PROVIDER, MISSING], "unknown", None),
     ([MISSING, PROVIDER], "unknown", None),
 ]

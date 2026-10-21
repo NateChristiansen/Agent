@@ -5,8 +5,9 @@ its parent's. Adding each attempt's figure counted earlier attempts again: a rec
 cost far above the work done. Each provider-reported attempt keeps its
 session id and total in `cost_attempts`, keyed by attempt, and adds only the rise over the last
 total that session reported. A forked session starts from its parent's last total, carried on
-the record as `fork_parent_cost_usd`. A local estimate is what its attempt spent: added whole,
-and it sets no baseline. A total below its baseline is a reset: added whole and noted.
+the record as `fork_parent_cost_usd`. A local estimate is added whole until the same session
+reports a total covering it. Estimates stay separate from provider baselines. A total below
+its baseline is a reset: added whole and noted, retaining preceding estimates.
 
 Every record carries an explicit `cost_accounting` state, and only this module writes it:
 
@@ -40,14 +41,19 @@ def add_attempt_cost(d: dict[str, Any], outcome: dict[str, Any], root: Path | No
     ensure_accounting(d, completed_through=attempt - 1, root=root)
     reported = float(outcome.get("cost_usd") or 0)
     added = reported
+    session = str(outcome.get("cost_session_id") or d.get("session_id") or "")
     if outcome.get("cost_source") == "local-estimate":
         d.setdefault("cost_estimated_attempts", []).append(attempt)
+        d.setdefault("cost_estimates", {})[str(attempt)] = {"session_id": session, "amount": reported}
     elif outcome.get("cost_evidence") == "provider":
-        session = str(outcome.get("cost_session_id") or d.get("session_id") or "")
         baseline = _baseline(d, session)
         entry: dict[str, Any] = {"session_id": session, "total": reported, "baseline": baseline}
         if reported >= baseline:
             added = reported - baseline
+            credit = _estimated_since_report(d, session)
+            if credit:
+                entry["estimate_credit"] = credit
+                added -= credit
         else:
             entry["note"] = "cost reset"
         entry["added"] = added
@@ -114,7 +120,7 @@ def ensure_accounting(d: dict[str, Any], *, completed_through: int, root: Path |
 def require_budget_left(d: dict[str, Any], root: Path) -> None:
     """Refuse a resume whose dispatch has already spent its whole budget. The budget is the total
     across attempts, as `cost_usd` is. A record whose history is unresolved is never refused."""
-    if ensure_accounting(d, completed_through=int(d["attempt"]), root=root) == UNRESOLVED:
+    if ensure_accounting(d, completed_through=int(d.get("attempt") or 1), root=root) == UNRESOLVED:
         return
     spent, budget = float(d.get("cost_usd") or 0), float(d["budget_usd"])
     if spent >= budget:
@@ -122,6 +128,15 @@ def require_budget_left(d: dict[str, Any], root: Path) -> None:
             f"dispatch {d['id']} has spent ${spent:.2f} of its ${budget:.2f} budget, which is the total "
             "across attempts; resume with a `budget_usd` above what is spent and a `budget_reason`"
         )
+
+
+def sdk_budget(d: dict[str, Any], root: Path) -> float:
+    """Cap an upcoming attempt at the remaining trustworthy dispatch budget."""
+    state = ensure_accounting(d, completed_through=int(d.get("attempt") or 1) - 1, root=root)
+    if state == UNRESOLVED:
+        return float(d["budget_usd"])
+    require_budget_left(d, root)
+    return max(0.0, float(d["budget_usd"]) - float(d.get("cost_usd") or 0))
 
 
 def _normalize(d: dict[str, Any], through: int, root: Path | None) -> tuple[float, dict[str, Any]] | None:
@@ -135,8 +150,11 @@ def _normalize(d: dict[str, Any], through: int, root: Path | None) -> tuple[floa
     if any(lines.get(n) is None for n in range(1, through + 1)):
         return None
     estimated = set(d.get("cost_estimated_attempts") or [])
-    session = str(d.get("session_id") or "")
     whole = str(d.get("provider") or "claude") == "codex"  # Codex figures are per attempt
+    if estimated and not whole:
+        # Old estimates lack session attribution, so later totals cannot reconcile them safely.
+        return None
+    session = str(d.get("session_id") or "")
     baseline = 0.0
     if d.get("forked_from_session") and through >= 1 and not whole:
         parent = _fork_parent_total(d, root)
@@ -215,6 +233,23 @@ def _latest(attempts: dict[str, Any], session: str, before: int | None) -> float
         if best is None or n > best[0]:
             best = (n, as_float(entry.get("total")))
     return best[1] if best is not None else None
+
+
+def _estimated_since_report(d: dict[str, Any], session: str) -> float:
+    attempt = int(d["attempt"])
+    previous = max(
+        (
+            int(n)
+            for n, entry in as_dict(d.get("cost_attempts")).items()
+            if as_dict(entry).get("session_id") == session and int(n) < attempt
+        ),
+        default=0,
+    )
+    return sum(
+        as_float(as_dict(entry).get("amount"))
+        for n, entry in as_dict(d.get("cost_estimates")).items()
+        if previous < int(n) < attempt and as_dict(entry).get("session_id") == session and session
+    )
 
 
 def _legacy_thread_total(d: dict[str, Any], attempt: int) -> float | None:

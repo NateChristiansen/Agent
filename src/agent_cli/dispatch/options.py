@@ -25,6 +25,7 @@ from . import mcp_policy
 from . import rubric as rubric_mod
 from .env_names import claude_named, env_allowed, with_platform_names
 from .return_schema import RETURN_SCHEMA
+from .spend import sdk_budget
 from .state import WORKER_CONTRACT, file
 from .telemetry_events import strip_routing
 
@@ -111,6 +112,7 @@ def build_options(
     from .rules import build_settings, sdk_hooks
     from .supervisor import permission_callback
 
+    budget = sdk_budget(d, root)
     extra_args = _repo_extra_args(repo)
     if mcp is None:
         mcp = mcp_policy.resolve(root, repo, d)
@@ -141,7 +143,7 @@ def build_options(
         # and crossSessionInbound reach the worker the same way they did under `--settings`
         "settings": str(file(root, d["id"], ".settings.json")),
         "add_dirs": [str(root / d["feature_dir"])],
-        "max_budget_usd": float(d["budget_usd"]),
+        "max_budget_usd": budget,
         "max_buffer_size": WORKER_MAX_BUFFER_BYTES,
         # The address a human or another session sends to. A worker binds an inbox socket and
         # reads peer messages between tool calls, so `@<dispatch-id>` from the owner's own

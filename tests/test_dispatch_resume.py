@@ -102,7 +102,25 @@ def test_budget_hit_is_blocked_with_a_resume_hint_and_resumes_at_exactly_the_own
     assert r["state"] == "done" and r["attempt"] == 2 and r["budget_usd"] == 2.0
     assert len(fake_claude.calls()) == 2
     assert _options(fake_claude, 1).resume == d["session_id"]
-    assert _options(fake_claude, 1).max_budget_usd == 2.0
+    assert _options(fake_claude, 1).max_budget_usd == 1.0
+
+
+@pytest.mark.parametrize("spent", [1.0, 1.2])
+def test_exhausted_budget_never_builds_sdk_options(droot: Path, fake_claude, monkeypatch, spent):
+    from agent_cli import repos
+    from agent_cli.dispatch import options
+
+    fake_claude.scenario([one(envelope("question", cost=spent))])
+    d = _new_fast(droot)
+    calls = []
+    monkeypatch.setattr(options, "_WorkerOptions", lambda **kwargs: calls.append(kwargs))
+    repo = repos.load_registry(droot).require(d["repo"])
+    with pytest.raises(AgentError, match="has spent"):
+        dispatch.build_options(droot, d, repo, resume=True)
+    assert calls == []
+    with pytest.raises(AgentError, match="has spent"):
+        dispatch.resume(droot, dispatch_id=d["id"], answer="continue", watch=True)
+    assert len(fake_claude.calls()) == 1
 
 
 def test_resume_timeout_replaces_the_launch_clock_and_the_registry_does_not(droot: Path, fake_claude):
@@ -380,6 +398,7 @@ def test_question_never_auto_resumes_and_resumes_with_the_owners_answer(droot: P
     assert r["cost_usd"] == pytest.approx(0.42 + 0.1)
     call = fake_claude.calls()[1]
     assert _options(fake_claude, 1).resume == d["session_id"]
+    assert _options(fake_claude, 1).max_budget_usd == pytest.approx(0.58)
     assert "### 2026-09-03T14:05:00-07:00 owner → worker\n\nuse port 8080" in call["prompt"]
     assert "(attempt 2)" in call["prompt"]
     assert (droot / ".agent/dispatches/001-mac-01.prompt.2.md").read_text(encoding="utf-8") == call["prompt"]

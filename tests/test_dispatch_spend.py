@@ -75,10 +75,72 @@ def test_a_forked_first_attempt_starts_from_the_parent_total():
 
 def test_a_local_estimate_between_reported_attempts_adds_once_and_sets_no_baseline():
     d = _run(_record(), [_provider(1.0), ESTIMATE, _provider(1.5)])
-    assert d["cost_usd"] == pytest.approx(1.0 + 0.25 + 0.5)
+    assert d["cost_usd"] == pytest.approx(1.5)
     assert d["cost_estimated_attempts"] == [2]
     assert "2" not in d["cost_attempts"]
-    assert d["cost_attempts"]["3"]["added"] == pytest.approx(0.5)
+    assert d["cost_attempts"]["3"]["added"] == pytest.approx(0.25)
+    assert d["cost_attempts"]["3"]["estimate_credit"] == pytest.approx(0.25)
+    assert d["cost_attempts"]["3"]["baseline"] == 1.0
+    assert spend.last_reported_total(d, "s1") == 1.5
+
+
+@pytest.mark.parametrize("total", [0.1, 0.25, 1.0])
+def test_first_provider_total_replaces_same_session_estimates(total: float):
+    d = _run(_record(), [ESTIMATE, ESTIMATE])
+    assert d["cost_usd"] == 0.5
+    assert spend.last_reported_total(d, "s1") is None
+    d["attempt"] = 3
+    spend.add_attempt_cost(d, _provider(total))
+    assert d["cost_usd"] == pytest.approx(total)
+    assert d["cost_attempts"]["3"]["added"] == pytest.approx(total - 0.5)
+    d["attempt"] = 4
+    spend.add_attempt_cost(d, _provider(total + 0.2))
+    assert d["cost_usd"] == pytest.approx(total + 0.2)
+
+
+def test_fresh_session_cannot_reconcile_another_sessions_estimate():
+    d = _run(_record(), [ESTIMATE, _provider(1.0, "s2"), _provider(1.5, "s2")])
+    assert d["cost_usd"] == pytest.approx(1.75)
+    d["attempt"] = 4
+    spend.add_attempt_cost(d, _provider(0.5, "s1"))
+    assert d["cost_usd"] == pytest.approx(2.0)
+
+
+def test_forked_estimate_is_reconciled_against_parent_baseline():
+    d = _run(
+        _record(forked_from_session="parent", fork_parent_cost_usd=8.98),
+        [ESTIMATE, _provider(10.70), _provider(11.0)],
+    )
+    assert d["cost_usd"] == pytest.approx(2.02)
+    assert d["cost_attempts"]["2"]["baseline"] == 8.98
+
+
+def test_reset_keeps_estimates_before_reset_and_reconciles_only_later_estimates():
+    d = _run(_record(), [_provider(5.0), ESTIMATE, _provider(1.0), ESTIMATE, _provider(1.5)])
+    assert d["cost_usd"] == pytest.approx(6.75)
+    assert d["cost_attempts"]["3"]["note"] == "cost reset"
+    assert "estimate_credit" not in d["cost_attempts"]["3"]
+    assert d["cost_attempts"]["5"]["estimate_credit"] == 0.25
+
+
+def test_unattributed_old_estimate_is_not_subtracted_from_a_provider_total():
+    d = _record(attempt=2, cost_usd=0.25, cost_estimated_attempts=[1])
+    spend.add_attempt_cost(d, _provider(1.0))
+    assert d["cost_usd"] == 1.25
+
+
+def test_legacy_estimates_without_session_evidence_stay_unresolved(tmp_path: Path):
+    d = {
+        "attempt": 2,
+        "session_id": "s1",
+        "cost_usd": 0.25,
+        "cost_estimated_attempts": [1],
+        "thread": [{"from": "worker", "attempt": 1, "cost_usd": 0.25}],
+        "budget_usd": 0.1,
+    }
+    spend.add_attempt_cost(d, _provider(1.0))
+    assert d["cost_accounting"] == spend.UNRESOLVED
+    assert spend.sdk_budget(d, tmp_path) == 0.1
 
 
 def test_a_legacy_record_is_recomputed_once_from_its_thread():
@@ -110,9 +172,11 @@ def test_real_legacy_shapes_normalize(totals: list[float], expected: float):
     assert d["cost_usd"] == pytest.approx(expected)
 
 
-def test_codex_per_attempt_figures_stay_a_sum():
+@pytest.mark.parametrize("estimated", [[], [1, 2, 3]])
+def test_codex_per_attempt_figures_stay_a_sum(estimated):
     thread = [{"from": "worker", "attempt": n, "cost_usd": t} for n, t in enumerate([0.052, 0.025, 0.03], 1)]
     d = {"attempt": 3, "provider": "codex", "session_id": "s1", "cost_usd": 0.107, "thread": thread}
+    d["cost_estimated_attempts"] = estimated
     spend.ensure_accounting(d, completed_through=3, root=None)
     assert d["cost_usd"] == pytest.approx(0.107)
 
@@ -138,6 +202,8 @@ def test_a_legacy_fork_without_its_parent_is_unresolved_and_never_refused(tmp_pa
         spend.require_budget_left(d, tmp_path)
     assert d["cost_usd_since_unresolved"] == pytest.approx(0.8)  # 11.0 - 10.7, then 11.5 - 11.0
     assert d["cost_usd"] == pytest.approx(11.5)
+    assert spend.sdk_budget(d, tmp_path) == 1.0
+    assert d["cost_accounting"] == spend.UNRESOLVED
 
 
 def test_a_legacy_fork_with_its_fork_parent_figure_normalizes():
@@ -211,6 +277,18 @@ def test_timeout_auto_resume_then_finish_counts_each_dollar_once(droot: Path, fa
     assert d["cost_usd"] == pytest.approx(7.62)
     worker = [t for t in d["thread"] if t.get("from") == "worker"]
     assert worker[0]["cost_usd"] == pytest.approx(6.16)
+
+
+def test_timeout_estimate_then_provider_result_reconciles_once(droot: Path, fake_claude):
+    d = _fresh(droot, fake_claude)
+    feat = features.resolve(droot, str(d["feature"]))
+    d = evaluate_mod.queue_auto_resume(droot, d, feat, {"state": "blocked", **ESTIMATE}, "timeout")
+    assert d["attempt"] == 2 and d["cost_usd"] == 0.25
+    assert spend.sdk_budget(d, droot) == 0.75
+    terminal_mod._account(d, _provider(0.6))
+    terminal_mod._account(d, _provider(0.6))
+    assert d["cost_usd"] == pytest.approx(0.6)
+    assert d["cost_evidence"] == {"1": "estimate", "2": "provider"}
 
 
 def test_resumed_dispatch_records_its_own_spend(droot: Path, fake_claude):
