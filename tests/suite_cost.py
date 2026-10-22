@@ -1,8 +1,10 @@
 """Processes each test starts, so the suite can be budgeted by spawns instead of wall time.
 
-Measures only: it sets no budget and fails nothing. The counter is the one wrapper on
-`subprocess.Popen.__init__` (`suite_cost_site/sitecustomize.py`); the `spawns` fixture in
-`test_spawn_cost.py` listens on it rather than patching `Popen` a second time.
+The counter is the one wrapper on `subprocess.Popen.__init__` (`suite_cost_site/sitecustomize.py`);
+the `spawns` fixture in `test_spawn_cost.py` listens on it rather than patching `Popen` a second
+time. The per-test ceiling fails a passing test whose call phase started more than `CEILING`
+processes, or more than its own `[slow]` value in `tests/budget.toml` (`agent_cli.suite_budget`).
+It runs in every pytest session, measured or not; the suite's own totals are budgeted at landing.
 
 With `AGENT_SUITE_STATS=<file>` the controller writes one JSON file at the end of the session:
 
@@ -19,7 +21,8 @@ Python children that inherit the environment count their own starts too: the con
 or an `env=` without the two) is `opaque`; `opaque_share` is those tests' child CPU over
 `cpu_children_s`, the part of the suite's process cost the spawn count may miss.
 
-Without the variable the counter only counts, and nothing is written.
+Without the variable the children are still followed, for the ceiling, and nothing is written. A
+pytest started by a measured test inherits the spawn file and leaves its starts to the parent's.
 """
 
 from __future__ import annotations
@@ -27,13 +30,17 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from agent_cli import suite_budget
 from suite_cost_site import sitecustomize as site
 
 try:
@@ -44,6 +51,8 @@ except ImportError:  # Windows
 STATS_ENV = "AGENT_SUITE_STATS"
 KEY = "suite_cost"
 PHASES = ("setup", "call", "teardown")
+#: Call-phase starts a test may make unless `[slow]` names it; the owner set it from the 2026-10-22 runs.
+CEILING = 100
 
 counter: Any = site.active()
 
@@ -63,7 +72,12 @@ class _Process:
         self.read = 0
         self.child_spawns = self.child_opaque = 0
         self.spawns = self.opaque = 0
+        self.uncounted = 0
         self.cpu = 0.0
+
+    def total(self) -> int:
+        self._children()
+        return counter.count + self.child_spawns
 
     def _children(self) -> None:
         try:
@@ -80,12 +94,15 @@ class _Process:
         self.child_opaque += data.count(b"o")
 
     def take(self) -> dict[str, Any]:
-        """What was started since the last call."""
-        self._children()
-        spawns = counter.count + self.child_spawns
+        """What was started since the last call, less what `uncounted` set aside."""
+        spawns = self.total()
         opaque = counter.opaque + self.child_opaque
-        delta: dict[str, Any] = {"spawns": spawns - self.spawns, "opaque": opaque - self.opaque}
-        self.spawns, self.opaque = spawns, opaque
+        delta: dict[str, Any] = {
+            "spawns": spawns - self.spawns - self.uncounted,
+            "uncounted": self.uncounted,
+            "opaque": opaque - self.opaque,
+        }
+        self.spawns, self.opaque, self.uncounted = spawns, opaque, 0
         if (cpu := _cpu()) is not None:
             delta["cpu_s"] = cpu - self.cpu
             self.cpu = cpu
@@ -100,7 +117,7 @@ class _Process:
 
 
 class _Controller:
-    def __init__(self, output: str, spawn_dir: Path, pythonpath: str | None) -> None:
+    def __init__(self, output: str | None, spawn_dir: Path, pythonpath: str | None) -> None:
         self.output = output
         self.spawn_dir = spawn_dir
         self.pythonpath = pythonpath
@@ -110,28 +127,60 @@ class _Controller:
 
 _process: _Process | None = None
 _controller: _Controller | None = None
+_limits: dict[str, float] = {}
+
+
+@contextmanager
+def uncounted() -> Iterator[None]:
+    """Leave the starts inside out of the running test's figure, so its ceiling sees only its own work.
+
+    For a helper whose cost depends on what ran before it in the session, like a record cache
+    shared across workers. The starts still count in the suite's totals, which the budget limits."""
+    if _process is None:
+        yield
+        return
+    before = _process.total()
+    try:
+        yield
+    finally:
+        _process.uncounted += _process.total() - before
+
+
+def _base(nodeid: str) -> str:
+    """The node id without the `@<group>` suffix xdist's loadgroup adds."""
+    return re.sub(r"@[^\[\]/:]+$", "", nodeid)
+
+
+def _slow(root: Path) -> dict[str, float]:
+    path = root / suite_budget.PATH
+    if not path.is_file():
+        return {}
+    budget = suite_budget.parse(path.read_text(encoding="utf-8"))
+    return {_base(node): limit for node, limit in budget.slow.items()}
 
 
 def configure(config: pytest.Config) -> None:
     """Called first from `conftest.pytest_configure`, so its probe child counts outside tests."""
-    global _process, _controller
+    global _process, _controller, _limits
     workerinput = getattr(config, "workerinput", None)
     if workerinput is not None:
         if not (spawn_dir := workerinput.get(KEY)):
             return
         spawn_file = Path(spawn_dir) / f"{workerinput['workerid']}.spawns"
     else:
-        if not (output := os.environ.pop(STATS_ENV, None)):
+        output = os.environ.pop(STATS_ENV, None)
+        if not output and os.environ.get(site.SPAWNS_ENV):
             return
         spawn_dir = Path(tempfile.mkdtemp(prefix="suite-cost-"))
         pythonpath = os.environ.get("PYTHONPATH")
         os.environ["PYTHONPATH"] = os.pathsep.join(p for p in (site.SITE_DIR, pythonpath) if p)
-        _controller = _Controller(str(Path(output).resolve()), spawn_dir, pythonpath)
+        _controller = _Controller(str(Path(output).resolve()) if output else None, spawn_dir, pythonpath)
         spawn_file = spawn_dir / "main.spawns"
     os.environ[site.SPAWNS_ENV] = str(spawn_file)
     counter.sink = None
     counter.watch = True
     _process = _Process(spawn_file)
+    _limits = _slow(config.rootpath)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -153,12 +202,23 @@ def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) 
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Any:
     report = yield
     if _process is not None:
-        report.user_properties.append((KEY, _process.take()))
+        delta = _process.take()
+        report.user_properties.append((KEY, delta))
+        slow = _limits.get(_base(item.nodeid))
+        limit = CEILING if slow is None else slow
+        if report.when == "call" and report.passed and delta["spawns"] > limit:
+            report.outcome = "failed"
+            report.longrepr = (
+                f"spawn-ceiling: {item.nodeid} started {delta['spawns']} processes in its call phase, "
+                f"over its limit of {limit:g} ({'the per-test ceiling' if slow is None else 'its [slow] entry'}"
+                f" in {suite_budget.PATH}). Start fewer processes; a new or raised [slow] entry lands only "
+                "with the owner's budget_raise."
+            )
     return report
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    if _controller is None:
+    if _controller is None or _controller.output is None:
         return
     for name, value in report.user_properties:
         if name != KEY or not isinstance(value, dict):
@@ -166,6 +226,8 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         row = _controller.rows.setdefault(report.nodeid, {"test": report.nodeid, "opaque": False})
         phase = row.setdefault(report.when, {"spawns": 0, "s": 0.0})
         phase["spawns"] += value["spawns"]
+        if value.get("uncounted"):
+            phase["uncounted"] = phase.get("uncounted", 0) + value["uncounted"]
         phase["s"] += report.duration
         if "cpu_s" in value:
             phase["cpu_s"] = phase.get("cpu_s", 0.0) + value["cpu_s"]
@@ -186,8 +248,8 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     workeroutput = getattr(session.config, "workeroutput", None)
     if workeroutput is not None:
         workeroutput[KEY] = _process.totals()
-    elif _controller is not None:
-        _write(_controller, _process.totals())
+    elif _controller is not None and _controller.output is not None:
+        _write(_controller, _controller.output, _process.totals())
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -197,7 +259,8 @@ def pytest_unconfigure(config: pytest.Config) -> None:
             os.environ.pop("PYTHONPATH", None)
         else:
             os.environ["PYTHONPATH"] = _controller.pythonpath
-        os.environ[STATS_ENV] = _controller.output
+        if _controller.output is not None:
+            os.environ[STATS_ENV] = _controller.output
         shutil.rmtree(_controller.spawn_dir, ignore_errors=True)
     if _process is not None:
         os.environ.pop(site.SPAWNS_ENV, None)
@@ -210,7 +273,7 @@ def _p99(values: list[int]) -> int:
     return ordered[max(math.ceil(0.99 * len(ordered)) - 1, 0)] if ordered else 0
 
 
-def _write(controller: _Controller, own: dict[str, Any]) -> None:
+def _write(controller: _Controller, output: str, own: dict[str, Any]) -> None:
     rows = []
     for nodeid in sorted(controller.rows):
         row = controller.rows[nodeid]
@@ -243,7 +306,7 @@ def _write(controller: _Controller, own: dict[str, Any]) -> None:
         totals["cpu_children_s"] = round(cpu, 3)
         totals["opaque_cpu_s"] = round(opaque_cpu, 3)
         totals["opaque_share"] = round(opaque_cpu / cpu, 4) if cpu > 0 else None
-    out = Path(controller.output)
+    out = Path(output)
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_name(out.name + ".partial")
     partial.write_text(json.dumps({"totals": totals, "workers": workers, "tests": rows}, indent=1) + "\n")

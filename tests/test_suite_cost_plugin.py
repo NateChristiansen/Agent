@@ -54,7 +54,7 @@ def pytest_sessionstart(session):
 OWN_HOOK = "import sys\nsys.own_hook_ran = True\n"
 
 
-def _pytest(tmp_path: Path, *args: str, stats: Path | None) -> None:
+def _pytest(tmp_path: Path, *args: str, stats: Path | None, code: int = 0) -> str:
     """A child pytest in `tmp_path` with only this plugin, outside any measurement of this suite."""
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     hooks = tmp_path.parent / f"{tmp_path.name}-hooks"
@@ -70,7 +70,8 @@ def _pytest(tmp_path: Path, *args: str, stats: Path | None) -> None:
     out = subprocess.run(
         argv, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120, check=False
     )
-    assert out.returncode == 0, out.stdout + out.stderr
+    assert out.returncode == code, out.stdout + out.stderr
+    return out.stdout
 
 
 def _probe(tmp_path: Path, *args: str) -> dict[str, Any]:
@@ -239,15 +240,90 @@ class _Recorded(Exception):
     """Raised by a listener in place of the start it was shown."""
 
 
-def test_without_the_variable_nothing_is_written_and_children_are_not_counted(tmp_path: Path):
+def test_without_the_variable_nothing_is_written_but_children_are_still_counted(tmp_path: Path):
     tmp_path = tmp_path / "quiet"  # the autouse fixtures write next to it
     tmp_path.mkdir()
     (tmp_path / "test_quiet.py").write_text(
         "import os\n"
-        "def test_no_child_counter():\n"
-        f"    assert {site.SPAWNS_ENV!r} not in os.environ\n"
-        f"    assert {site.SITE_DIR!r} not in os.environ.get('PYTHONPATH', '').split(os.pathsep)\n",
+        "def test_the_child_counter_is_on():\n"
+        f"    assert os.environ[{site.SPAWNS_ENV!r}]\n"
+        f"    assert {site.SITE_DIR!r} in os.environ.get('PYTHONPATH', '').split(os.pathsep)\n",
         encoding="utf-8",
     )
     _pytest(tmp_path, "-p", "no:xdist", stats=None)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["pytest.ini", "test_quiet.py"]
+
+
+CEILING_PROBE = """
+import subprocess, sys
+import suite_cost
+
+def python(n):
+    for _ in range(n):
+        subprocess.run([sys.executable, "-c", "pass"], check=True)
+
+def test_at_the_ceiling():
+    python(2)
+
+def test_over_the_ceiling():
+    python(3)
+
+def test_over_the_ceiling_in_a_child():
+    python(1)
+    subprocess.run([sys.executable, "-c", "import subprocess, sys; subprocess.run([sys.executable, '-c', 'pass'])"])
+    python(1)
+
+def test_over_its_own_slow_limit():
+    python(2)
+
+def test_under_its_raised_slow_limit():
+    python(4)
+
+def test_set_aside_starts_are_not_its_own():
+    with suite_cost.uncounted():
+        python(4)
+        subprocess.run([sys.executable, "-c", "import subprocess, sys; subprocess.run([sys.executable, '-c', 'pass'])"])
+    python(2)
+
+def test_one_extra_start_beside_set_aside_work():
+    with suite_cost.uncounted():
+        python(4)
+    python(3)
+"""
+
+# The ceiling lowered so the probe stays small; `[slow]` keys carry the group suffix pass records show.
+CEILING_CONFTEST = "import suite_cost\nsuite_cost.CEILING = 2\n"
+CEILING_BUDGET = """[suite]
+tests_max = 10
+spawns_max = 100
+headroom_pct = 3
+[slow]
+"test_probe.py::test_over_its_own_slow_limit@timing-0" = 1
+"test_probe.py::test_under_its_raised_slow_limit" = 4
+"""
+
+
+@pytest.mark.parametrize("measured", [False, True])
+def test_the_ceiling_fails_a_test_over_its_limit_and_names_it(tmp_path: Path, measured: bool):
+    (tmp_path / "test_probe.py").write_text(CEILING_PROBE, encoding="utf-8")
+    (tmp_path / "conftest.py").write_text(CEILING_CONFTEST, encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "budget.toml").write_text(CEILING_BUDGET, encoding="utf-8")
+    stats = tmp_path / "out" / "stats.json" if measured else None
+    out = _pytest(tmp_path, "-p", "no:xdist", "-rf", stats=stats, code=1)
+    failed = sorted(line.split(" (")[0] for line in out.splitlines() if line.startswith("spawn-ceiling: "))
+    assert failed == [
+        "spawn-ceiling: test_probe.py::test_one_extra_start_beside_set_aside_work started 3 processes in its call "
+        "phase, over its limit of 2",
+        "spawn-ceiling: test_probe.py::test_over_its_own_slow_limit started 2 processes in its call phase, "
+        "over its limit of 1",
+        "spawn-ceiling: test_probe.py::test_over_the_ceiling started 3 processes in its call phase, over its limit of 2",
+        "spawn-ceiling: test_probe.py::test_over_the_ceiling_in_a_child started 4 processes in its call phase, "
+        "over its limit of 2",
+    ], out
+    assert "limit of 1 (its [slow] entry in tests/budget.toml)" in out
+    assert "4 failed, 3 passed" in out
+    if stats is not None:
+        rows = _rows(json.loads(stats.read_text(encoding="utf-8")))
+        set_aside = rows["test_set_aside_starts_are_not_its_own"]["call"]
+        assert (set_aside["spawns"], set_aside["uncounted"]) == (2, 6)

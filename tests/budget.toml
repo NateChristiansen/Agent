@@ -1,0 +1,377 @@
+# The suite budget (src/agent_cli/suite_budget.py). Land refuses a full run over [suite] and any
+# loosening of this file unless the owner passes budget_raise with a matching [[raise]] entry.
+# The grandfather lists only shrink: tests/test_suite_hygiene.py fails on an entry no longer needed.
+
+[suite]
+# 3% above main 6f4698c: 8,705 tests and 60,666 spawns.
+tests_max = 8970
+spawns_max = 62490
+headroom_pct = 3
+
+# Tests allowed more than the per-test ceiling of 100 call-phase spawns (tests/suite_cost.py),
+# each at ceil(measured * 1.1) from pass record 523d7c15.
+[slow]
+"tests/test_tidy_inventory.py::test_inventory_matches_legacy_landing_and_hold_decisions" = 281
+"tests/test_dispatch_cleanup.py::test_an_active_verifier_and_a_resumed_head_hold_until_their_exact_head_lands" = 277
+"tests/test_land_crlf.py::test_crlf_crash_recovery_undoes_and_finishes[files_applied]" = 264
+"tests/test_tidy_inventory.py::test_inventory_git_cost_is_linear_in_branches_and_journals[4-3]" = 263
+"tests/test_dispatch_cleanup.py::test_a_batch_cleans_each_member_and_leaves_other_work" = 256
+"tests/test_land.py::test_recovery_after_one_crash_refuses_edits_and_foreign_locks_then_lands" = 239
+"tests/test_tidy_inventory.py::test_inventory_keeps_each_checkouts_journals_and_default_tree_separate" = 229
+"tests/test_dispatch_cleanup.py::test_a_held_candidate_is_reported_kept_and_removed_at_a_later_allocation" = 221
+"tests/test_dispatch_cleanup.py::test_a_landing_queues_cleanup_and_removes_the_tree_only_after_it_is_done" = 210
+"tests/test_dispatch_cleanup.py::test_a_landing_stopped_after_done_is_cleaned_at_the_next_opportunity" = 208
+"tests/test_land_batch.py::test_a_crash_mid_batch_recovers_and_records_every_member" = 208
+"tests/test_parity_entry_points.py::test_consecutive_runtime_changing_landings_need_no_deployment" = 196
+"tests/test_request_dispatch.py::test_review_rounds_pin_each_commit_keep_provenance_and_deliver_by_completion" = 185
+"tests/test_dispatch_cleanup.py::test_failed_aborted_previewed_and_legacy_landings_queue_no_cleanup" = 178
+"tests/test_land_crlf.py::test_crlf_crash_recovery_undoes_and_finishes[index_renamed]" = 176
+"tests/test_main_sync.py::test_a_pushed_tip_that_loosens_the_budget_or_exceeds_it_needs_the_owner_s_budget_raise" = 173
+"tests/test_dispatch_cleanup.py::test_a_failed_cleanup_leaves_the_landing_successful_and_is_retried" = 168
+"tests/test_dispatch_escalation.py::test_cleanup_dry_run_then_skips_dirty_removes_clean_keeps_branch_refuses_running" = 165
+"tests/test_land.py::test_a_crash_at_each_step_recovers_forward[index_locked]" = 160
+"tests/test_tidy.py::test_tidy_dry_run_is_read_only_and_apply_only_removes_resolved" = 157
+"tests/test_dispatch_resume.py::test_read_only_resume_keeps_implementation_history@timing-2" = 152
+"tests/test_land_recovery_integration.py::test_a_recovered_squash_landing_records_its_integration[files_applied]" = 151
+"tests/test_tidy_inventory.py::test_dispatch_owned_product_refs_only_and_all_cleanup_holds" = 148
+"tests/test_task_check.py::test_the_first_dispatch_of_a_session_carries_the_check" = 145
+"tests/test_land.py::test_main_moved_during_the_landing_stalls_with_no_rollback" = 142
+"tests/test_dispatch_notice_producers.py::test_reverify_by_the_launcher_is_show_consumed_and_by_another_session_is_delivered" = 139
+"tests/test_dispatch_launch.py::test_second_dispatch_reuses_a_clean_done_worktree_and_keeps_an_existing_branchs_commits@timing-0" = 138
+"tests/test_record_flights.py::test_extra_commands_are_certified_and_required_for_reuse" = 138
+"tests/test_suite_budget.py::test_landing_a_loosened_budget_needs_the_owner_s_matching_raise" = 137
+"tests/test_dispatch_cleanup.py::test_restore_puts_an_unfinished_checkout_back_at_its_recorded_head_only" = 134
+"tests/test_land.py::test_a_crash_at_each_step_recovers_forward[index_renamed]" = 134
+"tests/test_land_provenance.py::test_original_copy_land_pull_and_moved_original" = 134
+"tests/test_land_recovery_integration.py::test_a_recovered_squash_landing_records_its_integration[index_locked]" = 134
+"tests/test_dispatch_escalation.py::test_cleanup_dedupes_a_shared_worktree_and_resume_recreates_it" = 132
+"tests/test_dispatch_telemetry.py::test_failing_sink_changes_no_outcome_or_record" = 131
+"tests/test_dispatch_telemetry_spans.py::test_done_and_failed_check_paths_record_one_event_each" = 131
+"tests/test_dispatch_cleanup.py::test_one_dispatch_cleanup_ignores_a_running_sibling_and_deletes_only_its_landed_branch" = 128
+"tests/test_land.py::test_a_crash_at_each_step_recovers_forward[ref_moved]" = 127
+"tests/test_dispatch_orders.py::test_three_order_wave_launches_without_repreview[False-True]" = 125
+"tests/test_request_dispatch.py::test_round_view_reads_synced_handoffs_after_runtime_state_is_gone" = 125
+"tests/test_land_safety.py::test_a_symlink_retarget_and_a_type_change_land" = 124
+"tests/test_land_batch.py::test_two_disjoint_branches_land_as_one_certified_tree_in_one_journal" = 123
+"tests/test_land_provenance.py::test_copy_without_origin_reproduces_cross_machine_unresolved" = 120
+"tests/test_land_batch.py::test_main_moving_under_the_batch_lands_nothing" = 119
+"tests/test_land_provenance.py::test_indent_only_patch_match_is_a_hint_never_resolution" = 119
+"tests/test_land.py::test_each_strategy_lands_and_main_index_and_files_agree[squash]" = 118
+"tests/test_dispatch_cleanup.py::test_feature_cleanup_reports_a_blocked_group_and_goes_on" = 116
+"tests/test_land.py::test_each_strategy_lands_and_main_index_and_files_agree[merge]" = 116
+"tests/test_land_crlf.py::test_explicit_crlf_text_edits_additions_and_deletions_land" = 115
+"tests/test_dispatch_escalation.py::test_single_dispatch_cleanup_allows_a_running_sibling[cli]" = 114
+"tests/test_dispatch_escalation.py::test_single_dispatch_cleanup_allows_a_running_sibling[mcp]" = 114
+"tests/test_dispatch_launch.py::test_running_or_blocked_clean_worktree_is_not_reused@timing-0" = 114
+"tests/test_land_safety.py::test_a_file_edited_during_the_landing_keeps_it_unfinished_until_restored" = 114
+"tests/test_dispatch_cleanup.py::test_a_commit_during_cleanup_is_rechecked_under_the_lock" = 113
+"tests/test_dispatch_cleanup.py::test_default_restore_needs_a_head_when_only_the_branch_records_it" = 112
+"tests/test_land.py::test_a_recorded_landing_keeps_an_unaffected_edit_and_reports_a_later_plumbing_move" = 112
+"tests/test_land_provenance.py::test_multicommit_squash_resolves_via_member_trailer" = 112
+
+# time.sleep calls per file; a file not named here may have none.
+[sleep]
+"tests/dispatch_helpers.py" = 1
+"tests/land_helpers.py" = 1
+"tests/native_mcp_grants.py" = 2
+"tests/notice_helpers.py" = 3
+"tests/peer_net_pair_fixture.py" = 1
+"tests/peer_net_route_fixture.py" = 1
+"tests/test_claude_environment_boundary.py" = 3
+"tests/test_codex_executable.py" = 1
+"tests/test_dispatch_guards.py" = 1
+"tests/test_dispatch_inventory_real.py" = 3
+"tests/test_dispatch_permissions.py" = 1
+"tests/test_dispatch_records.py" = 1
+"tests/test_dispatch_resume.py" = 1
+"tests/test_dispatch_verification.py" = 3
+"tests/test_dispatch_verify_lane.py" = 3
+"tests/test_land_queue.py" = 2
+"tests/test_leases.py" = 1
+"tests/test_live_state_fence.py" = 1
+"tests/test_peer_net_acl_errors.py" = 1
+"tests/test_peer_net_channel.py" = 1
+"tests/test_peer_net_crash.py" = 3
+"tests/test_peer_net_envelope.py" = 1
+"tests/test_peer_net_pairing.py" = 7
+"tests/test_peer_net_remote_list.py" = 1
+"tests/test_peer_net_sender_bounds.py" = 1
+"tests/test_peer_net_sender_races.py" = 1
+"tests/test_procs.py" = 1
+"tests/test_record_capacity.py" = 1
+"tests/test_tab_plugin.py" = 2
+"tests/test_task_check_bounds.py" = 1
+"tests/test_telemetry_sink.py" = 1
+"tests/test_usage_job.py" = 1
+"tests/test_verification_runner.py" = 6
+"tests/test_verification_status.py" = 2
+"tests/test_win_driver.py" = 2
+"tests/test_win_hold.py" = 1
+"tests/test_win_lock.py" = 2
+"tests/test_win_transport.py" = 1
+"tests/test_win_tree.py" = 1
+"tests/verification_fixtures.py" = 1
+
+# Tests with no assert and no pytest.raises, or only mock-call asserts.
+[weak]
+"tests/test_codex_candidate_runtime.py::test_the_suite_imports_this_checkout" = "seeded 2026-10-22"
+"tests/test_dispatch_notice_delivery.py::test_a_claude_launcher_without_an_inbox_key_falls_back" = "seeded 2026-10-22"
+"tests/test_dispatch_notice_delivery.py::test_a_dead_claude_launcher_falls_back" = "seeded 2026-10-22"
+"tests/test_dispatch_notice_delivery.py::test_a_missing_launcher_record_falls_back" = "seeded 2026-10-22"
+"tests/test_dispatch_notice_delivery.py::test_a_worker_session_is_not_a_launcher" = "seeded 2026-10-22"
+"tests/test_dispatch_notice_delivery.py::test_an_ended_launcher_falls_back" = "seeded 2026-10-22"
+"tests/test_format_compat.py::test_the_head_reader_reads_the_bases_format" = "seeded 2026-10-22"
+"tests/test_maintenance.py::test_no_block_is_no_gate" = "seeded 2026-10-22"
+"tests/test_peer_net_enroll.py::test_authorize_creates_a_missing_file_user_only" = "seeded 2026-10-22"
+"tests/test_peers.py::test_the_wake_frame_survives_a_round_trip_over_a_real_socket" = "seeded 2026-10-22"
+"tests/test_procs.py::test_a_dispatch_end_reap_never_raises" = "seeded 2026-10-22"
+"tests/test_tab_drain_runner.py::test_a_stale_token_does_not_run" = "seeded 2026-10-22"
+"tests/test_tab_plugin.py::test_missing_snapshot_is_quiet_and_later_creation_is_read" = "seeded 2026-10-22"
+"tests/test_telemetry_sink.py::test_a_contention_loss_accounts_for_every_attempt" = "seeded 2026-10-22"
+"tests/test_win_hold.py::test_blocking_lock_uses_flock_on_posix" = "seeded 2026-10-22"
+"tests/test_win_hold.py::test_op_and_land_lock_use_flock_on_posix" = "seeded 2026-10-22"
+"tests/test_win_transport.py::test_audited_sdk_adapter_allows_windows" = "seeded 2026-10-22"
+"tests/test_worker_comment_check.py::test_cited_ids_are_denied_on_both" = "seeded 2026-10-22"
+"tests/test_write_scope.py::test_a_stale_record_holds_nothing" = "seeded 2026-10-22"
+"tests/test_write_scope.py::test_another_repo_s_paths_never_clash" = "seeded 2026-10-22"
+
+# Each xfail, unconditional skip and non-platform skipif.
+[[skip]]
+node = "tests/test_attention_matrix.py::NODE"
+reason = "Node executes the plugin"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_codex_ended_tab.py::test_a_reset_clears_one_matching_tab_and_refuses_two"
+reason = "Node is needed to execute Obsidian eval JS"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_codex_hooks_live.py::test_live_project_isolation_and_generated_policy_on_resume"
+reason = "owner-authorized B0f live probe"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_codex_live_gate.py::test_codex_full_dispatch_lifecycle"
+reason = "opt-in live Codex probe"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_codex_live_gate.py::test_codex_hook_denies_shell_command"
+reason = "opt-in live Codex probe"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_codex_product_hooks_live.py::test_codex_worker_in_a_product_repo_keeps_its_hooks"
+reason = "opt-in live Codex product-hook milestone"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_codex_reset_race.py::needs_node"
+reason = "Node runs the Obsidian eval JS"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_codex_tab_link.py::NODE"
+reason = "Node is needed to execute Obsidian eval JS"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_dispatch_mcp_launch.py::test_preview_never_inventories_unselected_fifo"
+reason = "POSIX FIFO fixture"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_dispatch_mcp_policy_io.py::test_selected_fifo_refuses_without_waiting_for_a_writer"
+reason = "POSIX FIFO fixture"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_dispatch_mcp_policy_io.py::test_unselected_fifo_is_never_opened"
+reason = "POSIX FIFO fixture"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_dispatch_open.py::test_windows_text_runs_only_the_command_in_powershell"
+reason = "needs powershell.exe"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_docs_refs.py::test_the_lint_agrees_with_the_parser"
+reason = "needs /bin/sh"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_docs_refs.py::test_the_tokenizer_agrees_with_sh"
+reason = "needs /bin/sh"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_handoff_views.py::test_dataview_renders_both_machines_and_refreshes_indexed_status"
+reason = "Node is needed to execute the Dataview view"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_a_normal_day_is_one_line_with_the_lesson_count"
+reason = "Node executes LivePane"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_a_stale_remote_report_is_one_line_plus_its_problem_history"
+reason = "Node executes LivePane"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_action_and_unknown_rows_say_what_they_mean_and_what_to_do"
+reason = "Node executes LivePane"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_background_and_parked_managers_keep_identity_and_lease_actions"
+reason = "Node executes LivePane"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_feature_and_task_views_use_canonical_snapshot"
+reason = "Node executes the compatibility views"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_live_pane_patches_rows_and_keeps_activity_order"
+reason = "Node executes the plugin"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_missing_unreadable_and_expired_sources_never_look_healthy"
+reason = "Node executes LivePane"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_scoped_editor_find_debounce_and_async_snapshots"
+reason = "Node executes the plugin"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_stale_tabs_wait_for_consecutive_reads"
+reason = "Node executes the plugin"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_this_machines_expired_rows_each_read_unknown_by_the_clock"
+reason = "Node executes LivePane"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_worker_tail_keeps_rows_during_polls"
+reason = "Node executes the worker view"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_valid_until_js.py"
+reason = "Node runs the Dashboard view script"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_obsidian.py::test_file_links_reject_network_paths_before_filesystem_access"
+reason = "Node runs the harness plugin"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_obsidian.py::test_file_links_through_top_level_vault_symlinks"
+reason = "Node runs the harness plugin"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_obsidian.py::test_the_manager_plugin_on_each_os"
+reason = "Node runs the harness plugin"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_obsidian_claim.py::test_ribbon_claim_matches_its_launch_marker_even_when_another_tab_is_active"
+reason = "Node executes the tab claim"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_owner_question_events.py::test_an_earlier_snapshot_cannot_repaint_after_the_latest_update"
+reason = "Node runs LivePane"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_owner_question_events.py::test_the_needs_you_view_draws_a_question_s_text"
+reason = "Node runs LivePane"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_peer_net_bootstrap.py::needs_keygen"
+reason = "needs OpenSSH"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_peer_net_bootstrap.py::test_a_peer_or_enrolled_key_cannot_be_the_login_key"
+reason = "needs OpenSSH"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_peer_net_bootstrap.py::test_real_ssh_parses_the_bootstrap_argv"
+reason = "needs OpenSSH"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_peer_net_launcher.py::test_the_real_launcher_answers_status_with_no_ambient_python_path"
+reason = "needs the synced venv"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_peer_net_recover.py::test_a_pin_path_with_spaces_survives_real_ssh_option_parsing"
+reason = "needs the OpenSSH client"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_peer_net_scan.py::test_the_host_key_scan_can_never_log_in"
+reason = "needs OpenSSH"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_setup_ps1.py::test_agent_ps1_leaves_agent_root_as_it_found_it"
+reason = "no PowerShell on this machine"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_tab_drain.py::test_a_token_only_request_paints_only_the_tab_with_that_suffix"
+reason = "Node is needed to execute Obsidian eval JS"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_tab_drain.py::test_exact_name_wins_over_a_token_match"
+reason = "Node is needed to execute Obsidian eval JS"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_tab_plugin.py::NODE"
+reason = "Node runs the Obsidian plugin"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_task_views.py"
+reason = "Node is needed to execute the Dataview views"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_telemetry_sink.py::test_an_unwritable_directory_is_a_loss"
+reason = "POSIX permissions, not root"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_usage_collect.py::test_a_folder_that_exists_but_cannot_be_read_is_unavailable"
+reason = "needs POSIX permissions"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_usage_publish.py::test_changed_unavailable_evidence_is_not_settled"
+reason = "needs POSIX permissions"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_win_hold.py"
+reason = "needs flock as the msvcrt stand-in"
+expires = 2027-01-22

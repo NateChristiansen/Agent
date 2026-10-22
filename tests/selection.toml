@@ -380,6 +380,12 @@ tests = [
 ]
 
 [[bundle]]
+name = "suite-hygiene"
+# The AST scan of tests/ and its budget lists: any test change can trip it, and it starts no processes.
+paths = ["tests/**"]
+tests = ["tests/test_suite_hygiene.py"]
+
+[[bundle]]
 name = "onboarding-repo"
 paths = ["tests/onboarding_repo.py"]
 tests = ["tests/test_onboarding_repo.py"]

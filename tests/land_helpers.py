@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+import suite_cost
 from agent_cli import land_journal as jn
 from agent_cli import verify_record
 
@@ -98,7 +99,13 @@ _KEEP: list[Path] = []
 def recorded(root: Path, rev: str = "feature") -> None:
     """A pass record for `rev` up front, so a landing reuses it. Records are keyed by tree,
     environment and policy, so the first run per key in a session is real and later checkouts of
-    the same tree get a copy of that record and its run, which must still apply."""
+    the same tree get a copy of that record and its run, which must still apply. Which test pays
+    for the real run depends on scheduling, so the spawn ceiling leaves both paths out."""
+    with suite_cost.uncounted():
+        _recorded(root, rev)
+
+
+def _recorded(root: Path, rev: str) -> None:
     rp = verify_record.harness_repo(root)
     _, tree = verify_record.resolve(root, rev)
     key = (tree, verify_record.environment(rp)["digest"], verify_record.policy(rp)[0])
