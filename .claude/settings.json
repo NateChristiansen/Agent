@@ -349,6 +349,7 @@
       "Edit(/.agent/status.json)",
       "Edit(/.agent/live.json)",
       "Edit(/.agent/default-feature)",
+      "Edit(/.agent/manager-worktrees.json)",
       "Edit(/journal/*.collect.*)",
       "Bash(git reset --hard*)",
       "Bash(git clean*)",

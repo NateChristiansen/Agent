@@ -10,6 +10,7 @@ What a worktree must NOT isolate is coordination, which is what most of these te
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -430,3 +431,84 @@ def test_an_existing_checkout_is_checked_against_an_explicit_base(repo: Path):
         )
         is None
     )
+
+
+def _feature(repo: Path, n: int, slug: str, status: str = "active") -> None:
+    folder = repo / "features" / f"{n:03d}-{slug}"
+    folder.mkdir(parents=True)
+    (folder / "plan.md").write_text(f"---\nstatus: {status}\n---\n# {slug}\n\n## Tasks\n", encoding="utf-8")
+    (folder / "log.md").write_text(f"# Log — {n:03d} {slug}\n", encoding="utf-8")
+
+
+def _bindings_file(repo: Path) -> Path:
+    return repo / ".agent" / "manager-worktrees.json"
+
+
+def test_a_new_worktree_records_its_owning_feature(repo: Path):
+    _feature(repo, 1, "one")
+    result = worktree.create(repo, "owned", sync=False, feature="1", session="s1")
+    assert result["binding"] == {"feature": 1, "session": "s1", "at": result["binding"]["at"]}
+    assert worktree.binding(repo, "agent/owned") == result["binding"]
+    assert json.loads(_bindings_file(repo).read_text())["agent/owned"]["feature"] == 1
+    assert worktree.binding(repo, "agent/other") is None
+
+
+def test_rerunning_on_an_existing_worktree_adds_the_binding_once(repo: Path):
+    _feature(repo, 1, "one")
+    worktree.create(repo, "legacy", sync=False)
+    assert worktree.bindings(repo) == {}
+    first = worktree.create(repo, "legacy", sync=False, feature="1", session="s1")["binding"]
+    again = worktree.create(repo, "legacy", sync=False, feature="1", session="s2")["binding"]
+    assert again == first
+    assert worktree.create(repo, "legacy", sync=False).get("binding") is None
+    assert worktree.binding(repo, "agent/legacy") == first
+
+
+def test_moving_a_binding_to_another_open_feature_is_refused_before_anything_changes(repo: Path):
+    _feature(repo, 1, "one")
+    _feature(repo, 2, "two")
+    worktree.create(repo, "held", sync=False, feature="1")
+    before = _bindings_file(repo).read_text()
+    with pytest.raises(AgentError, match="belongs to Feature 001"):
+        worktree.create(repo, "held", sync=False, feature="2")
+    assert _bindings_file(repo).read_text() == before
+    # a branch whose worktree is gone is refused before git adds it back
+    worktree.remove(repo, "held")
+    with pytest.raises(AgentError, match="belongs to Feature 001"):
+        worktree.create(repo, "held", sync=False, feature="2")
+    assert not worktree.worktree_path(repo, "held").exists()
+    # once the owner closes, the binding may move
+    plan = repo / "features/001-one/plan.md"
+    plan.write_text(plan.read_text().replace("status: active", "status: done"))
+    assert worktree.create(repo, "held", sync=False, feature="2")["binding"]["feature"] == 2
+
+
+def test_binding_to_a_closed_feature_is_refused(repo: Path):
+    _feature(repo, 1, "one", status="abandoned")
+    with pytest.raises(AgentError, match="only to an open feature"):
+        worktree.create(repo, "closed", sync=False, feature="1")
+    assert not worktree.worktree_path(repo, "closed").exists()
+    assert not _bindings_file(repo).exists()
+
+
+def test_the_harness_tool_forwards_its_feature_to_the_binding(repo: Path, monkeypatch: pytest.MonkeyPatch):
+    from agent_cli.mcp.specs_harness import harness
+    from agent_cli.mcp.tools import Ctx
+
+    _feature(repo, 1, "one")
+    ctx = Ctx(root=repo, profile="manager")
+    monkeypatch.setattr(Ctx, "session_id", lambda self, *a, **k: "s9")
+    out = harness(ctx, "worktree_new", name="via-tool", feature="1", sync=False)
+    assert out.data["binding"]["feature"] == 1 and out.data["binding"]["session"] == "s9"
+    assert "belongs to Feature 001" in out.text
+    plain = harness(ctx, "worktree_new", name="plain", sync=False)
+    assert "binding" not in plain.data and worktree.binding(repo, "agent/plain") is None
+
+
+def test_an_unreadable_binding_file_fails_closed(repo: Path):
+    _bindings_file(repo).write_text("{not json")
+    with pytest.raises(AgentError, match="not valid JSON"):
+        worktree.binding(repo, "agent/x")
+    _bindings_file(repo).write_text("[]")
+    with pytest.raises(AgentError, match="must hold an object"):
+        worktree.bindings(repo)

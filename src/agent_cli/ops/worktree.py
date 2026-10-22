@@ -10,8 +10,16 @@ from ..records.narrow import as_list
 from ._shared import Op
 
 
-def worktree_new(root: Path, *, name: str, base: str = "main", sync: bool = True) -> Op:
-    result = worktree_mod.create(root, name, base=base, sync=sync)
+def worktree_new(
+    root: Path,
+    *,
+    name: str,
+    base: str = "main",
+    sync: bool = True,
+    feature: str | None = None,
+    session_id: str | None = None,
+) -> Op:
+    result = worktree_mod.create(root, name, base=base, sync=sync, feature=feature, session=session_id)
     lines = [f"{result['path']}  ({result['branch']})", *(f"  {step}" for step in result["steps"])]
     if differs := result.get("branch_differs"):
         lines.append(

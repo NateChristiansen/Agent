@@ -21,7 +21,7 @@ is reachable through the dispatch package.
 
 from __future__ import annotations
 
-from . import adrs, dispatch, features, infra, notes, repos, sessions, status
+from . import adrs, dispatch, features, infra, notes, reconcile, repos, sessions, status
 from ._shared import Op, render_views
 from .adrs import adr_new
 from .dispatch import (
@@ -141,6 +141,7 @@ __all__ = [
     "features",
     "infra",
     "notes",
+    "reconcile",
     "repos",
     "sessions",
     "status",

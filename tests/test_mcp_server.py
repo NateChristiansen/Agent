@@ -76,7 +76,8 @@ async def test_list_tools_shape_and_enums(seeded: Path):
     # A plan adds strict config validation through the read-only repos_validate tool.
     # Audit 10 plan.md:113,115 (K1/K3) retire status_show and feature_current.
     # `request` joined: one routed tool over request records in the feature store.
-    assert len(tools) == 29, sorted(tools)
+    # `reconcile` joined: the typed ledger of results and findings that need a decision.
+    assert len(tools) == 30, sorted(tools)
     assert {"status_show", "feature_current"}.isdisjoint(tools)
     gone = {
         "raw_adopt",

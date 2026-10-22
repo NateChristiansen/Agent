@@ -61,6 +61,26 @@ def test_claude_and_codex_schemas_carry_the_reduced_contract():
     assert structured_return("not json") is None
 
 
+def test_findings_are_optional_and_typed():
+    assert "findings" not in RETURN_SCHEMA["required"]
+    row = {"id": "F1", "severity": "blocking", "summary": "s", "path": "a.py", "line": 3}
+    assert verify_return({"nonce": "n-1"}, _ret(findings=[row])) == []
+    assert verify_return({"nonce": "n-1"}, _ret(findings=[])) == []
+    assert check_schema(_ret(findings=[{"severity": "urgent", "summary": "s"}]), RETURN_SCHEMA)
+    assert check_schema(_ret(findings=[{"severity": "info"}]), RETURN_SCHEMA) == [
+        "$.findings[0].summary: missing"
+    ]
+    strict = codex_output_schema(RETURN_SCHEMA)
+    finding = strict["properties"]["findings"]["items"]
+    assert set(finding["required"]) == {"id", "severity", "summary", "path", "line"}
+    assert finding["properties"]["line"]["type"] == ["integer", "null"]
+    assert finding["properties"]["severity"]["type"] == "string"
+    text = json.dumps({**_ret(), "findings": [{**row, "path": None, "line": None}]})
+    parsed = structured_return(text)
+    assert parsed is not None and parsed["findings"] == [{"id": "F1", "severity": "blocking", "summary": "s"}]
+    assert check_schema(parsed, RETURN_SCHEMA) == []
+
+
 def test_handoff_lists_git_facts_from_the_record_not_the_return():
     d = {
         "result": _ret(),

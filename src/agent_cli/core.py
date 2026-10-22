@@ -79,7 +79,7 @@ AGENT_SUBTREE_DIRS = (
     # Approval bindings belong outside dispatch records, but keep their file protection.
     "work-order-previews",
 )
-AGENT_SUBTREE_FILES = ("status.json", "live.json", "default-feature")
+AGENT_SUBTREE_FILES = ("status.json", "live.json", "default-feature", "manager-worktrees.json")
 AGENT_SUBTREES = (*AGENT_SUBTREE_DIRS, *AGENT_SUBTREE_FILES)
 
 #: The state folder's name, spelled here only. `tests/test_prose_rules.py` refuses the literal,

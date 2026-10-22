@@ -10,6 +10,7 @@ error. The launcher derives AGENT_ROOT from its checkout and runs that code agai
 from __future__ import annotations
 
 import functools
+import json
 import os
 import shutil
 import subprocess
@@ -19,11 +20,84 @@ from typing import Any
 from . import git_discovery
 from . import notes as notes_mod
 from . import repos as repos_mod
-from .core import AgentError, ExternalFailure, agent_dir_name, agent_root
+from .core import AgentError, ExternalFailure, agent_dir_name, agent_path, agent_root, atomic_write, iso, now
+from .records.narrow import as_dict, as_dict_or_none
 
 BRANCH_PREFIX = "agent/"
 STATE_DIR = agent_dir_name()  # for messages; the path itself is `agent_root(...)`
 WORKTREES_DIRNAME = "Agent-worktrees"
+BINDINGS = "manager-worktrees.json"
+
+
+def bindings(root: Path) -> dict[str, dict[str, Any]]:
+    """This machine's manager-worktree ownership: `{branch: {feature, session, at}}`. Missing is
+    empty; an unreadable file raises, so a gate reading it fails closed."""
+    path = agent_path(main_checkout(root), BINDINGS)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise AgentError(f"cannot read {path}: {exc}") from exc
+    try:
+        data = as_dict_or_none(json.loads(text))
+    except json.JSONDecodeError as exc:
+        raise AgentError(f"{path} is not valid JSON: {exc}") from exc
+    if data is None:
+        raise AgentError(f"{path} must hold an object")
+    return {str(k): dict(as_dict(v)) for k, v in data.items()}
+
+
+def binding(root: Path, branch: str) -> dict[str, Any] | None:
+    return bindings(root).get(branch)
+
+
+def _bound_feature(root: Path, feature: str) -> Any:
+    from . import features as features_mod
+
+    f = features_mod.resolve(root, feature)
+    if not f.is_open:
+        raise AgentError(
+            f"{f.label} is {f.status}; a worktree binds only to an open feature. Nothing was added"
+        )
+    return f
+
+
+def _binding_refusal(root: Path, branch: str, feature_id: int) -> str | None:
+    """Why `branch` may not be bound to `feature_id`: it is bound to another feature that is still open."""
+    from . import features as features_mod
+
+    held = binding(root, branch)
+    current = (held or {}).get("feature")
+    if not isinstance(current, int) or current == feature_id:
+        return None
+    try:
+        other = features_mod.resolve(root, str(current))
+    except AgentError:
+        return None
+    if not other.is_open:
+        return None
+    return (
+        f"{branch} belongs to {other.label} ({other.status}); moving it to feature {feature_id:03d} is refused. "
+        "Nothing was changed"
+    )
+
+
+def _write_binding(
+    root: Path, main: Path, branch: str, feature_id: int, session: str | None
+) -> dict[str, Any]:
+    """Record the binding; the caller holds the git-admin guard. Re-checked here, inside it."""
+    why = _binding_refusal(root, branch, feature_id)
+    if why:
+        raise AgentError(why)
+    table = bindings(root)
+    held = table.get(branch)
+    if held is not None and held.get("feature") == feature_id:
+        return held
+    entry = {"feature": feature_id, "session": session, "at": iso(now())}
+    table[branch] = entry
+    atomic_write(agent_path(main, BINDINGS), json.dumps(table, indent=2, sort_keys=True) + "\n")
+    return entry
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -153,7 +227,14 @@ def _component(name: str) -> str:
 
 
 def create(
-    root: Path, name: str, *, base: str = "main", sync: bool = True, expect_head: str | None = None
+    root: Path,
+    name: str,
+    *,
+    base: str = "main",
+    sync: bool = True,
+    expect_head: str | None = None,
+    feature: str | None = None,
+    session: str | None = None,
 ) -> dict[str, Any]:
     """Add a manager worktree on `agent/<name>`, share the state, link the private set.
 
@@ -161,7 +242,9 @@ def create(
     than starting a second broken one. An existing branch is checked out as it is: when it is not
     at `base` the result says so in `branch_differs`, and a `base` other than main refuses.
     `expect_head` makes the add refuse unless the branch is still at that commit under the
-    git-admin guard.
+    git-admin guard. `feature` binds the branch to that open feature (`bindings`), on a new or an
+    existing worktree; moving a binding to another feature while its owner is open is refused
+    before anything changes.
     """
     slug = _component(name)
     main = main_checkout(root)
@@ -169,6 +252,10 @@ def create(
     branch = f"{BRANCH_PREFIX}{slug}"
     steps: list[str] = []
     differs: dict[str, str] | None = None
+    owner = _bound_feature(root, feature) if feature is not None else None
+    if owner is not None and (why := _binding_refusal(root, branch, owner.id)):
+        raise AgentError(why)
+    bound: dict[str, Any] | None = None
 
     existing = {Path(w["path"]).resolve(): w for w in repos_mod.worktrees(main)}
     seen = registration(main, path)
@@ -202,6 +289,8 @@ def create(
                 )
                 if (now or "").strip() != expect_head or os.path.lexists(path):
                     raise AgentError(f"{branch} or {path} changed before the restore; nothing was added")
+            if owner is not None and (why := _binding_refusal(root, branch, owner.id)):
+                raise AgentError(why)
             if head:
                 # The branch outlives its worktree — `remove` keeps it on purpose, because the work
                 # on it is the point. Recreating checks that branch out; passing `base` here instead
@@ -209,7 +298,16 @@ def create(
                 _git(["worktree", "add", str(path), branch], main)
             else:
                 _git(["worktree", "add", "-b", branch, str(path), base], main)
+            if owner is not None:
+                bound = _write_binding(root, main, branch, owner.id, session)
         steps.append(f"worktree added at {path} on {branch}")
+    if owner is not None and bound is None:
+        from .dispatch.allocation import git_admin, git_admin_short
+
+        with git_admin(main, git_admin_short(root, main)):
+            bound = _write_binding(root, main, branch, owner.id, session)
+    if owner is not None:
+        steps.append(f"{branch} belongs to {owner.label}")
     if differs:
         steps.append(
             f"{branch} already existed at {differs['branch_tip'][:12]}, not at {base}; "
@@ -236,6 +334,7 @@ def create(
         "branch": branch,
         "steps": steps,
         **({"branch_differs": differs} if differs else {}),
+        **({"binding": bound} if bound is not None else {}),
     }
 
 

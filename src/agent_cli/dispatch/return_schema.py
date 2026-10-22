@@ -65,5 +65,23 @@ RETURN_SCHEMA: dict[str, Any] = {
                 "properties": {"doc": {"type": "string"}, "quote": {"type": "string"}},
             },
         },
+        # Optional so attempts launched before it still validate. Each row becomes one
+        # reconciliation item for the manager.
+        "findings": {
+            "type": "array",
+            "description": "Optional. Actionable findings for the manager to reconcile; an empty "
+            "list means none.",
+            "items": {
+                "type": "object",
+                "required": ["severity", "summary"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["blocking", "optional", "info"]},
+                    "summary": {"type": "string"},
+                    "path": {"type": "string"},
+                    "line": {"type": "integer"},
+                },
+            },
+        },
     },
 }

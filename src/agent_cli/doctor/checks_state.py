@@ -8,6 +8,7 @@
   its heartbeat is fresh, which is what holds the eval push back. Silent with neither.
 - `blocked <NNN>`: a feature marked `blocked` with work since the block.
 - `render`: the last view render that failed with none succeeding since.
+- `reconcile <NNN>`: malformed reserved ledger entries or conflicting source generations.
 """
 
 from __future__ import annotations
@@ -27,7 +28,43 @@ def rows(root: Path) -> list[Check]:
         + blocked_with_work(root)
         + render_failures(root)
         + machine_label(root)
+        + reconcile_ledgers(root)
     )
+
+
+def reconcile_ledgers(root: Path) -> list[Check]:
+    """Malformed reserved entries and conflicting source generations in each open feature's
+    ledger. Read only: no intent is healed and nothing is appended, so doctor never registers a
+    source or changes what is owed."""
+    from .. import features as features_mod
+    from .. import reconcile
+    from ..core import AgentError
+
+    try:
+        feats = [f for f in features_mod.load_all(root) if f.is_open]
+    except AgentError, OSError:
+        return []
+    out: list[Check] = []
+    for f in feats:
+        try:
+            led = reconcile.ledger(root, f, heal=False)
+        except (AgentError, OSError, UnicodeDecodeError) as exc:
+            why = exc.message if isinstance(exc, AgentError) else f"{type(exc).__name__}: {exc}"
+            out.append(new_check(f"reconcile {f.number}", "warn", f"the ledger cannot be read: {why}"))
+            continue
+        problems: list[str] = []
+        if led.malformed:
+            n = len(led.malformed)
+            whys = sorted({str(m.get("why", "")) for m in led.malformed})
+            problems.append(
+                f"{n} malformed reserved entr{'y' if n == 1 else 'ies'} ignored ({'; '.join(whys)})"
+            )
+        conflicts = sorted({(i.source, ", ".join(i.conflict)) for i in led.conflicts})
+        if conflicts:
+            problems.append("conflicting generations: " + "; ".join(f"{s} ({gs})" for s, gs in conflicts))
+        if problems:
+            out.append(new_check(f"reconcile {f.number}", "warn", "; ".join(problems)))
+    return out
 
 
 def machine_label(root: Path) -> list[Check]:

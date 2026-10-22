@@ -22,11 +22,13 @@ from .coverage import mcp_wording
 from .specs_dispatch import DISPATCH_TOOLS, WORKER_TOOLS
 from .specs_features import FEATURE_TOOLS
 from .specs_harness import HARNESS_TOOLS
+from .specs_reconcile import RECONCILE_TOOLS
 from .specs_repos import REPO_TOOLS
 from .tools import Ctx, Op, ToolSpec
 
 MANAGER_TOOLS: dict[str, ToolSpec] = {
     **FEATURE_TOOLS,
+    **RECONCILE_TOOLS,
     **REPO_TOOLS,
     **DISPATCH_TOOLS,
     **HARNESS_TOOLS,

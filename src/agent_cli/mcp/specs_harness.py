@@ -160,7 +160,14 @@ def harness(
     elif action == "scratch_path":
         op = ops.scratch_path(root)
     elif action == "worktree_new":
-        op = ops.worktree_new(root, name=_harness_require(name, "name", action), base=base, sync=sync)
+        op = ops.worktree_new(
+            root,
+            name=_harness_require(name, "name", action),
+            base=base,
+            sync=sync,
+            feature=feature,
+            session_id=ctx.session_id() if feature else None,
+        )
     elif action == "worktree_list":
         op = ops.worktree_list(root)
     elif action == "worktree_remove":
@@ -227,8 +234,10 @@ HARNESS_TOOLS: dict[str, ToolSpec] = {
         "file without severing its link, which Edit and apply_patch do: no from_file copies it to a "
         "draft to edit; from_file previews the diff; apply=True with expect_sha256 writes it. "
         "`journal_collect` (date, write), `journal_missing`, `journal_write` (date, file). "
-        "`scratch_path`. `worktree_new` (name, base, sync; an existing agent/<name> is checked out as "
-        "it is and `branch_differs` says when it is not at base; a base other than main refuses), "
+        "`scratch_path`. `worktree_new` (name, base, sync, feature; an existing agent/<name> is checked out as "
+        "it is and `branch_differs` says when it is not at base; a base other than main refuses; feature "
+        "binds the worktree to that open feature, also on a re-run, and moving it to another open feature "
+        "is refused), "
         "`worktree_list`, `worktree_remove` (name, force). `worktree_reconcile` (target = a registered "
         "path, apply) drops one proven-missing path's Git registration once its HEAD and index are "
         "preserved, never a global prune. `worktree_restore` (name, ref = the head agent/<name> must "

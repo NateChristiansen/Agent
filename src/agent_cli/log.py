@@ -56,12 +56,20 @@ def render_entry(entry: Entry) -> str:
     return "\n".join(lines) + "\n"
 
 
-def append(feature: Feature, kind: str, text: str, when: datetime | None = None) -> Entry:
+def append(
+    feature: Feature, kind: str, text: str, when: datetime | None = None, *, reserved: bool = False
+) -> Entry:
+    """`reserved` is for the reconciliation ledger's own writer; without it, text that reads as
+    a ledger entry is refused, so nothing else can forge one."""
+    from .reconcile import is_reserved
+
     if kind not in KINDS:
         raise AgentError(f"kind must be one of {', '.join(KINDS)}; got {kind!r}")
     text = text.strip("\n")
     if not text.strip():
         raise AgentError("log text cannot be empty")
+    if not reserved and is_reserved(text):
+        raise AgentError("log text starting with `reconcile ` is reserved; use the `reconcile` tool")
     if not feature.log_path.exists():
         raise AgentError(f"{feature.log_path} is missing; the feature directory is corrupt")
     when = when or now()

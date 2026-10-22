@@ -34,6 +34,16 @@ tests = [
 ]
 
 [[bundle]]
+name = "reconciliation-ledger"
+# `log.append` guards the reserved prefix through `reconcile.is_reserved`; the `reconcile` MCP tool
+# serves `ops/reconcile.py`; launch, land and edit gates call `activity_gate`.
+paths = ["src/agent_cli/reconcile.py", "src/agent_cli/activity_gate.py", "src/agent_cli/ops/reconcile.py"]
+tests = [
+  "tests/test_reconcile.py", "tests/test_activity_gate.py", "tests/test_log.py", "tests/test_mcp_server.py",
+  "tests/test_mcp_contract.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
 name = "closed-feature-cleanup"
 paths = ["src/agent_cli/tidy.py", "src/agent_cli/cli/tidy.py"]
 tests = [
