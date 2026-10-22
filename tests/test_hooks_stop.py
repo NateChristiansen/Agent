@@ -247,6 +247,26 @@ def test_thrash_guard_ignores_subagents_garbage_and_no_session(tmp_root: Path, r
     assert r.out == ""
 
 
+def test_a_record_guard_block_holds_the_turn_open_once(tmp_root: Path, run, monkeypatch):
+    """`record-guard` through the CLI: a manager owing an item is blocked once, and while blocked
+    `lease-yield` does not count the Stop as a turn end; the repeat Stop ends the turn."""
+    from agent_cli import reconcile, sessions
+    from agent_cli.dispatch import verdicts
+    from agent_cli.leases import HOLDER_STOPPED_KEY
+
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    monkeypatch.setattr(verdicts, "live_managers", lambda _root: {})
+    run(["feature", "new", "x", "--title", "X"])
+    run(["feature", "use", "1", "--session-id", "s1"])
+    reconcile.add_manual(tmp_root, 1, ["finding"])
+    stop = json.dumps({"session_id": "s1", "hook_event_name": "Stop"})
+    first = json.loads(run(["hook", "stop"], stdin=stop).out)
+    assert first["decision"] == "block" and first["reason"].startswith("record-guard:")
+    assert sessions.get_counter(tmp_root, "s1", HOLDER_STOPPED_KEY) == 0
+    assert run(["hook", "stop"], stdin=stop).out == ""
+    assert sessions.get_counter(tmp_root, "s1", HOLDER_STOPPED_KEY) > 0
+
+
 def test_thrash_state_survives_a_later_feature_use(tmp_root: Path, run):
     """Regression for sessions.set_record: it used to rebuild the session record from a fixed
     field list, so mapping a feature after thrash-guard had written counters wiped them."""
