@@ -6,11 +6,13 @@ import collections
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import suite_cost
 from agent_cli import land, notes_sync
 from agent_cli import land_journal as jn
 from agent_cli import land_observe as obs
@@ -37,11 +39,11 @@ class Spawns:
 
 
 @pytest.fixture
-def spawns(monkeypatch: pytest.MonkeyPatch) -> Spawns:
+def spawns() -> Iterator[Spawns]:
+    """Every `Popen` start while the test runs, heard on the suite's one counter (suite_cost.py)."""
     seen = Spawns()
-    real = subprocess.Popen.__init__
 
-    def counting(self: subprocess.Popen[Any], args: Any, *a: Any, **kw: Any) -> None:
+    def record(args: Any, kw: dict[str, Any]) -> None:
         seen.argv.append([str(x) for x in args] if isinstance(args, (list, tuple)) else [str(args)])
         frame, chain = sys._getframe(1), []
         while frame is not None:
@@ -50,10 +52,10 @@ def spawns(monkeypatch: pytest.MonkeyPatch) -> Spawns:
                 chain.append(f"{name.name}:{frame.f_code.co_name}")
             frame = frame.f_back
         seen.stacks.append(" < ".join(chain))
-        real(self, args, *a, **kw)
 
-    monkeypatch.setattr(subprocess.Popen, "__init__", counting)
-    return seen
+    suite_cost.counter.listeners.append(record)
+    yield seen
+    suite_cost.counter.listeners.remove(record)
 
 
 def test_an_ff_landing_with_a_reused_record_stays_under_its_git_call_bound(harness: Path, spawns: Spawns):  # noqa: F811

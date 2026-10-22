@@ -67,6 +67,17 @@ tests = [
   "tests/test_select.py", "tests/test_ops_cases.py", "tests/test_dispatch_launch.py", "tests/test_land.py",
 ]
 
+[[bundle]]
+name = "suite-cost"
+# The spawn counter wraps Popen.__init__ for every test; these listen on it, subclass Popen over it,
+# or start the Python children it marks opaque.
+paths = ["tests/suite_cost.py", "tests/suite_cost_site/**"]
+tests = [
+  "tests/test_suite_cost_plugin.py", "tests/test_spawn_cost.py", "tests/test_obsidian_guard.py",
+  "tests/test_utf8_decoding.py", "tests/test_peer_net_launcher.py", "tests/test_codex_candidate_runtime.py",
+  "tests/test_fixture_cost.py", "tests/test_select.py",
+]
+
 [[broad]]
 reason = "core"
 paths = [

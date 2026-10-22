@@ -1,0 +1,171 @@
+"""The suite cost plugin (suite_cost.py), run over a probe suite in a child pytest."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import suite_cost
+from suite_cost_site import sitecustomize as site
+
+TESTS = Path(__file__).resolve().parent
+
+PROBE = """
+import os, subprocess, sys
+
+def python(*args, **kw):
+    subprocess.run([sys.executable, *args], check=True, **kw)
+
+def test_two():
+    python("-c", "pass")
+    python("-c", "pass")
+
+def test_a_child_that_starts_three():
+    python("-c", "import subprocess, sys\\nfor _ in range(3): subprocess.run([sys.executable, '-c', 'pass'])")
+
+def test_an_isolated_child():
+    python("-I", "-c", "import subprocess, sys; subprocess.run([sys.executable, '-c', 'pass'])")
+
+def test_a_child_without_the_pythonpath():
+    python("-c", "pass", env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"})
+
+def test_a_child_whose_own_sitecustomize_still_runs():
+    code = "import subprocess, sys\\nsubprocess.run([sys.executable, '-c', 'pass'])\\nprint(sys.own_hook_ran)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "True", out.stderr
+"""
+
+# Three starts in every pytest process, before any test: the exact outside-test count.
+PROBE_CONFTEST = """
+import subprocess, sys
+
+def pytest_sessionstart(session):
+    for _ in range(3):
+        subprocess.run([sys.executable, "-c", "pass"], check=True)
+"""
+
+# The child's own `sitecustomize`, which the counter's directory shadows on PYTHONPATH.
+OWN_HOOK = "import sys\nsys.own_hook_ran = True\n"
+
+
+def _pytest(tmp_path: Path, *args: str, stats: Path | None) -> None:
+    """A child pytest in `tmp_path` with only this plugin, outside any measurement of this suite."""
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    hooks = tmp_path.parent / f"{tmp_path.name}-hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "sitecustomize.py").write_text(OWN_HOOK, encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k not in (suite_cost.STATS_ENV, site.SPAWNS_ENV)}
+    path = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p and p != site.SITE_DIR]
+    env["PYTHONPATH"] = os.pathsep.join([str(TESTS), str(hooks), *path])
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if stats is not None:
+        env[suite_cost.STATS_ENV] = str(stats)
+    argv = [sys.executable, "-m", "pytest", "-q", "-p", "suite_cost", "-p", "no:cacheprovider", *args]
+    out = subprocess.run(
+        argv, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120, check=False
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+
+
+def _probe(tmp_path: Path, *args: str) -> dict[str, Any]:
+    (tmp_path / "test_probe.py").write_text(PROBE, encoding="utf-8")
+    (tmp_path / "conftest.py").write_text(PROBE_CONFTEST, encoding="utf-8")
+    stats = tmp_path / "out" / "stats.json"
+    _pytest(tmp_path, *args, stats=stats)
+    return json.loads(stats.read_text(encoding="utf-8"))
+
+
+def _platform_starts() -> int:
+    """The processes `platform.platform()` starts in a fresh interpreter, counted without the plugin."""
+    code = (
+        "import platform, subprocess\n"
+        "n, real = [0], subprocess.Popen.__init__\n"
+        "def counting(self, *a, **kw):\n"
+        "    n[0] += 1\n"
+        "    real(self, *a, **kw)\n"
+        "subprocess.Popen.__init__ = counting\n"
+        "platform.platform()\n"
+        "print(n[0])\n"
+    )
+    out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True)
+    return int(out.stdout)
+
+
+def _rows(stats: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {row["test"].split("::")[-1]: row for row in stats["tests"]}
+
+
+@pytest.fixture(scope="module")
+def serial(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    return _probe(tmp_path_factory.mktemp("serial"), "-p", "no:xdist")
+
+
+def test_each_test_counts_its_own_starts_and_those_of_the_python_children_it_can_follow(
+    serial: dict[str, Any],
+):
+    stats = serial
+    rows = _rows(stats)
+    assert rows["test_two"]["call"]["spawns"] == 2 and not rows["test_two"]["opaque"]
+    assert rows["test_a_child_that_starts_three"]["call"]["spawns"] == 4
+    assert not rows["test_a_child_that_starts_three"]["opaque"]
+    assert rows["test_two"]["setup"]["spawns"] == rows["test_two"]["teardown"]["spawns"] == 0
+    totals = stats["totals"]
+    assert totals["tests"] == 5
+    assert totals["spawns_outside_tests"] == 3
+    assert totals["spawns"] == sum(r["spawns"] for r in rows.values()) + 3 == 13
+    assert totals["call_spawns_p99"] == 4
+    assert totals["test_seconds"] > 0
+
+
+def test_a_child_s_own_sitecustomize_runs_while_the_counter_follows_it(serial: dict[str, Any]):
+    # The probe asserts the hook ran; two starts here means the child counted its own as well.
+    row = _rows(serial)["test_a_child_whose_own_sitecustomize_still_runs"]
+    assert row["call"]["spawns"] == 2 and not row["opaque"]
+
+
+def test_a_python_child_it_cannot_follow_marks_the_test_opaque(serial: dict[str, Any]):
+    stats = serial
+    rows = _rows(stats)
+    assert rows["test_an_isolated_child"]["opaque"] and rows["test_an_isolated_child"]["call"]["spawns"] == 1
+    assert rows["test_a_child_without_the_pythonpath"]["opaque"]
+    if suite_cost.resource is not None:
+        totals = stats["totals"]
+        opaque_cpu = sum(r["cpu_s"] for r in rows.values() if r["opaque"])
+        assert totals["opaque_cpu_s"] == round(opaque_cpu, 3)
+        assert 0 < totals["opaque_share"] < 1
+
+
+def test_two_xdist_workers_sum_in_the_written_file(tmp_path: Path):
+    stats = _probe(tmp_path, "-n", "2", "--dist", "each")
+    rows, workers = _rows(stats), stats["workers"]
+    assert set(workers) == {"main", "gw0", "gw1"}
+    # Each worker: 10 in its tests, 3 at session start, and what xdist's `platform.platform()`
+    # starts (`uname -p` and `file -b` on macOS). The controller: 3, and the two workers.
+    worker = 13 + _platform_starts()
+    assert workers["gw0"]["spawns"] == workers["gw1"]["spawns"] == worker
+    assert workers["main"]["spawns"] == 5
+    assert rows["test_two"]["call"]["spawns"] == 4
+    assert rows["test_a_child_that_starts_three"]["call"]["spawns"] == 8
+    totals = stats["totals"]
+    assert sum(r["spawns"] for r in rows.values()) == 20
+    assert totals["spawns"] == 2 * worker + 5 and totals["spawns_outside_tests"] == 2 * worker + 5 - 20
+
+
+def test_without_the_variable_nothing_is_written_and_children_are_not_counted(tmp_path: Path):
+    tmp_path = tmp_path / "quiet"  # the autouse fixtures write next to it
+    tmp_path.mkdir()
+    (tmp_path / "test_quiet.py").write_text(
+        "import os\n"
+        "def test_no_child_counter():\n"
+        f"    assert {site.SPAWNS_ENV!r} not in os.environ\n"
+        f"    assert {site.SITE_DIR!r} not in os.environ.get('PYTHONPATH', '').split(os.pathsep)\n",
+        encoding="utf-8",
+    )
+    _pytest(tmp_path, "-p", "no:xdist", stats=None)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["pytest.ini", "test_quiet.py"]

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import obsidian_guard as obsidian_guard_mod
+import suite_cost
 from agent_cli.cli import main
 
 # Seeded session templates, and the autouse fixture that sets tmp_path up first (seeded.py).
@@ -40,6 +41,17 @@ from harness_root import (  # noqa: F401  (imported for registration and re-expo
 from isolation import _live_state_fence, _no_fence_violations  # noqa: F401  (registration)
 from land_helpers import _land_template  # noqa: F401  (registration)
 from seeded import HOST_IDENTITY, _aa_tmp_path_first  # noqa: F401  (registration)
+
+# The spawn counter's hooks (suite_cost.py); its configure step runs from pytest_configure below.
+from suite_cost import (  # noqa: F401  (the hooks)
+    pytest_configure_node,
+    pytest_runtest_logreport,
+    pytest_runtest_logstart,
+    pytest_runtest_makereport,
+    pytest_sessionfinish,
+    pytest_testnodedown,
+    pytest_unconfigure,
+)
 from test_record_capacity import _record_template  # noqa: F401  (registration)
 from timing_groups import pytest_collection_modifyitems  # noqa: F401  (the hook)
 
@@ -48,6 +60,7 @@ collect_ignore = ["fixtures/format_compat_base"]
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    suite_cost.configure(config)
     # The candidate's own code, or nothing (origin_guard.py). xdist workers share the
     # controller's environment, so only the controller starts the child-interpreter probe.
     import origin_guard
