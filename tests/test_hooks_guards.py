@@ -121,7 +121,10 @@ ALLOW_EDITS = [
 ]
 
 
-def test_protect_generated_edits(tmp_root: Path, run):
+def test_protect_generated_edits(tmp_root: Path, run, notes_remote, monkeypatch):
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    run(["feature", "new", "edit-owner", "--title", "Edit owner"])
+    run(["feature", "use", "1", "--session-id", "s1"])
     for tool, path, want in DENY_EDITS:
         r = run(["hook", "protect-generated"], stdin=edit(tool, path.format(root=tmp_root)))
         assert _decision(r) == "deny", (tool, path)
@@ -131,7 +134,7 @@ def test_protect_generated_edits(tmp_root: Path, run):
         assert _decision(r) == "ask", (tool, path)
         assert want in _reason(r), (tool, path)
     for tool, path in NATIVE_DENY_EDITS + NATIVE_ASK_EDITS + ALLOW_EDITS:
-        r = run(["hook", "protect-generated"], stdin=edit(tool, path.format(root=tmp_root)))
+        r = run(["hook", "protect-generated"], stdin=_edit_s(tool, path.format(root=tmp_root), "s1"))
         assert r.out == "", (tool, path)
 
 
@@ -139,12 +142,14 @@ def _edit_s(tool: str, path: str, session_id: str) -> str:
     return json.dumps({"tool_name": tool, "tool_input": {"file_path": path}, "session_id": session_id})
 
 
-def test_protect_generated_takes_a_lease_then_touches_on_repeat(tmp_root: Path, run):
+def test_protect_generated_takes_a_lease_then_touches_on_repeat(tmp_root: Path, run, notes_remote):
     """Item 4: the first edit under a leaseable area registers this session's hold; a later
     edit from the same session just touches it (no takeover, no denial). Since then the
     area is the narrowest path, so the same file's area is touched and a sibling gets its own."""
     from agent_cli import leases
 
+    run(["feature", "new", "edit-owner", "--title", "Edit owner"])
+    run(["feature", "use", "1", "--session-id", "s1"])
     r = run(["hook", "protect-generated"], stdin=_edit_s("Edit", "src/agent_cli/features.py", "s1"))
     assert r.out == ""
     lease = leases.get(tmp_root, "vault:src/agent_cli/features.py")
@@ -157,11 +162,14 @@ def test_protect_generated_takes_a_lease_then_touches_on_repeat(tmp_root: Path, 
     assert again["session_id"] == "s1" and again["taken_at"] == taken_at
 
 
-def test_protect_generated_lets_two_sessions_edit_sibling_packages(tmp_root: Path, run):
+def test_protect_generated_lets_two_sessions_edit_sibling_packages(tmp_root: Path, run, notes_remote):
     """Two managers editing different parts of src used to queue for one vault:src lease. The
     second edit here is a different package, so it is allowed and takes its own area."""
     from agent_cli import leases
 
+    run(["feature", "new", "edit-owner", "--title", "Edit owner"])
+    for session in ("s1", "s2"):
+        run(["feature", "use", "1", "--session-id", session])
     assert run(["hook", "protect-generated"], stdin=_edit_s("Edit", "src/agent_cli/cli/x.py", "s1")).out == ""
     second = run(["hook", "protect-generated"], stdin=_edit_s("Edit", "src/agent_cli/hooks/y.py", "s2"))
     assert second.out == ""
@@ -169,11 +177,13 @@ def test_protect_generated_lets_two_sessions_edit_sibling_packages(tmp_root: Pat
     assert held == {"vault:src/agent_cli/cli": "s1", "vault:src/agent_cli/hooks": "s2"}
 
 
-def test_protect_generated_denies_a_live_holder_with_the_wait_line(tmp_root: Path, run):
+def test_protect_generated_denies_a_live_holder_with_the_wait_line(tmp_root: Path, run, notes_remote):
     import os
 
     from agent_cli import leases
 
+    run(["feature", "new", "edit-owner", "--title", "Edit owner"])
+    run(["feature", "use", "1", "--session-id", "s1"])
     # the coarse area still covers everything inside it, so a holder of vault:src blocks a
     # narrow edit under it and the refusal names the area actually held
     leases.take(tmp_root, "vault:src", session_id="other", pid=os.getpid())

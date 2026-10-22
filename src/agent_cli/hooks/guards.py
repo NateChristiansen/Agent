@@ -21,6 +21,7 @@ from .notes_paths import OWNER_FILES, generated_denial, notes_logical
 from .paths import (
     PRODUCT_CODE_REASON,
     TMP_PREFIXES,
+    activity_guard,
     ask,
     check_command,
     check_path,
@@ -77,19 +78,19 @@ def protect_generated(root: Path, payload: dict[str, Any]) -> str:
         if written is not None:
             denial = worktree_denial(raw, *written)
             if denial or written[1] is not None:
-                return denial
+                return denial or activity_guard(root, payload, raw)
         rel = relative(root, raw)
         if os.path.isabs(rel):
             landing = manager_worktree(root, rel)
             if landing is not None:
-                return worktree_denial(raw, *landing)
+                return worktree_denial(raw, *landing) or activity_guard(root, payload, raw)
             # A linked notes entry is the vault's own, however it is spelled: judge it by its
             # vault path, with the generated-file list the native rules apply.
             mapped = notes_logical(root, rel)
             if mapped is not None:
                 if denial := generated_denial(mapped):
                     return denial
-                leased = lease_guard(root, payload, mapped)
+                leased = activity_guard(root, payload, raw) or lease_guard(root, payload, mapped)
                 if mapped.lower() in OWNER_FILES and not _denies(leased):
                     return ask(f"{raw} is the owner's file ({mapped}). Writing it needs the owner's ok.")
                 return leased
@@ -99,9 +100,9 @@ def protect_generated(root: Path, payload: dict[str, Any]) -> str:
         denial = alias_denial(root, raw, rel) or check_path(rel)
         if denial:
             return denial
-        return lease_guard(root, payload, rel)
+        return activity_guard(root, payload, raw) or lease_guard(root, payload, rel)
     if tool == "Bash":
-        return check_command(root, str(tool_input.get("command") or ""))
+        return check_command(root, str(tool_input.get("command") or ""), payload=payload)
     return ""
 
 

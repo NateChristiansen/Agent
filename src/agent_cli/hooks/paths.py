@@ -357,7 +357,62 @@ def _writes_protected(root: Path, tok: str) -> bool:
         return False
 
 
-def check_command(root: Path, cmd: str) -> str:
+def activity_guard(root: Path, payload: dict[str, Any], raw: str) -> str:
+    """Status-only manager edit check. This hook is not a sandbox for arbitrary writers."""
+    try:
+        from .. import activity_gate
+        from .notes_paths import notes_logical
+        from .worktree_guard import _gitdir_of, manager_worktree  # pyright: ignore[reportPrivateUsage]
+
+        session_id = str(payload.get("session_id") or "") or None
+        record = sessions.get(root, session_id) if session_id else {}
+        if (
+            os.environ.get("AGENT_DISPATCH_ID")
+            or as_dict(record).get("dispatch_id")
+            or payload.get("agent_id")
+            or payload.get("agent_type")
+        ):
+            return ""
+        target = (root / raw).resolve()
+        written = manager_worktree(root, str(target))
+        branch = None
+        if written is not None and written[1] is not None:
+            rel = written[1]
+            checkout = target.parents[len(Path(rel).parts) - 1]
+            admin = _gitdir_of(checkout / ".git")
+            if admin is not None:
+                head = (admin / "HEAD").read_text(encoding="utf-8").strip()
+                branch = (
+                    head.removeprefix("ref: refs/heads/") if head.startswith("ref: refs/heads/") else None
+                )
+            if (
+                rel == "features"
+                or rel.startswith(("features/", ".agent/scratch/"))
+                or rel == ".agent/scratch"
+            ):
+                return ""
+        else:
+            rel = relative(root, raw)
+            if os.path.isabs(rel):
+                rel = notes_logical(root, rel) or rel
+            if os.path.isabs(rel) or rel.split("/", 1)[0] not in {
+                "src",
+                "harness",
+                "tests",
+                "bin",
+                ".claude",
+                ".codex",
+                ".agents",
+            }:
+                return ""
+        why = activity_gate.edit_refusal(root, session_id=session_id, branch=branch)
+        return deny(why) if why else ""
+    except Exception as exc:  # noqa: BLE001 — edit hooks fail open
+        sys.stderr.write(f"note: activity check failed ({exc}); allowing the edit\n")
+        return ""
+
+
+def check_command(root: Path, cmd: str, *, payload: dict[str, Any] | None = None) -> str:
     """The shell-write denial for one Bash command, or "".
 
     On Windows a `\\` means two things depending on the shell, and the hook cannot tell which
@@ -369,7 +424,36 @@ def check_command(root: Path, cmd: str) -> str:
         denial = _check_tokens(root, _op_tokens(reading))
         if denial:
             return denial
+        for target in _write_targets(_op_tokens(reading)):
+            if denial := activity_guard(root, payload or {}, target):
+                return denial
     return ""
+
+
+def _write_targets(toks: list[str]) -> list[str]:
+    """The shell writes recognized by check_command; interpreters and formatters are outside it."""
+    while toks and ENV_ASSIGNMENT_RE.match(toks[0]):
+        toks = toks[1:]
+    if not toks:
+        return []
+    bases = [os.path.basename(t) for t in toks]
+    targets: list[str] = []
+    if bases[0] in ("cp", "mv", "ln") and len(toks) > 1:
+        targets.append(toks[-1])
+    if bases[0] in ("rm", "truncate", "dd", "install", "touch") or (
+        bases[0] in ("sed", "perl") and any(IN_PLACE_FLAG_RE.match(t) for t in toks)
+    ):
+        targets.extend(t for t in toks[1:] if not t.startswith("-"))
+    for i, tok in enumerate(toks):
+        if tok in (">", ">>", ">|") and i + 1 < len(toks):
+            targets.append(toks[i + 1])
+        if os.path.basename(tok) == "tee":
+            for target in toks[i + 1 :]:
+                if target in ("|", "&", ";", ">", ">>"):
+                    break
+                if not target.startswith("-"):
+                    targets.append(target)
+    return [t.split("=", 1)[1] if t.startswith(("of=", "file=")) else t for t in targets]
 
 
 def shell_readings(cmd: str) -> list[str]:
