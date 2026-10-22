@@ -502,6 +502,8 @@ def _land(
             raise AgentError(f"nothing to land: main already contains {branch}")
         if len(members) > BATCH_MAX:
             raise AgentError(f"a batch lands at most {BATCH_MAX} branches")
+        # Before any candidate, evidence ref or certificate exists.
+        require_members(root, [b for b, _ in members])
         if len(members) > 1:
             chosen = strategy or "squash"
             cand = batch_candidate(git, old, members, chosen, ident)
@@ -565,6 +567,38 @@ def _land(
         transact(main, git, journal)
         followups.reconcile(root, main, journal)  # integration marks, milestone, task notices
         return journal
+
+
+def require_members(root: Path, branches: list[str]) -> None:
+    """Refuse the whole landing unless every member's feature, from its dispatch record or its
+    manager worktree binding, is active and owes nothing; name each member that fails."""
+    from . import activity_gate
+
+    members = [
+        {"branch": b.removeprefix("refs/heads/"), "dispatch_id": member_dispatch(root, b)} for b in branches
+    ]
+    refused = activity_gate.land_refusals(root, members)
+    if refused:
+        whole = "the batch" if len(members) > 1 else "it"
+        raise AgentError(
+            f"land refused, so nothing landed ({whole} lands only as a whole): " + "; ".join(refused)
+        )
+
+
+def member_dispatch(root: Path, branch: str) -> str | None:
+    """The newest harness dispatch on `branch`, or None (then the branch's binding decides)."""
+    from . import verify_record
+    from .dispatch import state as dispatch_state
+
+    name = branch.removeprefix("refs/heads/")
+    try:
+        harness = verify_record.harness_repo(root).name
+    except AgentError:
+        return None
+    found = [d for d in dispatch_state.load_all(root) if d.get("branch") == name and d.get("repo") == harness]
+    if not found:
+        return None
+    return str(max(found, key=lambda d: str(d.get("created") or ""))["id"])
 
 
 def note_members(root: Path, journal: dict[str, Any]) -> None:
