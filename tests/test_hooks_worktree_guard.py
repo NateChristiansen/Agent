@@ -8,6 +8,7 @@ worktree of this repository, and a symlink whose written spelling hides where th
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -19,22 +20,28 @@ from hooks_test_helpers import _decision, edit, manager_worktrees
 
 
 @pytest.fixture
-def worktree(tmp_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def worktree(tmp_root: Path, monkeypatch: pytest.MonkeyPatch, run, notes_remote: Path) -> Path:
     """One real worktree under `../Agent-worktrees/`. The fixture lives under the temp dir,
     which the hook lets through on its own; that allowance is off so every decision here comes
     from the worktree check."""
     monkeypatch.setattr(guards, "TMP_PREFIXES", ())
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    assert run(["feature", "new", "guard-owner", "--title", "Guard owner"]).code == 0
+    assert run(["feature", "use", "1", "--session-id", "manager"]).code == 0
     return manager_worktrees(tmp_root, "wt")[0]
 
 
-def _hook(run, path: Path | str) -> str:
-    return _decision(run(["hook", "protect-generated"], stdin=edit("Write", str(path))))
+def _hook(run, path: Path | str, session_id: str | None = None) -> str:
+    payload = json.loads(edit("Write", str(path)))
+    if session_id:
+        payload["session_id"] = session_id
+    return _decision(run(["hook", "protect-generated"], stdin=json.dumps(payload)))
 
 
 def test_a_new_file_in_a_verified_worktree_needs_no_decision(worktree: Path, run):
     path = worktree / "new" / "file.py"
     assert not path.parent.exists()
-    assert _hook(run, path) == ""
+    assert _hook(run, path, "manager") == ""
 
 
 def test_a_file_under_a_child_that_does_not_exist_asks(worktree: Path, run):
@@ -146,15 +153,18 @@ def test_a_main_symlink_then_dotdot_onto_status_is_denied(worktree: Path, tmp_ro
 
 
 def test_a_root_reached_through_a_symlink_denies_protected_files_and_passes_ordinary_ones(
-    tmp_root: Path, run, monkeypatch: pytest.MonkeyPatch
+    tmp_root: Path, run, monkeypatch: pytest.MonkeyPatch, notes_remote: Path
 ):
     """Every requested path under a symlinked root differs from its resolved path, so the
     alias check sees them all: a CLI-owned file is denied (a second deny on top of Claude's
     native rule), and an ordinary file still passes."""
     monkeypatch.setattr(guards, "TMP_PREFIXES", ())
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    assert run(["feature", "new", "guard-owner", "--title", "Guard owner"]).code == 0
+    assert run(["feature", "use", "1", "--session-id", "manager"]).code == 0
     alias = tmp_root.parent / "alias"
     links.make(alias, tmp_root, is_dir=True)
     monkeypatch.setenv("AGENT_ROOT", str(alias))
     monkeypatch.chdir(alias)
     assert _hook(run, alias / "STATUS.md") == "deny"
-    assert _hook(run, alias / "src" / "x.py") == ""
+    assert _hook(run, alias / "src" / "x.py", "manager") == ""

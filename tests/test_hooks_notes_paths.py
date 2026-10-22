@@ -29,16 +29,32 @@ def not_temp(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def linked(tmp_root: Path) -> Path:
+def linked(tmp_root: Path, notes_remote: Path) -> Path:
     owner = tmp_root / "harness" / "owner"
     owner.mkdir(parents=True, exist_ok=True)
     for name in ("rules.md", "calibration.md"):
         (owner / name).write_text("x\n", encoding="utf-8")
     (tmp_root / "harness" / "voice.md").write_text("x\n", encoding="utf-8")
-    notes = link_notes(tmp_root)
+    notes = link_notes(tmp_root, notes_remote)
     assert links.is_link(tmp_root / "harness" / "owner") and links.is_link(tmp_root / "features")
     (notes / "features" / "001-probe").mkdir(parents=True, exist_ok=True)
     return notes
+
+
+@pytest.fixture
+def active_manager(
+    tmp_root: Path, run, monkeypatch: pytest.MonkeyPatch, notes_remote: Path, linked: Path
+) -> None:
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    assert run(["feature", "new", "notes-owner", "--title", "Notes owner"]).code == 0
+    assert run(["feature", "use", "2", "--session-id", "manager"]).code == 0
+    assert run(["feature", "use", "2", "--session-id", "codex-mgr"]).code == 0
+
+
+def _manager_edit(tool: str, path: str) -> str:
+    payload = json.loads(edit(tool, path))
+    payload["session_id"] = "manager"
+    return json.dumps(payload)
 
 
 def _spellings(root: Path, notes: Path, rel: str) -> list[str]:
@@ -57,10 +73,12 @@ GENERATED = [
 OWNER_FILES = ["harness/owner/rules.md", "harness/voice.md"]
 
 
-def test_a_notes_write_through_the_link_or_the_physical_path_is_not_asked(tmp_root: Path, linked: Path, run):
+def test_a_notes_write_through_the_link_or_the_physical_path_is_not_asked(
+    tmp_root: Path, linked: Path, run, active_manager
+):
     for rel in ALLOWED:
         for path in _spellings(tmp_root, linked, rel):
-            r = run(["hook", "protect-generated"], stdin=edit("Edit", path))
+            r = run(["hook", "protect-generated"], stdin=_manager_edit("Edit", path))
             assert _decision(r) == "", (path, r.out)
 
 
@@ -72,10 +90,10 @@ def test_generated_notes_files_are_denied_through_every_spelling(tmp_root: Path,
             assert "CLI" in _reason(r)
 
 
-def test_owner_files_are_still_asked(tmp_root: Path, linked: Path, run):
+def test_owner_files_are_still_asked(tmp_root: Path, linked: Path, run, active_manager):
     for rel in OWNER_FILES:
         for path in _spellings(tmp_root, linked, rel):
-            r = run(["hook", "protect-generated"], stdin=edit("Edit", path))
+            r = run(["hook", "protect-generated"], stdin=_manager_edit("Edit", path))
             # A file hard-linked into the notes repo (Windows without symlinks) stays inside the
             # root under its in-root spellings, where the native ask rule answers and the hook
             # adds nothing.
@@ -107,7 +125,7 @@ def _patch(*paths: str) -> str:
     )
 
 
-def test_codex_patches_get_the_same_mapping(tmp_root: Path, linked: Path):
+def test_codex_patches_get_the_same_mapping(tmp_root: Path, linked: Path, active_manager):
     for rel in ALLOWED:
         out, _ = hooks.run(tmp_root, "protect-generated", _patch(str(linked / rel)))
         assert out == "" or json.loads(out)["hookSpecificOutput"].get("permissionDecision") != "deny", rel
@@ -154,14 +172,20 @@ def test_a_hard_linked_owner_file_is_refused_to_codex_by_either_spelling(tmp_roo
         assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny", path
 
 
-def test_root_records_are_protected_for_bash_and_codex_but_src_records_are_not(tmp_root: Path, run):
+def test_root_records_are_protected_for_bash_and_codex_but_src_records_are_not(
+    tmp_root: Path, run, active_manager
+):
     for cmd in ("echo x > records/x.json", "cp a.json records/x.json", "echo x | tee records/x.json"):
-        r = run(["hook", "protect-generated"], stdin=bash(cmd))
+        payload = json.loads(bash(cmd))
+        payload["session_id"] = "manager"
+        r = run(["hook", "protect-generated"], stdin=json.dumps(payload))
         assert _decision(r) == "deny", cmd
     out, _ = hooks.run(tmp_root, "protect-generated", _patch("records/x.json"))
     assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
     for cmd in ("echo x > src/agent_cli/records/narrow.py", "cp a.py src/agent_cli/records/x.py"):
-        r = run(["hook", "protect-generated"], stdin=bash(cmd))
+        payload = json.loads(bash(cmd))
+        payload["session_id"] = "manager"
+        r = run(["hook", "protect-generated"], stdin=json.dumps(payload))
         assert _decision(r) == "", cmd
     out, _ = hooks.run(tmp_root, "protect-generated", _patch("src/agent_cli/records/narrow.py"))
     assert out == "" or json.loads(out)["hookSpecificOutput"]["permissionDecision"] != "deny"
