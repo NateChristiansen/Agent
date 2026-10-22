@@ -19,6 +19,7 @@ from .tools import (
     DispatchLedgerBy,
     DispatchReadAction,
     Op,
+    PlanDisposition,
     ToolSpec,
     WorkerLogKind,
     dispatch_require,
@@ -109,6 +110,9 @@ def dispatch(
     plan_hashes: dict[str, str] | None = None,
     compare: str | None = None,
     pr: str | None = None,
+    finding_id: str | None = None,
+    disposition: PlanDisposition | None = None,
+    reraise_of: str | None = None,
 ) -> Op:
     """One tool over `ops.dispatch_*` (plan 2.2). `action` picks the operation. The rest of
     the parameters are the union of what every action needs, and are optional except the ones
@@ -255,6 +259,15 @@ def dispatch(
             paths=dispatch_require(paths, "paths", action),
             session_id=ctx.session_id(session_id, required=True),
         )
+    if action == "plan-ledger":
+        return ops.dispatch_plan_ledger(
+            ctx.root,
+            paths=dispatch_require(paths, "paths", action),
+            finding_id=finding_id,
+            disposition=disposition,
+            note=message,
+            reraise_of=reraise_of,
+        )
     raise AgentError(
         f"unknown dispatch action {action!r}"
     )  # unreachable: the schema enum already refuses this
@@ -295,7 +308,8 @@ DISPATCH_TOOLS: dict[str, ToolSpec] = {
         "with `ack`; where an attempt's time went `spans`; rerun its checks `reverify`; reconcile a dead "
         "supervisor `collect`; keep a worker's untracked files `collect-files`; remove worktrees `cleanup`; "
         "drop a lost checkout's registration `reconcile`; put an unfinished one back `restore`; delete an "
-        "abandoned worker's scratch `discard-files`; outcomes and spend `ledger`; review a plan `plan-review`. "
+        "abandoned worker's scratch `discard-files`; outcomes and spend `ledger`; review a plan `plan-review`; "
+        "read or dispose of a plan's review findings `plan-ledger`. "
         "Ids read `NNN-<tag>-SS` (e.g. 001-mac-01), or legacy `NNN-SS`. "
         "`new` (repo, prompt; feature defaults to current; a manager session id, so pass `session_id` from "
         "the session-start block when the server cannot see it) sends a self-contained work order into its "
@@ -380,7 +394,13 @@ DISPATCH_TOOLS: dict[str, ToolSpec] = {
         "review, no preview needed: the harness freezes and embeds the plan's bytes, so any later edit "
         "needs a new review; ExitPlanMode waits for a `VERDICT: agree` on the exact version unless the "
         "plan's first lines say `review: small — <reason>` or `review: none — <reason>`. It works in plan "
-        "mode. `list`, `show` and `watch` stay one release as `dispatch_read` aliases; this `show` returns "
+        "mode. `plan-ledger` (paths = [the plan file]) returns that plan's findings ledger across "
+        "review rounds (finding, reviewer, round, verifier result, disposition) and its disputes: a "
+        "Claude reviewer's finding the verifier refuted or called optional, and a rejected finding a later "
+        "round raised again. Never show the ledger to a reviewer. With finding_id and disposition=fixed "
+        "(message = the changed section) or disposition=rejected (message = the reason) it records your "
+        "disposition; with finding_id and reraise_of=<earlier id> it links a re-raise. It does not run in "
+        "plan mode. `list`, `show` and `watch` stay one release as `dispatch_read` aliases; this `show` returns "
         "the full record, clears chat-pending and, for the launcher or adopting manager, marks the verdict read.",
         destructive=True,
     ),

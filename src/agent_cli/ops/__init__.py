@@ -92,6 +92,7 @@ from .notes import (
     notes_write,
 )
 from .peers import peer_inbox, peer_list, peer_send
+from .plan_ledger import dispatch_plan_ledger
 from .plan_review import dispatch_plan_review
 from .repos import (
     PULLED_KEY,
@@ -244,6 +245,7 @@ __all__ = [
     "dispatch_list",
     "dispatch_new",
     "dispatch_open",
+    "dispatch_plan_ledger",
     "dispatch_plan_review",
     "dispatch_preview_text",
     "dispatch_read_show",

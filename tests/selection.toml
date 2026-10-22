@@ -292,7 +292,10 @@ tests = [
 name = "plan-review"
 # The fresh cross-client plan reviewer: the launch, its records, and the gate and
 # plan-mode exemption that read them.
-paths = ["src/agent_cli/plan_review.py", "src/agent_cli/ops/plan_review.py"]
+paths = [
+  "src/agent_cli/plan_review.py", "src/agent_cli/ops/plan_review.py",
+  "src/agent_cli/plan_review_ledger.py", "src/agent_cli/ops/plan_ledger.py",
+]
 tests = [
   "tests/test_plan_review*.py", "tests/test_peer_route.py", "tests/test_hooks_malformed_records.py",
   "tests/test_ops_malformed_records.py", "tests/test_mcp_wording.py", "tests/test_docs_refs.py",
