@@ -132,3 +132,12 @@ def test_windows_setup_runs_exactly_the_gating_section():
 def test_no_job_is_report_only():
     jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
     assert {name for name, job in jobs.items() if job.get("continue-on-error") or job.get("if")} == set()
+
+
+def test_every_job_has_a_timeout():
+    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    assert {name: job.get("timeout-minutes") for name, job in jobs.items()} == {
+        "pytest": 20,
+        "windows-setup": 10,
+        "macos-setup": 45,
+    }

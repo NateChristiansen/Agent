@@ -6,9 +6,13 @@ on:
   # A manual run (`gh workflow run tests --ref <branch>`) runs the same jobs as a push.
   workflow_dispatch:
 
+# Each job's timeout is about twice its slowest recent run (2026-10-21: pytest 8 min,
+# windows-setup 4 min, macos-setup 20 min), so a hang fails the job within the hour
+# instead of running to GitHub's 360-minute default.
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -40,6 +44,7 @@ jobs:
   # Python. This job is the check that none of that comes back.
   windows-setup:
     runs-on: windows-latest
+    timeout-minutes: 10
     defaults:
       run:
         shell: pwsh
@@ -100,6 +105,7 @@ jobs:
   # under 3.2, so only a Mac run catches it.
   macos-setup:
     runs-on: macos-latest
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
