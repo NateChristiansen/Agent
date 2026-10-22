@@ -61,6 +61,32 @@ it. `tests/test_select.py` fails while a module maps to nothing, and the reviewe
 entry names the real consumers, not only the module's own test file. An unmapped path adds the
 fallback tests; the full suite runs only at landing (ADR-0045).
 
+### Test admission
+
+`tests/budget.toml` caps the suite, and three guards hold it (feature 084). Each failure names the
+guard and the budget entry that would allow it.
+
+- **Suite budget.** Landing refuses a full pass record over `[suite]` `tests_max` or
+  `spawns_max`. Both are load-independent counts; wall time is advisory.
+- **Per-test spawn ceiling.** `tests/suite_cost.py` fails a test that starts more than 100
+  processes in its call phase, unless `[slow]` names it with its own limit. It runs in
+  dispatch-selected runs too. `suite_cost.uncounted()` is reserved for the shared record cache in
+  `tests/land_helpers.py`; the hygiene scan refuses it anywhere else.
+- **Hygiene scan.** `tests/test_suite_hygiene.py` refuses trivial asserts, duplicate test bodies,
+  tests with neither an assert nor `pytest.raises`, or only mock-call asserts (unless in
+  `[weak]`), a file's `time.sleep`
+  count above its `[sleep]` value, and a skip or xfail without a reason. An xfail, an
+  unconditional skip or a non-platform `skipif` also needs an unexpired `[[skip]]` entry.
+  Grandfather entries that are no longer needed fail too, so the lists only shrink.
+
+Tightening the file needs no raise, though the record must still fit the tighter limits.
+Loosening it, by raising a number, adding a grandfather entry or extending an expiry, lands only
+with a new `[[raise]]` entry (`date`, `from`, `to`, `reason`, `approved_by`) and the owner's
+matching `budget_raise` on `land`. `repos_sync` needs the same `budget_raise` to accept a pushed
+tip that loosens the budget, or that exceeds it when this machine holds the tip's pass record;
+without a local record it compares only the budget files. Pass `budget_raise`
+only on the owner's say-so; prefer cutting tests or spawns over a raise.
+
 When a test gives a result that looks impossible on its platform, list the autouse fixtures and
 monkeypatches it runs under before forming a platform theory. A Windows test took three CI
 rounds to chase a live process that vanished from the process inventory between two calls. The
