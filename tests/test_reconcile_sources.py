@@ -210,6 +210,14 @@ def test_a_question_raises_nothing(droot: Path, fake_claude):
     assert _sources(droot) == []
 
 
+def test_a_done_probe_naming_an_open_task_raises_nothing(droot: Path, fake_claude):
+    fake_claude.scenario([one(envelope("done"))])
+    d = _new_fast(droot, tasks=[1], kind="probe")
+    assert state.load(droot, d["id"])["state"] == "done"
+    assert reconcile.INTENT not in state.load(droot, d["id"])
+    assert _sources(droot) == [] and _owed(droot) == []
+
+
 def test_a_late_collect_of_a_never_published_attempt_registers_it(
     droot: Path, fake_claude, monkeypatch: pytest.MonkeyPatch
 ):

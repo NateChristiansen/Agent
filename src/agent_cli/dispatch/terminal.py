@@ -277,10 +277,10 @@ def _prepare(
 def source_intents(root: Path, d: dict[str, Any]) -> list[dict[str, Any]]:
     """The ledger sources this committed attempt raises, saved with the commit so publication or
     a later heal registers them: its result, plus acceptance of its open tasks when it is done
-    with no diff (a landing raises acceptance for the rest)."""
+    with no diff (a landing raises acceptance for the rest). A probe raises neither."""
     from .verdicts import has_diff
 
-    if not isinstance(d.get("feature"), int):
+    if not isinstance(d.get("feature"), int) or d.get("kind") == "probe":
         return []
     intents = [s for s in (reconcile.dispatch_source(d),) if s is not None]
     if d["state"] == "done" and not has_diff(d) and as_list(d.get("tasks")):
