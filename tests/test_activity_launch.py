@@ -13,6 +13,7 @@ from agent_cli import dispatch, features, land, leases, reconcile
 from agent_cli.core import AgentError
 from agent_cli.dispatch import lifecycle, state, supervisor
 from dispatch_helpers import _new_fast, droot, envelope, one  # noqa: F401
+from land_helpers import certified as certified  # fixture, re-exported for pytest
 from land_helpers import git, owned
 from land_helpers import harness as harness  # fixture, re-exported for pytest
 
@@ -248,6 +249,33 @@ def test_owed_items_refuse_a_landing(harness: Path, monkeypatch: pytest.MonkeyPa
     with pytest.raises(AgentError, match="to reconcile"):
         land.land(harness, "feature", strategy="ff")
     _nothing_landed(harness, main)
+
+
+@pytest.mark.parametrize("days", [1, 14])
+def test_a_stop_after_done_registers_only_the_landed_work_at_any_age(
+    harness: Path, certified, monkeypatch: pytest.MonkeyPatch, days: int
+):
+    from datetime import UTC, datetime, timedelta
+
+    from agent_cli import land_followups, land_recover, log
+
+    f = features.resolve(harness, "1")
+    f.body = "## Tasks\n\n- [ ] build\n- [ ] build more\n"
+    f.save()
+    landed = {"repo": "Harness", "short": "harness", "branch": "feature", "feature": 1, "attempt": 1}
+    state.save(harness, {**landed, "id": "001-mac-01", "state": "done", "tasks": [1]})
+    with monkeypatch.context() as stopped:
+        stopped.setattr(land_followups, "reconcile", lambda *a: {})
+        land.land(harness, "feature", strategy="ff")
+    # Started on the same branch after the landing; none of its work is on main.
+    state.save(harness, {**landed, "id": "001-mac-02", "state": "running", "tasks": [2]})
+    monkeypatch.setenv("AGENT_NOW", (datetime.now(UTC) + timedelta(days=days)).isoformat())
+    land_recover.recover_all(harness, harness)
+    owed = sorted((i.source, i.item) for i in reconcile.ledger(harness, "1").owed)
+    assert owed == [("accept:001-mac-01", "task#1")]
+    land_recover.recover_all(harness, harness)
+    entries = [reconcile.parse_entry(e) for e in log.parse(features.resolve(harness, "1").log_path)]
+    assert [r.data["source"] for r in entries if isinstance(r, reconcile.Rec)] == ["accept:001-mac-01"]
 
 
 def test_the_dispatch_record_decides_ownership_before_the_binding(

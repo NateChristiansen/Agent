@@ -564,6 +564,7 @@ def _land(
         if foreign_lock:
             jn.advance(main, journal, "aborted", why="another git process held the index")
             raise AgentError("another git process held the index")
+        followups.record_sources(root, journal)
         transact(main, git, journal)
         followups.reconcile(root, main, journal)  # integration marks, milestone, task notices
         return journal

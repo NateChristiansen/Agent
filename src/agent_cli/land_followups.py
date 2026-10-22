@@ -13,8 +13,9 @@ its reasons, and the obligation stays pending until every candidate is removed, 
 later landing, with no age limit.
 
 The `reconcile` obligation registers the landing's acceptance sources in the feature ledger: the
-sources are saved on the journal first, then appended once each. Journals prepared without the
-obligation register nothing.
+sources are saved on the prepared journal before `done`, so they name only the work this landing
+includes and the ledger's heal finishes them at any age, then appended once each. Journals
+prepared without the obligation register nothing.
 """
 
 from __future__ import annotations
@@ -32,9 +33,10 @@ from .records.narrow import as_dict, as_list
 PENDING = "pending"
 CLEANUP = "cleanup"
 RECONCILE = OBLIGATION
-# The `reconcile` obligation before its sources are saved on the journal. Only this module moves
-# it on, so the ledger's heal, which settles a `pending` obligation from the saved sources, never
-# settles a landing whose sources were not yet worked out.
+# The `reconcile` obligation before its sources are saved on the journal: left at `done` only when
+# `record_sources` could not work them out. Only this module moves it on, so the ledger's heal,
+# which settles a `pending` obligation from the saved sources, never settles a landing whose
+# sources were not yet worked out.
 RECORDING = "recording"
 SETTLED = ("removed", "gone", "superseded")
 RETRY_LIMIT = 8
@@ -43,6 +45,17 @@ RETRY_LIMIT = 8
 def initial() -> dict[str, str]:
     """The obligations a prepared journal starts with."""
     return {"milestone": PENDING, "notices": PENDING, CLEANUP: PENDING, RECONCILE: RECORDING}
+
+
+def record_sources(root: Path, journal: dict[str, Any]) -> None:
+    """Save the landing's ledger sources on the prepared journal, before it is first written, and
+    make the obligation `pending`. Never raises: sources it cannot work out stay `recording`."""
+    try:
+        intents = landing_intents(root, journal)
+    except Exception:  # noqa: BLE001 — bookkeeping never stops a landing; worked out after done
+        return
+    journal[INTENT] = intents
+    journal["obligations"] = {**as_dict(journal.get("obligations")), RECONCILE: PENDING}
 
 
 def outstanding(journal: dict[str, Any]) -> bool:
