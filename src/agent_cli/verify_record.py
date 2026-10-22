@@ -26,7 +26,7 @@ import re
 import secrets
 import subprocess
 import time
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -796,6 +796,23 @@ def show(root: Path, rev: str) -> dict[str, Any]:
     found, why = lookup(root, sha)
     kept = sorted(p.name for p in (store(root) / "v1" / tree).glob("*.json"))
     return {"sha": sha, "tree": tree, "applies": found is not None, "why": why, "record": found, "kept": kept}
+
+
+def by_run(root: Path, run_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """The kept records of these runs, keyed by run id, as stored and unchecked: figures to show,
+    never evidence. A run with no readable record is left out."""
+    wanted = set(run_ids) - {""}
+    found: dict[str, dict[str, Any]] = {}
+    if not wanted:
+        return found
+    for path in (store(root) / "v1").glob("*/*.json"):
+        try:
+            kept = as_dict(json.loads(path.read_text(encoding="utf-8")))
+        except OSError, ValueError:
+            continue
+        if (run_id := str(kept.get("run_id") or "")) in wanted:
+            found[run_id] = kept
+    return found
 
 
 def covers(root: Path, worktree: Path) -> bool:

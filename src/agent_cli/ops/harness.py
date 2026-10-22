@@ -288,15 +288,17 @@ def _land_detached(
 def _land_status(root: Path) -> Op:
     """The most recent landings, newest first, and any still unfinished."""
     from .. import land as land_mod
-    from .. import land_followups
+    from .. import land_followups, suite_budget
     from .. import land_journal as jn
 
     main = land_mod.main_of(root)
     journals = jn.every(main)[-5:][::-1]
+    suites = suite_budget.trend(main, journals)
     rows = [
         {k: j.get(k) for k in ("id", "state", "branch", "strategy", "record", "record_reused", "ts")}
+        | {k: s[k] for k in ("tests", "spawns", "wall_s")}
         | ({"cleanup_held": land_followups.held(j)} if land_followups.cleanup_owed(j) else {})
-        for j in journals
+        for j, s in zip(journals, suites, strict=True)
     ]
     ops = [_settled(o) for o in jn.ops_recent(main)]
     lines = [
@@ -304,13 +306,13 @@ def _land_status(root: Path) -> Op:
         for o in ops
     ]
     lines += [
-        f"{j['id']} {j['state']} {j.get('branch')}"
+        f"{j['id']} {j['state']} {j.get('branch')}: {suite_budget.shown(s)}"
         + (
             f" (cleanup pending, {len(land_followups.held(j))} held)"
             if land_followups.cleanup_owed(j)
             else ""
         )
-        for j in journals
+        for j, s in zip(journals, suites, strict=True)
     ]
     return Op({"operations": ops, "landings": rows}, "\n".join(lines) or "no landings")
 

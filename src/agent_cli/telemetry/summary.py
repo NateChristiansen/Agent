@@ -368,7 +368,22 @@ def summary(
         and all(m["complete"] for m in machines),
         "local": local,
         "machines": machines,
+        "suite_trend": suite_trend(root, start, end),
     }
+
+
+def suite_trend(root: Path, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """Each landing done in the window, oldest first, with the tests, spawns and wall seconds of
+    the pass record it landed on; a figure the record lacks is None."""
+    from .. import land_journal, suite_budget
+
+    main = main_of(root)
+    landed = [
+        j
+        for j in land_journal.every(main)
+        if j.get("state") == "done" and (at := schema.parse_ts(j.get("ts"))) is not None and start <= at < end
+    ]
+    return suite_budget.trend(main, landed)
 
 
 def machine_days(root: Path, day: date, now: datetime) -> list[dict[str, Any]]:

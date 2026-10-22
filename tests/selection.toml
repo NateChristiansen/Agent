@@ -52,6 +52,18 @@ tests = [
 ]
 
 [[bundle]]
+name = "suite-trend"
+# The per-landing suite figures in telemetry_summary and land status, and doctor's budget slack row.
+paths = [
+  "src/agent_cli/suite_budget.py", "src/agent_cli/telemetry/summary.py", "src/agent_cli/doctor/checks_land.py",
+  "src/agent_cli/ops/harness.py", "src/agent_cli/verify_record.py",
+]
+tests = [
+  "tests/test_suite_trend.py", "tests/test_telemetry_summary.py", "tests/test_land_queue.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+]
+
+[[bundle]]
 name = "closed-feature-cleanup"
 paths = ["src/agent_cli/tidy.py", "src/agent_cli/cli/tidy.py"]
 tests = [

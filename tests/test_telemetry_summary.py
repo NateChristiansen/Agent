@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -240,6 +241,39 @@ def test_cli_and_mcp_return_identical_json(tmp_root: Path, capsys):
         ).data
         == data
     )
+
+
+def test_the_suite_trend_lists_each_landing_in_the_window_and_unknown_figures_as_none(tmp_root: Path):
+    from agent_cli import land_journal, verify_record
+
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_root, check=True)
+    landings = [
+        ("before", "done", START - timedelta(hours=1), {"tests": 1, "spawns": 1, "wall_s": 1.0}),
+        ("measured", "done", START + timedelta(hours=1), {"tests": 8705, "spawns": 60666, "wall_s": 283.4}),
+        ("unmeasured", "done", START + timedelta(hours=2), None),
+        ("aborted", "aborted", START + timedelta(hours=3), {"tests": 2}),
+    ]
+    for ident, state, at, suite in landings:
+        land_journal.write(tmp_root, {"id": ident, "state": state, "record": ident * 4, "ts": at.isoformat()})
+        path = verify_record.store(tmp_root) / "v1" / ident / "key.json"
+        _write(path, {"run_id": ident * 4, **({"suite": suite} if suite is not None else {})})
+    trend = summary(tmp_root, since=START.isoformat(), until=END.isoformat(), now=END)["suite_trend"]
+    assert trend == [
+        {
+            "id": "measured",
+            "date": (START + timedelta(hours=1)).isoformat(),
+            "tests": 8705,
+            "spawns": 60666,
+            "wall_s": 283.4,
+        },
+        {
+            "id": "unmeasured",
+            "date": (START + timedelta(hours=2)).isoformat(),
+            "tests": None,
+            "spawns": None,
+            "wall_s": None,
+        },
+    ]
 
 
 def test_missing_sink_is_incomplete_and_unused_kinds_are_refused(tmp_root: Path):

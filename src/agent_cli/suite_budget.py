@@ -21,9 +21,10 @@ import math
 import tomllib
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
-from .records.narrow import as_dict, as_dict_or_none, as_list_or_none, str_list
+from .records.narrow import as_dict, as_dict_or_none, as_float_or_none, as_list_or_none, str_list
 
 PATH = "tests/budget.toml"
 LIMITS = ("tests_max", "spawns_max", "headroom_pct")
@@ -151,6 +152,51 @@ def overages(record: dict[str, Any], budget: Budget) -> list[str]:
             out.append(
                 f"suite.{figure} {_fmt(value)} exceeds {limit_key} {_fmt(limit)} by {_fmt(value - limit)}"
             )
+    return out
+
+
+def figures(record: dict[str, Any] | None) -> dict[str, Any]:
+    """The record's tests, spawns and wall seconds, each None where the record holds none."""
+    suite = as_dict(as_dict(record).get("suite"))
+    counts = {
+        f: v if isinstance(v := suite.get(f), int) and not isinstance(v, bool) else None for f, _ in FIGURES
+    }
+    return {**counts, "wall_s": as_float_or_none(suite.get("wall_s"))}
+
+
+def trend(root: Path, journals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each landing's id, date and suite figures, read from the pass record it landed on."""
+    from . import verify_record
+
+    kept = verify_record.by_run(root, (str(j.get("record") or "") for j in journals))
+    return [
+        {"id": j.get("id"), "date": j.get("ts"), **figures(kept.get(str(j.get("record") or "")))}
+        for j in journals
+    ]
+
+
+def shown(row: dict[str, Any]) -> str:
+    """`row`'s figures in a line; an unknown one is `?`, never 0."""
+    tests, spawns, wall = row.get("tests"), row.get("spawns"), row.get("wall_s")
+    return (
+        f"{'?' if tests is None else _fmt(tests)} tests, {'?' if spawns is None else _fmt(spawns)} spawns, "
+        f"{'?' if wall is None else f'{wall:.0f}'} s"
+    )
+
+
+def slack(record: dict[str, Any], budget: Budget) -> list[tuple[str, int, float, int | None]]:
+    """Per limit: its key, the record's figure, the limit, and the tightened limit to write when the
+    limit sits more than twice `headroom_pct` above the figure (else None). A figure the record
+    lacks is left out."""
+    headroom = budget.limits["headroom_pct"]
+    out: list[tuple[str, int, float, int | None]] = []
+    for figure, key in FIGURES:
+        value = figures(record)[figure]
+        if value is None:
+            continue
+        limit = budget.limits[key]
+        tight = math.ceil(value * (100 + headroom) / 100)
+        out.append((key, value, limit, tight if limit * 100 > value * (100 + 2 * headroom) else None))
     return out
 
 
