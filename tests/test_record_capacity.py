@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from agent_cli import verify_record, verify_run
+from harness_root import _no_auto_maintenance  # pyright: ignore[reportPrivateUsage]
 from land_helpers import git as _git
 
 PASS = "echo 3 passed in 0.01s"
@@ -45,6 +46,9 @@ def _record_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     (root / ".gitignore").write_text("/agent.yaml\n.agent/\n")
     (root / "tracked.txt").write_text("v1\n")
     _git(root, "init", "-q", "-b", "main", "--template=")
+    # the commit would start a detached `git maintenance run --auto` that can still hold
+    # objects/maintenance.lock while `harness` copies the template
+    _no_auto_maintenance(root / ".git" / "config")
     _git(root, "add", ".")
     _git(root, "commit", "-q", "-m", "init")
     return root
