@@ -244,6 +244,8 @@ def test_deferred_and_failed_publication_still_queue_worker_retention(wired, mon
         with pytest.raises(RuntimeError, match="publication failed"):
             terminal.finalize(wired.root, d, feat, outcome)
     assert queued_ids == [d["id"], d["id"]]
+    terminal.recover_pending(wired.root, [d["id"]])  # the deferral's retry already queued it
+    assert queued_ids == [d["id"], d["id"]] and not terminal.pending_path(wired.root, d).exists()
 
 
 def test_a_retention_failure_never_blocks_the_terminal_commit(wired, monkeypatch, capsys):

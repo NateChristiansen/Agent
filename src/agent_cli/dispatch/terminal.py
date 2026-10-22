@@ -45,7 +45,9 @@ def finalize(
     outcome: dict[str, Any],
     *,
     retry_budget: float | None = None,
+    retain: bool = True,
 ) -> dict[str, Any]:
+    """`retain=False` only for `recover_pending`, whose deferral already queued the transcripts."""
     try:
         try:
             with notice_producers.delivering(root, d["id"]) as sent:
@@ -63,7 +65,8 @@ def finalize(
         # Every route a stopped worker takes (commit, cleanup pending, a deferred or failed
         # publication, a cancel, a recovery) queues its transcripts, whether or not a manager
         # Stop or a closure ever comes.
-        retain_transcripts(root, d)
+        if retain:
+            retain_transcripts(root, d)
 
 
 def retention_record(d: dict[str, Any]) -> dict[str, Any]:
@@ -292,7 +295,7 @@ def recover_pending(root: Path, dispatch_ids: list[str] | None = None, *, limit:
             saved = json.loads(path.read_text(encoding="utf-8"))
             d = saved["dispatch"]
             feat = features_mod.resolve(root, str(d["feature"]))
-            finalize(root, d, feat, saved["outcome"], retry_budget=0)
+            finalize(root, d, feat, saved["outcome"], retry_budget=0, retain=False)
         except AgentError, OSError, ValueError, KeyError, TypeError:
             continue
 
