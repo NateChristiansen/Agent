@@ -111,16 +111,12 @@ def test_revisiting_a_spent_set_after_many_others_in_one_turn_passes(tmp_root: P
     _owe(tmp_root, "a")
     _prompt(tmp_root)
     assert _blocked(_stop(tmp_root))
-    others = [_owe(tmp_root, f"other {n}") for n in range(5)]
-    for _ in others:
+    others: dict[str, str] = {}
+    for n in range(5):
+        others[_owe(tmp_root, f"other {n}")] = f"other {n}"
         _stop(tmp_root)
-    for src in others:
-        reconcile.decide(
-            tmp_root,
-            1,
-            src,
-            [{"item": "other " + str(others.index(src)), "disposition": "no-task", "reason": "x"}],
-        )
+    for src, item in others.items():
+        reconcile.decide(tmp_root, 1, src, [{"item": item, "disposition": "no-task", "reason": "x"}])
     assert _stop(tmp_root) == ""
 
 

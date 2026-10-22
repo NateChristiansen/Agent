@@ -7,7 +7,8 @@ session it records (the source entry's, else the land journal's) while that sess
 and for a manual source, to the live manager mapped to the feature. `waiting` items are not owed
 and never block.
 
-Bound: one block per marker, the ask-guard logical turn plus a hash of the owed set. With
+Bound: one block per marker, the ask-guard logical turn plus a hash of the owed set (source,
+generation and item). Spent markers are never evicted within a turn; a full list stops blocking. With
 ask-guard switched off its turn does not advance, so the marker falls back to the owed set alone.
 A new block needs a new owner prompt or a changed owed set; neither comes from a Stop, so the
 guard cannot loop. An earlier member's `_stop_blocked` spends nothing. Workers, subagents,
