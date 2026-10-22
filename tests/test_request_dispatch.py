@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 import yaml
 
-from agent_cli import dispatch, features, frontmatter, ops, requests
+from agent_cli import dispatch, features, frontmatter, ops, requests, sessions
 from agent_cli import worktree as worktree_mod
 from agent_cli.core import AgentError
 from agent_cli.ops import requests as request_ops
@@ -108,6 +108,7 @@ def test_review_rounds_pin_each_commit_keep_provenance_and_deliver_by_completion
     compare = git(["rev-parse", "HEAD"], alpha).strip()
     first, second = _commit(alpha, "one.txt"), _commit(alpha, "two.txt")
     req = _request(droot, repos=["alpha"])
+    sessions.set_record(droot, "mgr")
     fake_claude.scenario(
         [
             one(envelope(summary="round 1: one blocking finding", next_steps=[])),
@@ -115,7 +116,7 @@ def test_review_rounds_pin_each_commit_keep_provenance_and_deliver_by_completion
             one(envelope(summary="round 2: approve", next_steps=[])),
         ]
     )
-    r1 = _review(droot, req.id, first, compare="main~2", pr="#12")
+    r1 = _review(droot, req.id, first, compare="main~2", pr="#12", session_id="mgr")
     assert r1["tasks"] == [] and r1["review"] == {"target": first, "compare_base": compare, "pr": "#12"}
     prompt = dispatch.state.prompt_text(droot, dispatch.load(droot, r1["id"]))
     assert "## Request context" in prompt and f"Request {req.number} review-ask" in prompt
@@ -127,7 +128,7 @@ def test_review_rounds_pin_each_commit_keep_provenance_and_deliver_by_completion
     assert again["attempt"] == 2 and again["review"] == r1["review"]
 
     # A changed commit is a new, separately pinned dispatch with its own verdict.
-    r2 = _review(droot, req.id, second, compare=compare)
+    r2 = _review(droot, req.id, second, compare=compare, session_id="mgr")
     assert r1["id"] != r2["id"] and r2["tasks"] == []
     assert r2["review"] == {"target": second, "compare_base": compare, "pr": None}
     assert (r1["base"], r2["base"]) == (first, second)
@@ -151,8 +152,8 @@ def test_review_rounds_pin_each_commit_keep_provenance_and_deliver_by_completion
 
     with pytest.raises(AgentError, match=r1["id"]):
         request_ops.request_complete(droot, request=str(req.id), result="Round 2 approves.")
-    for d in metas:
-        dispatch.ack(droot, dispatch_id=d, note="read")
+    for d in metas:  # a read-only verdict is consumed by its launcher; no owner ack is needed
+        ops.dispatch_consume(droot, dispatch_id=d, session_id="mgr")
     request_ops.request_complete(droot, request=str(req.id), result="Round 2 approves.")
     done = features.resolve(droot, str(req.id))
     assert done.status == "done" and requests.result_of(done) == "Round 2 approves."
