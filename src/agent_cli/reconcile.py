@@ -125,15 +125,18 @@ def landing_source(journal_id: str, feature: int) -> dict[str, Any]:
     }
 
 
-def subagent_source(feature: int, agent_id: str, message: str | None) -> dict[str, Any]:
-    """The `subagent:<agent_id>` source for one SubagentStop. Its version is its entry's own
-    (`at`, `eid`); without a message, G is the agent id alone."""
+def subagent_source(
+    feature: int, agent_id: str, message: str | None, session: str | None = None
+) -> dict[str, Any]:
+    """The `subagent:<agent_id>` source for one SubagentStop in `session`. Its version is its
+    entry's own (`at`, `eid`); without a message, G is the agent id alone."""
     return {
         "feature": feature,
         "source": f"subagent:{agent_id}",
         "G": _sha(message) if message is not None else agent_id,
         "ver": [],
         "items": ["result"],
+        **({"session": session} if session else {}),
     }
 
 
@@ -282,6 +285,8 @@ class Ledger:
     holds: dict[int, str]
     captures: dict[str, dict[str, Any]]
     approvals: dict[str, str]
+    # The session a source's current generation records, when exactly one does.
+    sessions: dict[str, str] = field(default_factory=dict[str, str])
 
     @property
     def owed(self) -> list[Item]:
@@ -345,18 +350,24 @@ def fold(entries: list[Any], tasks: list[features_mod.Task]) -> Ledger:
     malformed.sort(key=_canonical)
 
     generations: dict[str, dict[str, tuple[tuple[Any, ...], set[str]]]] = {}
+    recorded: dict[tuple[str, str], set[str]] = {}
     for rec in (r for r in recs if r.verb == "source"):
         gens = generations.setdefault(rec.data["source"], {})
         ver, items = gens.get(rec.data["G"], ((), set[str]()))
         gens[rec.data["G"]] = (max(ver, _version(rec)), items | set(rec.data["items"]))
+        if isinstance(rec.data.get("session"), str) and rec.data["session"]:
+            recorded.setdefault((rec.data["source"], rec.data["G"]), set()).add(rec.data["session"])
 
     current: dict[str, tuple[str, list[str], list[str]]] = {}
+    sessions: dict[str, str] = {}
     for source, gens in generations.items():
         top = max(v for v, _ in gens.values())
         at_top = sorted(g for g, (v, _) in gens.items() if v == top)
         items = sorted(set[str]().union(*(gens[g][1] for g in at_top)))
         if len(at_top) == 1:
             current[source] = (at_top[0], items, [])
+            if len(named := recorded.get((source, at_top[0]), set())) == 1:
+                sessions[source] = next(iter(named))
         else:
             current[source] = ("conflict:" + _sha("\n".join(at_top)), items, at_top)
 
@@ -412,7 +423,7 @@ def fold(entries: list[Any], tasks: list[features_mod.Task]) -> Ledger:
             for cap in _CAP.findall(task.text):
                 if cap not in approved:
                     holds[task.index] = cap
-    return Ledger(bool(current), items_out, malformed, holds, captures, approvals)
+    return Ledger(bool(current), items_out, malformed, holds, captures, approvals, sessions)
 
 
 def _check_captures(
@@ -497,6 +508,8 @@ def append_source(feature: features_mod.Feature, pending: dict[str, Any]) -> boo
     if (pending["source"], pending["G"]) in _registered(feature):
         return False
     data = {k: pending[k] for k in ("source", "G", "ver", "items")}
+    if isinstance(pending.get("session"), str) and pending["session"]:
+        data["session"] = pending["session"]
     _write(feature, "source", pending["source"], f"{len(pending['items'])} item(s) to reconcile", data)
     return True
 

@@ -2,9 +2,10 @@
 
 A Stop blocks when this session is responsible for owed items in its mapped feature's ledger
 (`reconcile.ledger`). Responsibility follows `verdicts.responsible`: a `dispatch:` or `accept:`
-source belongs to its launcher while that session lives, else to the live manager mapped to the
-feature; every other source (subagent, landing, manual) records no session in the ledger, so it
-belongs to the live mapped manager. `waiting` items are not owed and never block.
+source belongs to its launcher while that session lives; a `subagent:` or `landing:` source to the
+session it records (the source entry's, else the land journal's) while that session lives; else,
+and for a manual source, to the live manager mapped to the feature. `waiting` items are not owed
+and never block.
 
 Bound: one block per marker, the ask-guard logical turn plus a hash of the owed set. With
 ask-guard switched off its turn does not advance, so the marker falls back to the owed set alone.
@@ -43,7 +44,26 @@ def _worker(payload: dict[str, Any], record: dict[str, Any]) -> bool:
     )
 
 
-def _owner(source: str, feature: int, live: dict[str, dict[str, Any]], root: Path) -> str | None:
+def _recorded(root: Path, source: str, sessions_by_source: dict[str, str]) -> str | None:
+    """The session a subagent or landing source records: its current-G entry's, else, for a
+    landing, its journal's. None falls to the mapped manager."""
+    from .. import land_journal
+    from ..land import main_of
+
+    kind, _, ref = source.partition(":")
+    if kind not in ("subagent", "landing"):
+        return None
+    if source in sessions_by_source:
+        return sessions_by_source[source]
+    if kind == "landing" and ref:
+        with contextlib.suppress(Exception):  # a journal not on this machine records nothing here
+            return as_str(land_journal.read(main_of(root), ref).get("session")) or None
+    return None
+
+
+def _owner(
+    source: str, feature: int, live: dict[str, dict[str, Any]], root: Path, recorded: str | None
+) -> str | None:
     from ..dispatch import state, verdicts
 
     kind, _, ref = source.partition(":")
@@ -51,6 +71,8 @@ def _owner(source: str, feature: int, live: dict[str, dict[str, Any]], root: Pat
     if kind in ("dispatch", "accept") and ref:
         with contextlib.suppress(Exception):  # a record not on this machine falls to the mapped manager
             d = {**d, **as_dict(state.load(root, ref))}
+    elif recorded:
+        d["launched_by_session"] = recorded
     return verdicts.responsible(d, live)
 
 
@@ -61,7 +83,8 @@ def _owed(root: Path, session_id: str, record: dict[str, Any], feature: int) -> 
     from ..dispatch import verdicts
 
     f = features_mod.resolve(root, str(feature))
-    owed = reconcile.ledger(root, f).owed
+    folded = reconcile.ledger(root, f)
+    owed = folded.owed
     if not owed:
         return f.label, []
     live = verdicts.live_managers(root)
@@ -70,7 +93,8 @@ def _owed(root: Path, session_id: str, record: dict[str, Any], feature: int) -> 
     mine: list[str] = []
     for item in owed:
         if item.source not in owners:
-            owners[item.source] = _owner(item.source, feature, live, root)
+            recorded = _recorded(root, item.source, folded.sessions)
+            owners[item.source] = _owner(item.source, feature, live, root, recorded)
         if owners[item.source] == session_id:
             mine.append(f"{item.source} {item.item}" + (f" ({item.reason})" if item.reason else ""))
     return f.label, mine

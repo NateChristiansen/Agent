@@ -232,6 +232,60 @@ def test_a_source_with_no_session_belongs_to_the_most_recent_mapped_manager(tmp_
     assert _blocked(_stop(tmp_root, OTHER))
 
 
+def _two_managers(root: Path, monkeypatch, *live: str) -> None:
+    """SID and OTHER mapped to the feature, OTHER the more recently active."""
+    sessions.set_record(root, OTHER, feature={"id": 1, "slug": "x", "dir": "features/001-x"})
+    sessions.set_field(root, OTHER, "activity", {"state": "working", "at": "2999-01-01T00:00:00+00:00"})
+    monkeypatch.setattr(verdicts, "live_managers", lambda r: _live(r, *live))
+
+
+def _subagent(root: Path, sid: str | None, agent: str = "ag1") -> None:
+    reconcile.append_source(_feature(root), reconcile.subagent_source(1, agent, "found it", sid))
+
+
+def test_a_live_recorded_session_owns_its_subagent_source(tmp_root: Path, monkeypatch):
+    from agent_cli.hooks import session as session_hooks
+
+    _two_managers(tmp_root, monkeypatch, SID, OTHER)
+    payload = {"session_id": SID, "agent_id": "ag1", "last_assistant_message": "found it"}
+    assert session_hooks.register_subagent(tmp_root, payload)
+    assert reconcile.ledger(tmp_root, 1).sessions == {"subagent:ag1": SID}
+    assert _stop(tmp_root, OTHER) == ""
+    assert _blocked(_stop(tmp_root))
+
+
+def test_an_ended_recorded_session_falls_to_the_mapped_manager(tmp_root: Path, monkeypatch):
+    _two_managers(tmp_root, monkeypatch, SID, OTHER)
+    _subagent(tmp_root, "s-gone")
+    assert _stop(tmp_root) == ""
+    assert _blocked(_stop(tmp_root, OTHER))
+
+
+def test_a_subagent_source_without_a_session_falls_to_the_mapped_manager(tmp_root: Path, monkeypatch):
+    _two_managers(tmp_root, monkeypatch, SID, OTHER)
+    _subagent(tmp_root, None)
+    assert "subagent:ag1" not in reconcile.ledger(tmp_root, 1).sessions
+    assert _stop(tmp_root) == ""
+    assert _blocked(_stop(tmp_root, OTHER))
+
+
+def test_a_landing_source_belongs_to_the_session_its_journal_records(tmp_root: Path, monkeypatch):
+    from agent_cli import land, land_journal
+
+    _two_managers(tmp_root, monkeypatch, SID, OTHER)
+    monkeypatch.setattr(land, "main_of", lambda root: tmp_root)
+    land_journal.write(tmp_root, {"id": "j-mine", "state": "done", "session": SID})
+    land_journal.write(tmp_root, {"id": "j-gone", "state": "done", "session": "s-gone"})
+    reconcile.append_source(_feature(tmp_root), reconcile.landing_source("j-mine", 1))
+    _prompt(tmp_root)
+    _prompt(tmp_root, OTHER)
+    assert "landing:j-mine landing" in json.loads(_stop(tmp_root))["reason"]
+    assert _stop(tmp_root, OTHER) == ""
+    reconcile.append_source(_feature(tmp_root), reconcile.landing_source("j-gone", 1))
+    out = json.loads(_stop(tmp_root, OTHER))["reason"]
+    assert "landing:j-gone landing" in out and "j-mine" not in out
+
+
 # --- in its groups ----------------------------------------------------------------------------
 
 

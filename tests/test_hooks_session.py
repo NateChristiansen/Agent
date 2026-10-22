@@ -535,8 +535,10 @@ def test_a_mapped_managers_subagent_stop_registers_once(tmp_root: Path, run, mon
         ("subagent:ag1", reconcile.subagent_source(1, "ag1", "found three callers")["G"]),
         ("subagent:ag2", "ag2"),
     ]
+    assert [r["session"] for r in rows] == ["s1", "s1"]
     led = reconcile.ledger(tmp_root, "1")
     assert sorted(i.source for i in led.owed) == ["subagent:ag1", "subagent:ag2"]
+    assert led.sessions == {"subagent:ag1": "s1", "subagent:ag2": "s1"}
     # one batched call settles every subagent result
     from agent_cli.ops.reconcile import reconcile as reconcile_op
 

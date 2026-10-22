@@ -435,9 +435,10 @@ def capture_hook(root: Path, payload: dict[str, Any]) -> str:
 
 
 def register_subagent(root: Path, payload: dict[str, Any]) -> bool:
-    """Append a `subagent:` ledger source for a SubagentStop in a mapped manager session. Workers
-    (their return covers their subagents) and unmapped sessions register nothing. Without
-    `last_assistant_message` the generation is the agent id alone. True when an entry was written."""
+    """Append a `subagent:` ledger source, recording its session, for a SubagentStop in a mapped
+    manager session. Workers (their return covers their subagents) and unmapped sessions register
+    nothing. Without `last_assistant_message` the generation is the agent id alone. True when an
+    entry was written."""
     from .. import features as features_mod
     from .. import reconcile
 
@@ -450,7 +451,9 @@ def register_subagent(root: Path, payload: dict[str, Any]) -> bool:
     if record.get("dispatch_id") or not isinstance(feature, int):
         return False
     message = payload.get("last_assistant_message")
-    source = reconcile.subagent_source(feature, agent_id, message if isinstance(message, str) else None)
+    source = reconcile.subagent_source(
+        feature, agent_id, message if isinstance(message, str) else None, session_id
+    )
     return reconcile.append_source(features_mod.resolve(root, str(feature)), source)
 
 
