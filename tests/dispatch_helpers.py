@@ -45,7 +45,23 @@ def _seed_droot(root: Path, call: Any) -> None:
     (root / "harness" / "worker-contract.md").write_text(
         CONTRACT.read_text(encoding="utf-8"), encoding="utf-8"
     )
-    call(["feature", "new", "alpha-work", "--title", "Alpha work", "--ticket", "T-42", "--repo", "alpha"])
+    # Active on purpose: implementation dispatches need it (`activity_gate`). Tests of the gate set
+    # another status themselves.
+    call(
+        [
+            "feature",
+            "new",
+            "alpha-work",
+            "--title",
+            "Alpha work",
+            "--ticket",
+            "T-42",
+            "--repo",
+            "alpha",
+            "--status",
+            "active",
+        ]
+    )
     call(["task", "add", "1", "add the readme line"])
     call(["task", "add", "1", "run the tests"])
     plan = root / "features/001-alpha-work/plan.md"
