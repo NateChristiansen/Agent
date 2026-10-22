@@ -508,6 +508,78 @@ def test_capture_hook_routes_each_event(tmp_root: Path, run):
     assert [x["kind"] for x in records] == ["prompt", "stop", "subagent-stop"]
 
 
+def _subagent_stop(run, sid: str, agent: str, **extra: str) -> None:
+    payload = {"session_id": sid, "hook_event_name": "SubagentStop", "agent_id": agent, **extra}
+    r = run(["hook", "capture"], stdin=json.dumps(payload))
+    assert r.code == 0 and r.out == ""
+
+
+def _subagent_sources(root: Path) -> list[dict]:
+    from agent_cli import features, log, reconcile
+
+    parsed = [reconcile.parse_entry(e) for e in log.parse(features.resolve(root, "1").log_path)]
+    return [r.data for r in parsed if isinstance(r, reconcile.Rec) and r.verb == "source"]
+
+
+def test_a_mapped_managers_subagent_stop_registers_once(tmp_root: Path, run, monkeypatch):
+    from agent_cli import reconcile
+
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    run(["feature", "new", "x", "--title", "X"])
+    run(["feature", "use", "1", "--session-id", "s1"])
+    _subagent_stop(run, "s1", "ag1", last_assistant_message="found three callers")
+    _subagent_stop(run, "s1", "ag1", last_assistant_message="found three callers")  # a re-delivered hook
+    _subagent_stop(run, "s1", "ag2")  # no message: the generation is the agent id
+    rows = _subagent_sources(tmp_root)
+    assert [(r["source"], r["G"]) for r in rows] == [
+        ("subagent:ag1", reconcile.subagent_source(1, "ag1", "found three callers")["G"]),
+        ("subagent:ag2", "ag2"),
+    ]
+    led = reconcile.ledger(tmp_root, "1")
+    assert sorted(i.source for i in led.owed) == ["subagent:ag1", "subagent:ag2"]
+    # one batched call settles every subagent result
+    from agent_cli.ops.reconcile import reconcile as reconcile_op
+
+    reconcile_op(
+        tmp_root,
+        feature="1",
+        items=[
+            {"source": s, "item": "result", "disposition": "no-task", "reason": "search result, read"}
+            for s in ("subagent:ag1", "subagent:ag2")
+        ],
+    )
+    assert reconcile.ledger(tmp_root, "1").owed == []
+
+
+def test_worker_and_unmapped_subagent_stops_register_nothing(tmp_root: Path, run, monkeypatch):
+    from agent_cli import sessions
+
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    run(["feature", "new", "x", "--title", "X"])
+    run(["feature", "use", "1", "--session-id", "mapped-worker"])
+    sessions.set_field(tmp_root, "mapped-worker", "dispatch_id", "001-mac-01")
+    _subagent_stop(run, "mapped-worker", "ag1", last_assistant_message="m")
+    _subagent_stop(run, "unmapped", "ag2", last_assistant_message="m")
+    run(["feature", "use", "1", "--session-id", "s1"])
+    monkeypatch.setenv("AGENT_DISPATCH_ID", "001-mac-02")
+    _subagent_stop(run, "s1", "ag3", last_assistant_message="m")
+    assert _subagent_sources(tmp_root) == []
+
+
+def test_session_start_says_how_many_items_the_feature_owes(tmp_root: Path, run, monkeypatch):
+    from agent_cli import reconcile
+
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    run(["feature", "new", "gizmo-dial", "--title", "Gizmo dial"])
+    run(["feature", "use", "1", "--session-id", "abc"])
+    start = json.dumps({"session_id": "abc", "source": "startup"})
+    assert "reconcile:" not in _ctx(run(["hook", "session-start"], stdin=start))
+    reconcile.add_manual(tmp_root, "1", ["check the retry bound"])
+    ctx = _ctx(run(["hook", "session-start"], stdin=start))
+    assert "reconcile: 1 item(s) owed; list and settle them with the `reconcile` tool" in ctx
+    assert "active feature: 001 gizmo-dial  (features/001-gizmo-dial)" in ctx
+
+
 def test_capture_hook_session_end_renders(tmp_root: Path, run):
     run(["feature", "new", "x", "--title", "X"])
     (tmp_root / "Dashboard.md").unlink()
