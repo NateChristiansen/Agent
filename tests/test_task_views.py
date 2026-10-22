@@ -266,6 +266,45 @@ def _node(view: str, plan: dict[str, Any]) -> dict[str, Any]:
     return json.loads(result.stdout)
 
 
+def test_real_snapshots_refresh_blocker_notes_and_compatibility_cards(tmp_root: Path):
+    from agent_cli import blocked, log
+
+    _snapshot(tmp_root, "## Tasks\n- [ ] ship\n")
+    feature = features.resolve(tmp_root, "1")
+    feature.meta["status"] = "blocked"
+    feature.save()
+    feature.log_path.touch()
+    log.append(feature, "blocker", "status active → blocked: Legacy")
+    original = blocked.since(feature)
+    assert original is not None
+    probes = []
+    for reason, actor in [("Legacy", "—"), ("First", "owner"), ("Current", "external")]:
+        if reason != "Legacy":
+            features.set_fields(
+                tmp_root, feature, status="blocked", reason=reason, waits_on=actor, resume_when="Ready"
+            )
+        status.render(tmp_root)
+        snapshot = json.loads((tmp_root / status.STATUS_JSON).read_text())
+        notes = f"blocked: {reason} · next: {actor}"
+        assert notes in _node("features.js", {"snapshot": snapshot})["card"]
+        current = blocked.since(feature)
+        assert current is not None and current.ts == original.ts
+        probes.append({"snapshot": snapshot, "expected": ["#1 ship"], "expectedNotes": notes})
+    root = VIEWS.parents[2]
+    result = subprocess.run(
+        [
+            "node",
+            str(root / "tests/fixtures/probe_dashboard.js"),
+            str(root / "harness/obsidian/plugins/agent-terminal-focus/main.js"),
+            json.dumps(probes),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(result.stdout)["parityCases"] == 3
+
+
 @pytest.mark.usefixtures("notes_remote")
 def test_a_request_renders_with_its_identity_ask_and_result_and_no_task_graph(tmp_root: Path):
     from agent_cli import requests

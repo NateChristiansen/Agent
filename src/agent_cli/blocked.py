@@ -10,7 +10,7 @@ the session-start block and doctor flag "blocked with active work":
 - a dispatch started, or a landing, after the block;
 - a task ticked after the block (`task_done` logs one on a blocked feature, `TICK_NOTE`).
 
-"After the block" is the last logged change to `blocked`. A feature blocked before these entries
+"After the block" is the start of the current block. A feature blocked before these entries
 existed has no such time, so only its queued or running dispatches count.
 """
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .features import Feature
 from .records.narrow import as_dict, dig
@@ -63,14 +63,32 @@ def _entries(feature: Feature) -> list[Any]:
         return []
 
 
-def since(feature: Feature, entries: list[Any] | None = None) -> tuple[str, str] | None:
-    """(log timestamp, reason) of the change that blocked the feature, or None when none was
-    logged. The latest change to `blocked` wins."""
-    for entry in reversed(entries if entries is not None else _entries(feature)):
-        text = str(entry.text)
-        if text.startswith(STATUS_PREFIX) and "→ blocked" in text.splitlines()[0]:
-            return entry.ts, text.partition(": ")[2].strip()
-    return None
+class Blocker(NamedTuple):
+    ts: str
+    reason: str
+    waits_on: str
+    resume_when: str
+    updated: str
+
+
+def since(feature: Feature, entries: list[Any] | None = None) -> Blocker | None:
+    """Start of the current block with its latest explanation and recovery condition."""
+    current = None
+    for entry in entries if entries is not None else _entries(feature):
+        lines = str(entry.text).splitlines()
+        if not lines or not lines[0].startswith(STATUS_PREFIX):
+            continue
+        change, _, reason = lines[0].partition(": ")
+        old, arrow, new = change.removeprefix(STATUS_PREFIX).partition(" → ")
+        if not arrow:
+            continue
+        if new != "blocked":
+            current = None
+            continue
+        start = current.ts if old == "blocked" and current else entry.ts
+        fields = dict(line.split(": ", 1) for line in lines[1:] if ": " in line)
+        current = Blocker(start, reason.strip(), fields.get("next", "—"), fields.get("resume", "—"), entry.ts)
+    return current
 
 
 def active_work(root: Path, feature: Feature, dispatches: list[dict[str, Any]] | None = None) -> list[str]:
@@ -128,4 +146,8 @@ def session_lines(root: Path, feature: Feature) -> list[str]:
     if work:
         lines.append("  active work since: " + "; ".join(work))
     lines.append("  " + CLEAR_HINT)
+    if blocked:
+        lines.append(
+            f"  next: {blocked.waits_on} · resume: {blocked.resume_when} · updated: {blocked.updated}"
+        )
     return lines

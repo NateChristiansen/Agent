@@ -193,7 +193,24 @@ def test_feature_set_cannot_close_around_open_tasks(tmp_root: Path, run):
             specs_features.feature_set(ctx, "1", status=status)  # pyright: ignore[reportArgumentType]
     meta, body = frontmatter.load(plan)
     assert meta["status"] == "active" and features.parse_tasks(body)["open"] == 2
-    assert run(["feature", "set", "1", "--status", "blocked", "--reason", "waiting"]).code == 0
+    assert (
+        run(
+            [
+                "feature",
+                "set",
+                "1",
+                "--status",
+                "blocked",
+                "--reason",
+                "waiting",
+                "--waits-on",
+                "manager",
+                "--resume-when",
+                "Tasks reconciled",
+            ]
+        ).code
+        == 0
+    )
     run(["task", "done", "1", "2"])
     run(["task", "supersede", "1", "3", "--reason", "moved", "--link", "002 #1"])
     assert run(["feature", "set", "1", "--status", "abandoned"]).code == 0

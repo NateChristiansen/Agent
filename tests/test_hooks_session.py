@@ -377,11 +377,26 @@ def test_session_digest_keeps_blocked_reason(tmp_root: Path, run, source):
     from agent_cli.hooks import session_budget as budget
 
     run(["feature", "new", "x", "--title", "X"])
-    run(["feature", "set", "1", "--status", "blocked", "--reason", "await approval"])
+    run(
+        [
+            "feature",
+            "set",
+            "1",
+            "--status",
+            "blocked",
+            "--reason",
+            "await approval",
+            "--waits-on",
+            "owner",
+            "--resume-when",
+            "Approved",
+        ]
+    )
     data = status.collect(tmp_root)
     since = data["features"][0]["blocked_since"]["ts"]
-    expected = f"[blocked (blocked since {since}: await approval)]"
+    expected = f"[blocked (blocked since {since}: await approval)"
     assert expected in budget.status_digest(data)
+    assert "· next: owner · resume: Approved]" in budget.status_digest(data, limit=None)
     result = run(["hook", "session-start"], stdin=json.dumps({"session_id": "s1", "source": source}))
     assert expected in _ctx(result)
 
@@ -391,7 +406,21 @@ def test_session_digest_flags_work_on_blocked_features(tmp_root: Path, run, monk
     from agent_cli.hooks import session_budget as budget
 
     run(["feature", "new", "x", "--title", "X"])
-    run(["feature", "set", "1", "--status", "blocked", "--reason", "await approval"])
+    run(
+        [
+            "feature",
+            "set",
+            "1",
+            "--status",
+            "blocked",
+            "--reason",
+            "await approval",
+            "--waits-on",
+            "owner",
+            "--resume-when",
+            "Approved",
+        ]
+    )
     monkeypatch.setattr(
         status, "_dispatches", lambda root: [{"id": "001-01", "feature": 1, "state": "running"}]
     )
@@ -424,7 +453,22 @@ def test_session_digest_caps_detailed_rows_and_keeps_full_details(tmp_root: Path
     from agent_cli.hooks import session_budget as budget
 
     run(["feature", "new", "x", "--title", "X"])
-    run(["feature", "set", "1", "--status", "blocked", "--reason", "待" * 150])
+    run(["task", "add", "1", "待" * 150])
+    run(
+        [
+            "feature",
+            "set",
+            "1",
+            "--status",
+            "blocked",
+            "--reason",
+            "await approval",
+            "--waits-on",
+            "owner",
+            "--resume-when",
+            "Approved",
+        ]
+    )
     data = status.collect(tmp_root)
     [feature] = data["features"]
     data["features"] = [{**feature, "id": n} for n in range(1, 40)]

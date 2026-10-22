@@ -225,7 +225,7 @@ def test_a_captured_idea_cannot_preview_launch_or_resume_until_activated(droot: 
     _no_side_effects(droot)
     assert not list(droot.glob("features/*/orders/*.md"))
 
-    ops.feature_set(droot, feature=rid, status="active")
+    ops.feature_set(droot, feature=rid, status="active", reason="The owner approved implementing the idea")
     fake_claude.scenario([one(envelope(status="question", open_questions=["which parser?"]))])
     sent = dispatch.new(droot, repo="alpha", feature=rid, prompt="# Do it", watch=True, no_checks=True)
     assert sent["state"] == "question" and sent["tasks"] == []

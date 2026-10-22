@@ -845,6 +845,8 @@ class LivePane {
       const notes = [];
       if (f.parked) notes.push('parked');
       if (ready(f)) notes.push('ready to close');
+      const blocker = f.blocker || f.blocked_since;
+      if (f.status === 'blocked' && blocker) notes.push(`blocked: ${blocker.reason} · next: ${blocker.waits_on || '—'}`);
       if (f.blocked_work?.length) notes.push(`active work: ${f.blocked_work.join('; ')}`);
       return { key: String(f.id), feature: f.id, order: featureOrder(f), cells: [[featureLink(f)], [textPart(f.open_tasks)], [textPart(notes.join(' · '))]] };
     }));

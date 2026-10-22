@@ -529,9 +529,27 @@ def set_fields(
     add_tag: list[str] | None = None,
     remove_tag: list[str] | None = None,
     reason: str | None = None,
+    waits_on: str | None = None,
+    resume_when: str | None = None,
 ) -> Feature:
     meta = feature.meta
     old_status = feature.status
+    if status == "blocked":
+        reason = one_line(reason or "", "reason").strip()
+        resume_when = one_line(resume_when or "", "resume_when").strip()
+        if not reason or len(reason) > 120:
+            raise AgentError("blocked needs a non-empty reason of at most 120 characters")
+        if not resume_when:
+            raise AgentError("blocked needs resume_when")
+        if waits_on not in ("owner", "external", "manager"):
+            if waits_on and re.fullmatch(r"feature:\d{3}", waits_on):
+                dependency = resolve(root, waits_on.partition(":")[2])
+                if not dependency.is_open:
+                    raise AgentError("waits_on must name an open feature")
+            elif not waits_on or not re.fullmatch(r"dispatch:[^\s]+", waits_on):
+                raise AgentError("waits_on must be owner, external, manager, feature:NNN or dispatch:<id>")
+    if status == "active" and old_status in ("proposed", "blocked") and not (reason or "").strip():
+        raise AgentError("activating a proposed or blocked feature needs a reason")
     if status is not None:
         if status not in STATUSES:
             raise AgentError(f"status must be one of {', '.join(STATUSES)}")
@@ -559,14 +577,17 @@ def set_fields(
     _edit_list(meta, "tags", add_tag, [t for t in (remove_tag or []) if t != feature.type_tag])
     meta["tags"] = with_type_tag(meta.get("tags"), feature.type_tag)
     feature.save()
-    if status is not None and status != old_status and feature.log_path.exists():
+    if status is not None and (status != old_status or status == "blocked"):
         # Record each status change with its reason so later work can detect a stale blocked
         # status.
         from . import log as log_mod
         from .blocked import status_entry
 
         kind = "blocker" if status == "blocked" else "note"
-        log_mod.append(feature, kind, status_entry(old_status, status, reason))
+        text = status_entry(old_status, status, reason)
+        if status == "blocked":
+            text += f"\nnext: {waits_on}\nresume: {resume_when}"
+        log_mod.append(feature, kind, text)
     return feature
 
 

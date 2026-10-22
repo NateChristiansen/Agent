@@ -195,7 +195,7 @@ const mixed = {features:[
   feature(40,'active',{open_tasks:0,done_tasks:1,open_task_items:[]}),
   feature(50,'active',{parked:true,open_tasks:0,done_tasks:1,open_task_items:[]}),
   feature(60,'proposed',{parked:true}), feature(70,'closed'),
-  feature(80,'blocked',{blocked_work:['worker running']}),
+  feature(80,'blocked',{blocked_work:['worker running'],blocker:{reason:'First reason',waits_on:'owner'}}),
 ]};
 const keys = (key) => grouped.groups.get(key).body.children.map((el)=>el.attrs['data-key']);
 const cellText = (key, id, cell = 0) => grouped.groups.get(key).rows.get(id).cells[cell].el.children[0].textContent;
@@ -208,7 +208,17 @@ assert.equal(headings.features.textContent, 'Open features (10)');
 assert.equal(headings.tasks.textContent, 'Open tasks (16)');
 assert.equal(cellText('features','40',2), 'ready to close');
 assert.equal(cellText('features','50',2), 'parked · ready to close');
-assert.equal(cellText('features','80',2), 'active work: worker running');
+assert.equal(cellText('features','80',2), 'blocked: First reason · next: owner · active work: worker running');
+const blockedFeature = mixed.features.find((f)=>f.id===80);
+const blockedRow = grouped.groups.get('features').rows.get('80').el;
+blockedFeature.blocker = {reason:'Current reason',waits_on:'external'};
+grouped.update({}, now, '', mixed);
+assert.equal(cellText('features','80',2), 'blocked: Current reason · next: external · active work: worker running');
+assert.strictEqual(grouped.groups.get('features').rows.get('80').el, blockedRow);
+delete blockedFeature.blocker;
+blockedFeature.blocked_since = {reason:'Legacy reason'};
+grouped.update({}, now, '', mixed);
+assert.equal(cellText('features','80',2), 'blocked: Legacy reason · next: — · active work: worker running');
 const sectionCell = grouped.groups.get('features').rows.get('sec:active').cells[0].el;
 assert.equal(sectionCell.colSpan, 3);
 assert.equal(sectionCell.style.fontWeight, 'bold');
@@ -278,8 +288,9 @@ assert.equal(grouped.groups.get('tasks').empty.textContent, 'No open tasks.');
 result.grouping = {features:10,tasks:16,...unchangedPolls,statusChangeRebuilds};
 if (process.argv[3]) {
   const cases = JSON.parse(process.argv[3]);
-  for (const {snapshot, expected} of cases) {
+  for (const {snapshot, expected, expectedNotes} of cases) {
     pane.update(snap, now, '', snapshot);
+    if (expectedNotes !== undefined) assert.equal(pane.groups.get('features').rows.get('1').cells[2].el.children[0].textContent, expectedNotes);
     assert.equal(pane.groups.get('features').rows.get('1').cells[1].el.children[0].textContent, String(expected.length));
     const rows = pane.groups.get('tasks').body.children.filter((el)=>!el.attrs['data-key'].startsWith('sec:'));
     assert.deepEqual(rows.map((el) => pane.groups.get('tasks').rows.get(el.attrs['data-key']).cells[0].el.children[0].textContent), expected);

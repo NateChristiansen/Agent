@@ -59,6 +59,8 @@ def add_parser(sub: Subparsers) -> None:
     fe.add_argument("--add-tag", nargs="*", action="extend")
     fe.add_argument("--remove-tag", nargs="*", action="extend")
     fe.add_argument("--reason", help="why the status changes; logged with it")
+    fe.add_argument("--waits-on", help="owner, external, manager, feature:NNN or dispatch:<id>")
+    fe.add_argument("--resume-when", help="one-line condition for resuming a blocked feature")
     fx = f.add_parser("close", help="close a feature")
     fx.add_argument("feature")
     fx.add_argument("--session-id")
@@ -170,6 +172,8 @@ def feature_set(root: Path, args: argparse.Namespace, out: Output) -> int:
             add_tag=args.add_tag,
             remove_tag=args.remove_tag,
             reason=args.reason,
+            waits_on=args.waits_on,
+            resume_when=args.resume_when,
         )
     )
 

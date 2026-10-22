@@ -153,6 +153,18 @@ def test_close_sets_date_and_rejects_double_close(tmp_root: Path, run):
 
 def test_set_fields(tmp_root: Path, run):
     run(["feature", "new", "x", "--title", "X"])
+    from agent_cli import features
+
+    feature = features.resolve(tmp_root, "1")
+    before = feature.plan_path.read_bytes(), feature.log_path.read_bytes()
+    for missing in ("--reason", "--waits-on", "--resume-when"):
+        fields = {"--reason": "Waiting", "--waits-on": "owner", "--resume-when": "Ready"}
+        args = ["feature", "set", "1", "--status", "blocked"]
+        for flag, value in fields.items():
+            if flag != missing:
+                args.extend([flag, value])
+        assert run(args).code == 2
+        assert (feature.plan_path.read_bytes(), feature.log_path.read_bytes()) == before
     r = run(
         [
             "--json",
@@ -161,6 +173,12 @@ def test_set_fields(tmp_root: Path, run):
             "1",
             "--status",
             "blocked",
+            "--reason",
+            "Waiting for release",
+            "--waits-on",
+            "external",
+            "--resume-when",
+            "Release is available",
             "--add-ticket",
             "TK#9",
             "--add-repo",

@@ -82,6 +82,9 @@ def _status_cell(f: dict[str, Any]) -> str:
     text = ("blocked? ⚠ active work: " + "; ".join(work) if work else "blocked") + parked
     if since:
         text += f" (blocked since {since.get('ts')}: {since.get('reason')})"
+    blocker = as_dict_or_none(f.get("blocker"))
+    if blocker:
+        text += f" · next: {blocker.get('waits_on')} · resume: {blocker.get('resume_when')}"
     return text
 
 

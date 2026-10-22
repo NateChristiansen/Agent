@@ -85,6 +85,7 @@ def collect(root: Path) -> dict[str, Any]:
             "open_task_items": [{"index": t.index, "text": t.text} for t in task_items if t.is_open],
             "done_tasks": tasks["done"],
             "blocked_since": {"ts": since[0], "reason": since[1]} if since else None,
+            "blocker": since._asdict() if since else None,
             "blocked_work": blocked_work,
             "_hash_src": (
                 frontmatter.join(f.meta, "")

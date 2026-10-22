@@ -181,6 +181,8 @@ def feature_set(
     remove_tag: list[str] | None = None,
     session_id: str | None = None,
     reason: str | None = None,
+    waits_on: str | None = None,
+    resume_when: str | None = None,
 ) -> Op:
     return ops.feature_set(
         ctx.root,
@@ -197,6 +199,8 @@ def feature_set(
         add_tag=add_tag,
         remove_tag=remove_tag,
         reason=reason,
+        waits_on=waits_on,
+        resume_when=resume_when,
     )
 
 
@@ -349,7 +353,8 @@ FEATURE_TOOLS: dict[str, ToolSpec] = {
         feature_set,
         "Edit feature fields",
         "Edit frontmatter fields: status, title, add/remove ticket, repo, adr, tag. Use this instead of editing the frontmatter by hand. "
-        "A status change is logged with `reason`; give one for `blocked` (what it waits on), and set `active` again once that is gone. "
+        "Blocked requires reason (one line, at most 120 characters), waits_on (owner, external, manager, feature:NNN or dispatch:<id>), "
+        "and resume_when (one non-empty line), including updates. Activation from proposed or blocked requires reason. "
         + FEATURE_REF,
         idempotent=True,
     ),

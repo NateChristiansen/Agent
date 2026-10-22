@@ -30,6 +30,10 @@ for (const status of ['active', 'blocked', 'proposed']) {
     if (status === 'active' && plan.open_tasks === 0 && plan.done_tasks) {
       card.createDiv({text:'active, 0 open: ready to close', cls:'agent-feature-card-cue'});
     }
+    const blocker = plan.blocker || plan.blocked_since;
+    if (status === 'blocked' && blocker) {
+      card.createDiv({text:`blocked: ${blocker.reason} · next: ${blocker.waits_on || '—'}`, cls:'agent-feature-card-cue'});
+    }
     if (plan.blocked_work?.length) {
       card.createDiv({text:`⚠ blocked with active work: ${plan.blocked_work.join('; ')}`, cls:'agent-feature-card-warning'});
     }

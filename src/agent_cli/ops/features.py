@@ -239,9 +239,10 @@ def feature_set(
     add_tag: list[str] | None = None,
     remove_tag: list[str] | None = None,
     reason: str | None = None,
+    waits_on: str | None = None,
+    resume_when: str | None = None,
 ) -> Op:
-    """`reason` goes into the log entry every status change writes; a block
-    without one is logged as "no reason given"."""
+    """Validate and record status changes before refreshing the views."""
     f = features_mod.resolve(root, feature, session_id)
     before = f.status
     features_mod.set_fields(
@@ -258,10 +259,12 @@ def feature_set(
         add_tag=add_tag,
         remove_tag=remove_tag,
         reason=reason,
+        waits_on=waits_on,
+        resume_when=resume_when,
     )
     render_views(root)
     text = f"updated {f.number} {f.slug}"
-    if f.status != before:
+    if f.status != before or status == "blocked":
         text += f"; status {before} → {f.status}, logged"
     return Op(_feature_dict(root, f), text)
 
