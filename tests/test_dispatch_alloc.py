@@ -22,7 +22,7 @@ from agent_cli import repos as repos_mod
 from agent_cli.core import AgentError
 from agent_cli.dispatch import allocation, guards, notice_delivery
 from agent_cli.dispatch import verification_gate as gate
-from dispatch_helpers import DEAD_PID, _new_fast, droot, envelope, one  # noqa: F401
+from dispatch_helpers import DEAD_PID, _new_fast, droot, envelope, one, settle  # noqa: F401
 
 RANK = {"dispatch-alloc": 0, "dispatch-records": 1, "git-admin": 2}
 
@@ -323,6 +323,7 @@ def test_an_old_dispatch_lease_refuses_new(droot: Path):
 def test_an_old_dispatch_lease_refuses_resume(droot: Path, fake_claude):
     fake_claude.scenario([one(envelope())])
     d = _new_fast(droot)
+    settle(droot, d)
     _old_lease(droot)
     with pytest.raises(AgentError, match="without lease_protocol 2"):
         dispatch.resume(droot, dispatch_id=d["id"], answer="again", watch=True)

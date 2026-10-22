@@ -225,6 +225,23 @@ def _new(root: Path, **kw: Any) -> dict[str, Any]:
     return dispatch.new(root, **kw)
 
 
+def settle(root: Path, d: dict[str, Any] | str) -> None:
+    """Decide `no-task` on every item a finished dispatch's result still owes, as the manager does
+    after reading it, so the next implementation launch or resume on its feature may start."""
+    from agent_cli import reconcile
+
+    ident = d if isinstance(d, str) else d["id"]
+    owed = [i for i in reconcile.ledger(root, "1").owed if i.source.partition(":")[2] == ident]
+    assert owed, f"{ident} owes nothing to settle"
+    for source in sorted({i.source for i in owed}):
+        rows = [
+            {"item": i.item, "disposition": "no-task", "reason": "fixture result, read"}
+            for i in owed
+            if i.source == source
+        ]
+        reconcile.decide(root, "1", source, rows)
+
+
 def _new_fast(root: Path, **kw: Any) -> dict[str, Any]:
     """`_new` with the supervisor's verification gate exempted.
 

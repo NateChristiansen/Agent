@@ -64,6 +64,7 @@ OWNED = (
     "runtime-one",
     "runtime-two",
     "pair-0",
+    "grow",
     *(f"b{i}" for i in range(5)),
 )
 
@@ -90,6 +91,15 @@ def owned(root: Path, *branches: str, feature: int = 1, status: str = "active") 
     for branch in branches:
         table[branch] = {"feature": feature, "session": None, "at": "2026-10-22T09:00:00+00:00"}
     path.write_text(json.dumps(table), encoding="utf-8")
+
+
+def settle_landing(root: Path, journal: dict[str, Any]) -> None:
+    """Decide `no-task` on the `landing:` item a landing without a dispatch record raised, so the
+    next landing on the feature may proceed."""
+    from agent_cli import reconcile
+
+    item = {"item": "landing", "disposition": "no-task", "reason": "fixture landing, read"}
+    reconcile.decide(root, "1", f"landing:{journal['id']}", [item])
 
 
 def git(root: Path, *args: str, check: bool = True) -> str:
