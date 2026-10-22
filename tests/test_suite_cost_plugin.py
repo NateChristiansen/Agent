@@ -157,6 +157,88 @@ def test_two_xdist_workers_sum_in_the_written_file(tmp_path: Path):
     assert totals["spawns"] == 2 * worker + 5 and totals["spawns_outside_tests"] == 2 * worker + 5 - 20
 
 
+# A real verification: a `-I` guardian whose command, watchdog and Git shims start their own.
+VERIFIER_PROBE = """
+import subprocess
+import pytest
+import suite_cost
+from verification_fixtures import config, git, start
+from agent_cli.dispatch import verification as runner
+
+@pytest.fixture(autouse=True)
+def guarded_popen(monkeypatch):
+    # What the repository's Obsidian guard does to every test: a subclass in Popen's place.
+    class GuardedPopen(subprocess.Popen):
+        def __init__(self, args, *rest, **kw):
+            super().__init__(args, *rest, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", GuardedPopen)
+
+@pytest.fixture
+def layout(tmp_path):
+    root, worktree = tmp_path / "harness", tmp_path / "worktree"
+    root.mkdir()
+    worktree.mkdir()
+    git(worktree, "init", "-b", "main")
+    (worktree / "tracked").write_text("original\\n")
+    git(worktree, "add", "tracked")
+    git(worktree, "-c", "user.name=F", "-c", "user.email=f@example.invalid", "commit", "-m", "f")
+    return root, worktree, git(worktree, "rev-parse", "HEAD")
+
+def test_a_verifier_run(layout):
+    counter = suite_cost.counter
+    before = counter.count
+    result = runner.wait(start(layout, config("printf ok")))
+    assert result.cleanup_confirmed and result.evidence.commands[0].exit_code == 0, result
+    with open("in_process", "w") as fh:  # the child pytest's cwd
+        fh.write(str(counter.count - before))
+"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows starts the roles through launch_python's job path")
+def test_the_harness_s_isolated_verifier_children_count_their_own_starts(tmp_path: Path):
+    (tmp_path / "test_verifier.py").write_text(VERIFIER_PROBE, encoding="utf-8")
+    stats_file = tmp_path / "out" / "stats.json"
+    _pytest(tmp_path, "-p", "no:xdist", stats=stats_file)
+    stats = json.loads(stats_file.read_text(encoding="utf-8"))
+    row = _rows(stats)["test_a_verifier_run"]
+    # The test process starts the guardian and some `ps` shims itself; the guardian's command,
+    # watchdog and Git shims, and the watchdog's own, reach the row through the spawn file.
+    in_process = int((tmp_path / "in_process").read_text(encoding="utf-8"))
+    assert not row["opaque"] and stats["totals"]["opaque_tests"] == 0
+    assert row["call"]["spawns"] >= in_process + 3, (row, in_process)
+
+
+def test_the_harness_s_isolated_children_start_unchanged_when_not_measuring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agent_cli.dispatch import verification_process as procs
+
+    counter = site.active()
+    monkeypatch.setattr(counter, "watch", False)
+    started: list[list[str]] = []
+
+    def record(args: Any, kw: dict[str, Any]) -> None:
+        started.append(list(args))
+        raise _Recorded
+
+    monkeypatch.setattr(counter, "listeners", [*counter.listeners, record])
+    with pytest.raises(_Recorded):
+        procs.launch("guardian", env=procs.BASE_ENV, cwd=tmp_path)
+    if os.name != "nt":
+        with pytest.raises(_Recorded):
+            procs.capture(["/bin/echo"], tmp_path, procs.BASE_ENV, 5)
+    for argv in started:
+        assert argv[1:3] == ["-I", "-c"]
+        assert site.CHILD_MARK not in argv[3] and "suite_cost" not in argv[3]
+    assert started[0][3].startswith("import site;" if os.name == "nt" else "import sys, importlib.util as u;")
+    assert len(started) == (1 if os.name == "nt" else 2)
+
+
+class _Recorded(Exception):
+    """Raised by a listener in place of the start it was shown."""
+
+
 def test_without_the_variable_nothing_is_written_and_children_are_not_counted(tmp_path: Path):
     tmp_path = tmp_path / "quiet"  # the autouse fixtures write next to it
     tmp_path.mkdir()

@@ -60,6 +60,7 @@ def launch(
         f"submodule_search_locations=[{str(dispatch)!r}]); sys.modules[s.name] = u.module_from_spec(s); "
         f"from agent_cli.dispatch.{module} import {role}_main; {role}_main()"
     )
+    code = _counted(code)
     if os.name == "nt":
         from .verification_win import launch_python
 
@@ -77,6 +78,16 @@ def launch(
         start_new_session=True,
         close_fds=True,
     )
+
+
+def _counted(code: str, *, starts: bool = True) -> str:
+    """`code` as the test suite's process counter rewrites it while it measures, else unchanged.
+
+    The counter (`tests/suite_cost_site`) names itself on the `subprocess` module, not on `Popen`,
+    which tests replace with subclasses and functions; outside a test run nothing does.
+    `starts=False` is a child that only execs."""
+    counter = getattr(subprocess, "suite_cost", None)
+    return code if counter is None else counter.isolated_code(code, starts=starts)
 
 
 def send(process: subprocess.Popen[bytes], value: dict[str, Any]) -> None:
@@ -159,6 +170,7 @@ def capture(
     # POSIX preserves this real-time timer across exec. Trusted Git/ps self-expire even
     # if their Python parent is SIGKILLed and cannot execute its finally block.
     code = "import os,signal,sys; signal.signal(signal.SIGALRM,signal.SIG_DFL); signal.setitimer(signal.ITIMER_REAL,float(sys.argv[1])); os.execv(sys.argv[2],sys.argv[2:])"
+    code = _counted(code, starts=False)
     proc = subprocess.Popen(
         [sys.executable, "-I", "-c", code, str(timeout), *argv],
         cwd=cwd,

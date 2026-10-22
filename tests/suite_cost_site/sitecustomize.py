@@ -5,7 +5,8 @@ this directory first on `PYTHONPATH` and names a spawn file in `AGENT_SUITE_STAT
 Python child that inherits the environment imports it at startup as `sitecustomize` and appends
 one byte per process it starts: `.` for a start the counter can follow, `o` for a Python child it
 cannot (one started with `-I`, `-E` or `-S`, or with an `env=` that drops this directory or the
-spawn file). A byte per start, not a total at exit, so a child that is killed still counts.
+spawn file). A byte per start, not a total at exit, so a child that is killed still counts. The
+harness's own `-I` verifier children are the exception: they run code from `isolated_code`.
 
 Standard library only. The wrapper installs at import only when `AGENT_SUITE_STATS_SPAWNS` is set.
 Imported as `sitecustomize`, it then runs the `sitecustomize` it shadows, the one the child would
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 
 SPAWNS_ENV = "AGENT_SUITE_STATS_SPAWNS"
 SITE_DIR = os.path.dirname(os.path.abspath(__file__))
+CHILD_MARK = "#suite-cost-child\n"  # in the code of a `-c` child `isolated_code` made followable
 
 count = 0
 opaque = 0  # the starts among them whose own spawns this counter cannot see
@@ -77,10 +79,34 @@ def _python_script(exe: str, env: dict[str, Any]) -> bool:
     return first.startswith(b"#!") and b"python" in first
 
 
+def isolated_code(code: str, *, starts: bool = True) -> str:
+    """`code` for a `-I -c` child, rewritten so the counter follows it; unchanged when not measuring.
+
+    The harness finds this module as `subprocess.suite_cost`, since product code cannot import
+    tests and tests replace `subprocess.Popen` itself. `-I` ignores PYTHONPATH and the caller's `env=` may drop the spawn file, so
+    the child loads this file by its absolute path and is handed the spawn file in the code itself.
+    A child that starts nothing and only execs (`starts=False`) is marked without loading anything:
+    what it becomes is followed like any program the parent started directly."""
+    target = sink or os.environ.get(SPAWNS_ENV)
+    if not watch or not target:
+        return code
+    if not starts:
+        return CHILD_MARK + code
+    loader = (
+        "import importlib.util as _u, sys as _s; "
+        f"_c = _u.spec_from_file_location('suite_cost_counter', {os.path.abspath(__file__)!r}); "
+        "_m = _u.module_from_spec(_c); _s.modules[_c.name] = _m; _c.loader.exec_module(_m); "
+        f"_m.sink, _m.watch = {target!r}, True; _m.install(); del _u, _s, _c, _m\n"
+    )
+    return CHILD_MARK + loader + code
+
+
 def is_opaque(args: Any, kw: dict[str, Any]) -> bool:
     """True when the start is a Python child whose own starts this counter cannot see."""
     argv = _argv(args)
     exe = os.fsdecode(kw.get("executable") or (argv[0] if argv else ""))
+    if any(CHILD_MARK in a for a in argv[1:]) and _named_python(exe):
+        return False
     env = kw.get("env")
     if env is None or (env.get(SPAWNS_ENV) and SITE_DIR in str(env.get("PYTHONPATH", "")).split(os.pathsep)):
         return _named_python(exe) and _blind_flags(argv)
@@ -121,6 +147,7 @@ def install() -> None:
 
     counting.suite_cost = sys.modules[__name__]  # type: ignore[attr-defined]
     subprocess.Popen.__init__ = counting  # type: ignore[method-assign]
+    subprocess.suite_cost = counting.suite_cost  # type: ignore[attr-defined]
 
 
 def active() -> Any:
