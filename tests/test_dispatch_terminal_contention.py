@@ -265,24 +265,55 @@ def test_a_deferral_whose_spool_failed_is_requeued_by_recovery_until_it_lands(wi
             raise OSError("spool unwritable")
         real_save(path, data)
 
+    real_write = terminal.atomic_write
+
+    def no_marker(path, text):
+        if path.name.endswith(".retention.pending"):
+            raise OSError("marker unwritable")
+        real_write(path, text)
+
     monkeypatch.setattr(retention, "save", flaky)
+    monkeypatch.setattr(terminal, "atomic_write", no_marker)
     d, feat, outcome = verified_outcome(wired, monkeypatch)
     with held_by_process(wired.root, d["id"], 5):
         terminal.finalize(wired.root, d, feat, outcome, retry_budget=0.05)
-    marker = terminal.retention_marker(wired.root, d)
-    assert terminal.pending_path(wired.root, d).exists() and marker.exists()
-    assert not list(spool.glob("*.json"))
+    intent = terminal.pending_path(wired.root, d)
+    assert intent.exists() and not list(spool.glob("*.json"))
 
     terminal.recover_pending(wired.root, [d["id"]])  # publishes, but the spool is still down
-    assert not terminal.pending_path(wired.root, d).exists()
-    assert marker.exists() and not list(spool.glob("*.json"))
+    assert load(wired.root, d["id"])["terminal_committed"]
+    assert intent.exists() and not list(spool.glob("*.json"))
+    terminal.recover_pending(wired.root, [d["id"]])
+    assert intent.exists()
 
     unwritable = False
     terminal.recover_pending(wired.root, [d["id"]])
     assert [load_(p)["dispatch_id"] for p in spool.glob("*.json")] == [d["id"]] and launched
-    assert not marker.exists()
+    assert not intent.exists()
     terminal.recover_pending(wired.root, [d["id"]])  # bounded: a queued retention is not queued again
     assert len(list(spool.glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize("backlog", [8, 128])
+def test_a_failed_enqueue_reads_no_more_of_the_queue_for_a_longer_backlog(wired, monkeypatch, backlog):
+    from agent_cli.hooks import transcript_retention as retention
+
+    spool = wired.root / retention.BASE / "pending"
+    spool.mkdir(parents=True, exist_ok=True)
+    for n in range(backlog):
+        retention.save(spool / f"other-{n}.json", {"dispatch_id": f"other-{n}"})
+    reads: list[str] = []
+    real_load = retention.load
+    monkeypatch.setattr(retention, "load", lambda path, *a: reads.append(str(path)) or real_load(path, *a))
+
+    def unavailable(root, record):
+        raise OSError("spool unwritable")
+
+    monkeypatch.setattr(retention, "enqueue", unavailable)
+    d, _feat, _outcome = verified_outcome(wired, monkeypatch)
+    assert terminal.retain_transcripts(wired.root, d) is False
+    assert len(reads) <= terminal.SPOOL_PROBE_READS
+    assert terminal.retention_marker(wired.root, d).exists()
 
 
 def load_(path: Path) -> dict:
