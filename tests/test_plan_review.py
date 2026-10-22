@@ -329,6 +329,33 @@ def test_a_second_call_after_a_complete_round_launches_a_fresh_round_on_the_same
     assert _gate(tmp_root, plan) == {}
 
 
+def test_rounds_order_by_instant_when_the_local_offset_moves_back(
+    tmp_root: Path, launch: Launcher, monkeypatch: pytest.MonkeyPatch
+):
+    plan = _plan(tmp_root)
+    monkeypatch.setenv("AGENT_NOW", "2026-11-01T01:30:00-04:00")
+    assert _round(tmp_root, launch, plan)["phase"] == "complete"
+    # DST ended: round 2's local stamp reads earlier, but it launched 40 minutes later.
+    monkeypatch.setenv("AGENT_NOW", "2026-11-01T01:10:00-05:00")
+    assert _review(tmp_root, plan)["round"] == 2
+    sha = plan_review.digest(PLAN.encode())
+    assert [r["round"] for r in plan_review.records(tmp_root, sha)] == [1, 2]
+    op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert "still running; nothing launched" in op.text
+    assert len(launch.calls) == 4
+
+
+def test_a_legacy_record_without_a_launch_time_sorts_first(tmp_root: Path):
+    sha = plan_review.digest(PLAN.encode())
+    base = plan_review.reviews_dir(tmp_root)
+    base.mkdir(parents=True, exist_ok=True)
+    (base / f"{sha}.json").write_text(json.dumps({"sha256": sha}), encoding="utf-8")
+    for n, at in ((1, "2026-11-01T01:30:00-04:00"), (2, "2026-11-01T01:10:00-05:00"), (3, "not a time")):
+        rec = {"sha256": sha, "round": n, "phase": "complete", "launched_at": at}
+        plan_review.round_path(tmp_root, sha, n).write_text(json.dumps(rec), encoding="utf-8")
+    assert [plan_review.round_no(r) for r in plan_review.records(tmp_root, sha)] == [0, 3, 1, 2]
+
+
 # --- reading a reviewer's findings --------------------------------------------------------------
 
 
@@ -359,6 +386,141 @@ def test_every_blocking_and_optional_item_is_one_finding():
         "one inline point",
     ]
     assert findings_of("VERDICT: agree\nOptional: none\nAll good.") == []
+
+
+def test_an_indented_label_or_subheading_stays_with_its_finding():
+    from agent_cli.ops.plan_review import findings_of
+
+    summary = (
+        "VERDICT: revise\n"
+        "## Blocking:\n"
+        "1. Step 2 has no test.\n"
+        "   Evidence:\n"
+        "   plan.md step 2 names none.\n"
+        "   Impact:\n"
+        "   the gate opens untested.\n"
+        "2. The cap counts failed rounds.\n"
+        "   ### Probe\n"
+        "   ran it twice.\n"
+        "### Why it blocks\n"
+        "the owner never sees round 3.\n"
+        "3. The relaunch loses the first reviewer.\n"
+        "Evidence:\n"
+        "read ops/plan_review.py.\n"
+        "4. The snapshot is writable.\n"
+        "\n"
+        "## Checked:\n"
+        "- every step\n"
+    )
+    assert findings_of(summary) == [
+        "Step 2 has no test. Evidence: plan.md step 2 names none. Impact: the gate opens untested.",
+        "The cap counts failed rounds. ### Probe ran it twice. ### Why it blocks the owner never sees round 3.",
+        "The relaunch loses the first reviewer. Evidence: read ops/plan_review.py.",
+        "The snapshot is writable.",
+    ]
+
+
+def test_a_prose_paragraph_between_findings_does_not_end_the_section():
+    from agent_cli.ops.plan_review import findings_of
+
+    summary = (
+        "VERDICT: revise\n"
+        "Blocking:\n"
+        "1. Step 2 has no test.\n"
+        "\n"
+        "The next two share one cause in the gate.\n"
+        "\n"
+        "2. The gate reads the wrong file.\n"
+        "3. The gate ignores the sha.\n"
+        "\n"
+        "Optional:\n"
+        "\n"
+        "Rename step 1.\n"
+        "- Split step 4.\n"
+    )
+    assert findings_of(summary) == [
+        "Step 2 has no test. The next two share one cause in the gate.",
+        "The gate reads the wrong file.",
+        "The gate ignores the sha.",
+        "Rename step 1.",
+        "Split step 4.",
+    ]
+
+
+def test_closing_prose_after_empty_sections_is_no_finding():
+    from agent_cli.ops.plan_review import findings_of
+
+    summary = (
+        "VERDICT: agree\n"
+        "Blocking:\n"
+        "- None found.\n"
+        "\n"
+        "Optional:\n"
+        "- None identified.\n"
+        "\n"
+        "I checked every step against the Context and ran the documented probe.\n"
+    )
+    assert findings_of(summary) == []
+    assert findings_of("VERDICT: agree\nBlocking:\nNone found.\n\nI checked every step.\n") == []
+
+
+def test_closing_prose_after_the_last_finding_is_no_new_finding():
+    from agent_cli.ops.plan_review import findings_of
+
+    summary = "VERDICT: revise\nBlocking:\n1. Step 2 has no test.\n\nI checked every step.\nAll else holds.\n"
+    assert findings_of(summary) == ["Step 2 has no test."]
+
+
+@pytest.mark.parametrize(
+    "empty",
+    [
+        "None identified.",
+        "None found.",
+        "No blocking findings.",
+        "(none)",
+        "*None.*",
+        "Nothing blocking.",
+        "No issues found.",
+        "N/A",
+        "None. The plan covers every step.",
+    ],
+)
+def test_natural_empty_phrasings_are_no_finding(empty: str):
+    from agent_cli.ops.plan_review import findings_of
+
+    assert findings_of(f"VERDICT: agree\nBlocking: {empty}\nOptional:\n- {empty}\n") == []
+    assert findings_of(f"VERDICT: agree\nBlocking:\n{empty}\n") == []
+
+
+@pytest.mark.parametrize(
+    "finding",
+    [
+        "None of the steps has a test.",
+        "No test covers step 2.",
+        "Nothing reads the ledger.",
+        "No issues, except the gate reads the wrong file.",
+    ],
+)
+def test_a_finding_that_starts_like_an_empty_phrase_stays(finding: str):
+    from agent_cli.ops.plan_review import findings_of
+
+    assert findings_of(f"VERDICT: revise\nBlocking:\n- {finding}\n") == [finding]
+
+
+@pytest.mark.parametrize(
+    "finding",
+    [
+        "No findings: the parser silently discards the returned review "
+        "(src/agent_cli/ops/plan_review.py:363; probe: a returned finding leaves the ledger empty).",
+        "None. See plan.md step 2.",
+        "Nothing blocking; the probe of `plan-gate` opens it untested.",
+    ],
+)
+def test_an_empty_phrase_followed_by_a_path_or_probe_is_a_finding(finding: str):
+    from agent_cli.ops.plan_review import findings_of
+
+    summary = f"VERDICT: revise\nBlocking:\n- {finding}\nOptional: (none)\n"
+    assert findings_of(summary) == [finding]
 
 
 # --- the combined verdict -----------------------------------------------------------------------

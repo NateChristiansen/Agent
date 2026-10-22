@@ -92,29 +92,76 @@ _SECTION = re.compile(
     re.IGNORECASE,
 )
 _ITEM = re.compile(r"^(?P<indent>\s*)(?:[-*+•]|\d+[.)]|\(\d+\))\s+(?P<text>\S.*)$")
-_HEADING = re.compile(r"^(?:#+\s.*|[*_]*[A-Z][\w /-]{0,40}:[*_]*)$")
-_EMPTY = frozenset({"none", "none.", "n/a", "nothing", "-", "—"})
+_HEADING = re.compile(r"^(?:(?P<hashes>#+)\s.*|[*_]*(?P<label>[A-Z][\w /-]{0,40}):[*_]*)$")
+# Labels a reviewer puts inside one finding; unindented, they still do not end the section.
+_FIELD = frozenset(
+    {
+        "details",
+        "evidence",
+        "file",
+        "fix",
+        "impact",
+        "location",
+        "path",
+        "probe",
+        "read",
+        "reason",
+        "risk",
+        "severity",
+        "suggestion",
+        "why",
+    }
+)
+_EMPTY = re.compile(
+    r"^(?:(?:none|nothing|nil|n/?a|-+|—|–)"
+    r"(?:\s+(?:identified|found|noted|raised|seen|spotted|blocking|optional|to report|to flag|so far))*"
+    r"|no\s+(?:(?:other|further|additional|new|remaining)\s+)?(?:(?:blocking|optional)\s+)?"
+    r"(?:findings?|issues?|points?|problems?|concerns?|blockers?)"
+    r"(?:\s+(?:identified|found|noted|raised|seen|spotted|to report|so far))*)"
+    r"(?:\s*[.;:!—–-]+(?:\s(?P<reason>.*))?)?$"
+)
+_CITES = re.compile(r"[/\\`]|\w\.\w|:\d|\b(?:probe|path|file)s?\b")
+
+
+def _empty(text: str) -> bool:
+    """`text` says the section has nothing in it: `none`, `None found.`, `(none)`, `No blocking
+    findings.`, or one of those with a short reason that cites no file, path or probe."""
+    match = _EMPTY.match(text.strip().strip("*_()[]` ").casefold())
+    if match is None:
+        return False
+    reason = match["reason"] or ""
+    return len(reason.split()) <= 10 and _CITES.search(reason) is None
+
+
+def _heading_level(text: str) -> int:
+    match = re.match(r"#+(?=\s)", text)
+    return len(match[0]) if match else 0
 
 
 def findings_of(summary: str) -> list[str]:
     """Every item under `Blocking:` and `Optional:` in a reviewer's summary, one string each. A
-    section line with text after the colon is itself one item; a list item's indented lines and
-    sub-bullets belong to it. Another heading, or unindented prose after a blank line, ends the
-    section. `none` is no item."""
+    section line with text after the colon is itself one item; a list item's indented lines,
+    sub-bullets, labels and subheadings belong to it. Unindented prose after a blank line, or
+    after an empty item, is held: it joins the item before it once a later real item shows it
+    sat between items, and is dropped otherwise, so a closing remark is never a finding. Only
+    an unindented heading at the section's own level ends the section. `None found.` and the
+    like are no item."""
     items: list[list[str]] = []
     current: list[str] | None = None
-    in_section = False
+    held: list[str] | None = None
+    in_section = opening = blank = False
     base: int | None = None
-    blank = False
+    level = 0
     for line in summary.splitlines():
         stripped = line.strip()
         section = _SECTION.match(stripped)
         if section is not None:
-            in_section, base, blank, current = True, None, False, None
+            in_section, opening, blank, base, current, held = True, True, False, None, None, None
+            level = _heading_level(stripped)
             rest = section["rest"].strip()
             item = _ITEM.match(rest)
             rest = item["text"].strip() if item else rest
-            if rest.casefold() in _EMPTY:
+            if _empty(rest):
                 in_section = False
             elif rest:
                 current = [rest]
@@ -127,21 +174,41 @@ def findings_of(summary: str) -> list[str]:
             continue
         indent = len(line) - len(line.lstrip())
         item = _ITEM.match(line)
+        heading = _HEADING.match(stripped)
+        field = heading is not None and (heading["label"] or "").strip().casefold() in _FIELD
         if item is not None and (base is None or indent <= base):
             base = indent if base is None else base
-            current = None
-            if item["text"].strip().casefold() not in _EMPTY:
+            if not _empty(item["text"]):
+                if held is not None and current is not None:
+                    current.extend(held)
+                elif held is not None:
+                    items.append(held)
                 current = [item["text"].strip()]
                 items.append(current)
-        elif _HEADING.match(stripped) or (blank and indent == 0 and item is None):
-            in_section, current = False, None
-        elif current is not None:
+            else:
+                current = None
+            held = None
+        elif heading is not None and indent == 0 and _ends_section(heading, level, current):
+            in_section, current, held = False, None, None
+        elif held is not None:
+            held.append(stripped)
+        elif current is not None and not (blank and indent == 0 and not field):
             current.append(stripped)
-        elif stripped.casefold() not in _EMPTY:
+        elif _empty(stripped):
+            current = None
+        elif opening and not blank:
             current = [stripped]
             items.append(current)
-        blank = False
+        else:
+            held = [stripped]
+        opening = blank = False
     return [" ".join(parts) for parts in items]
+
+
+def _ends_section(heading: re.Match[str], level: int, current: list[str] | None) -> bool:
+    if heading["hashes"]:
+        return current is None or not level or len(heading["hashes"]) <= level
+    return current is None or heading["label"].strip().casefold() not in _FIELD
 
 
 # ---------------------------------------------------------------- the round record

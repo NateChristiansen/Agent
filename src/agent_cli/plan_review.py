@@ -29,6 +29,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -93,8 +94,15 @@ def _read(paths: list[Path]) -> list[dict[str, Any]]:
     return sorted(found, key=_launch_order)
 
 
-def _launch_order(rec: dict[str, Any]) -> tuple[str, int]:
-    return str(rec.get("launched_at") or ""), round_no(rec)
+def _launch_order(rec: dict[str, Any]) -> tuple[float, int]:
+    """The launch instant, so a stamp written after the local offset moved back still sorts
+    later; a record with no readable stamp sorts first."""
+    try:
+        at = datetime.fromisoformat(str(rec.get("launched_at") or ""))
+        instant = (at if at.tzinfo else at.astimezone()).timestamp()
+    except ValueError, OverflowError, OSError:
+        instant = float("-inf")
+    return instant, round_no(rec)
 
 
 def round_no(rec: dict[str, Any]) -> int:
