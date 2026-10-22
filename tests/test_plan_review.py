@@ -1,7 +1,7 @@
-"""One fresh cross-client plan reviewer replaces manager pairing (phase 2.1).
+"""Two blind plan reviewers, Codex and Claude, replace manager pairing (phase 2.1).
 
-The reviewer judges a frozen snapshot of the plan, and `plan-gate` lets ExitPlanMode through
-only for the exact sha a finished review agreed to, a plan marked small, or after three rounds.
+They judge a frozen snapshot of the plan, and `plan-gate` lets ExitPlanMode through only for
+the exact sha both finished reviews agreed to, a plan marked small, or after three rounds.
 The worker launch is mocked throughout: `dispatch.new` writes a record and starts nothing.
 """
 
@@ -77,6 +77,12 @@ def _review(root: Path, plan: Path) -> dict[str, Any]:
     return data
 
 
+def _finish(launch: Launcher, first: str, second: str = "VERDICT: agree", n: int = 1) -> None:
+    """End round `n`'s two reviewers (Codex, then Claude) with these summaries."""
+    launch.write(f"001-mac-{2 * n - 1:02d}", state="done", summary=first)
+    launch.write(f"001-mac-{2 * n:02d}", state="done", summary=second)
+
+
 def _gate(root: Path, plan: Path | None = None, text: str | None = None) -> dict[str, Any]:
     tool_input: dict[str, str] = {}
     if plan is not None:
@@ -98,57 +104,97 @@ def _denied(result: dict[str, Any]) -> str:
 # --- the launch ---------------------------------------------------------------------------------
 
 
+CONTRACT = """\
+Plan review of sha256 {sha}: a fresh, read-only review of a plan before the owner sees it.
+
+Review only the plan snapshot below. It is frozen: do not open the plan's live file, which may have \
+changed since. Change no file; this dispatch is read-only.
+
+Do not stop with a certain number of findings. Deeply review the entire plan and bring back the \
+ENTIRE list of findings, to avoid multiple revision rounds as best possible.
+
+Blocking rules:
+1. A threshold or bar that is not in the plan's own acceptance criteria is optional, never blocking.
+2. Blocking means a failure against the plan's acceptance on a path real use takes or plausibly \
+would. A failure needing tampering, stacked faults, or input no one produces is optional unless you \
+show it is likely.
+
+Reply: the first line of your returned summary is exactly `VERDICT: agree` or `VERDICT: revise`. \
+Revise only for blocking findings. List each blocking finding under `Blocking:`, and label every \
+other point `Optional:`. Each finding states its path and the read or probe behind it. Put the \
+whole review in your returned summary.
+
+"""
+
+
 def test_the_launch_freezes_the_plan_and_embeds_it(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     rec = _review(tmp_root, plan)
     sha = plan_review.digest(PLAN.encode())
-    (call,) = launch.calls
-    assert (
-        rec["sha256"] == sha
-        and rec["plan_path"] == str(plan.resolve())
-        and rec["dispatch_id"] == "001-mac-01"
-    )
-    assert call["provider"] == "codex" and call["row"] == "review" and call["writes"] == []
-    assert call["no_checks"] is True and call["repo"] == "agent" and call["feature"] == "current"
-    assert f"----- BEGIN PLAN SNAPSHOT sha256 {sha} -----\n{PLAN}----- END" in call["prompt"]
-    assert "VERDICT: agree" in call["prompt"] and str(plan) not in call["prompt"]
+    assert len(launch.calls) == 2
+    assert rec["sha256"] == sha and rec["plan_path"] == str(plan.resolve())
+    for call in launch.calls:
+        assert call["row"] == "review" and call["writes"] == [] and call["base"] == "main"
+        assert call["no_checks"] is True and call["repo"] == "agent" and call["feature"] == "current"
+        assert f"----- BEGIN PLAN SNAPSHOT sha256 {sha} -----\n{PLAN}----- END" in call["prompt"]
+        assert str(plan) not in call["prompt"]
     snapshot = Path(rec["snapshot"])
     assert snapshot.read_bytes() == PLAN.encode() and stat.S_IMODE(snapshot.stat().st_mode) == 0o444
     saved = plan_review.record(tmp_root, sha)
     assert saved is not None and saved["session_id"] == SID and saved["launched_at"]
 
 
-def test_the_review_contract_requires_a_real_use_path(tmp_root: Path, launch: Launcher):
+def test_the_work_order_is_the_deep_contract_then_the_snapshot(tmp_root: Path, launch: Launcher):
     _review(tmp_root, _plan(tmp_root))
-    text = launch.calls[0]["prompt"]
-    assert "a failure against the plan's acceptance on a path real use takes or plausibly would" in text
-    assert (
-        "tampering, stacked faults, or input no one produces is optional unless you show it is likely" in text
+    sha = plan_review.digest(PLAN.encode())
+    snapshot = (
+        f"----- BEGIN PLAN SNAPSHOT sha256 {sha} -----\n{PLAN}----- END PLAN SNAPSHOT sha256 {sha} -----\n"
     )
-    assert "Each finding states its path." in text
-    assert "not in the plan's own acceptance criteria is optional, never blocking" in text
-    assert "Revise only for blocking findings." in text
-    assert "label every other point `Optional:`" in text
+    assert launch.calls[0]["prompt"] == CONTRACT.format(sha=sha) + snapshot
+    assert launch.calls[1]["prompt"] == launch.calls[0]["prompt"]
 
 
-def test_a_codex_manager_gets_a_claude_reviewer(tmp_root: Path, launch: Launcher):
-    sessions.set_field(tmp_root, SID, "provider", "codex")
-    _review(tmp_root, _plan(tmp_root))
-    assert launch.calls[0]["provider"] == "claude"
-    # A review row needs a target or base (079 #5); the plan travels in the order, so main.
-    assert launch.calls[0]["base"] == "main"
+@pytest.mark.parametrize("manager", ["claude", "codex"])
+def test_one_launch_starts_two_blind_reviewers_whatever_the_managers_client(
+    tmp_root: Path, launch: Launcher, manager: str
+):
+    sessions.set_field(tmp_root, SID, "provider", manager)
+    rec = _review(tmp_root, _plan(tmp_root))
+    chosen = [(c["provider"], c["model"], c["effort"]) for c in launch.calls]
+    assert chosen == [("codex", "gpt-6.1-sol", "high"), ("claude", "sonnet", "high")]
+    saved = plan_review.record(tmp_root, rec["sha256"])
+    assert saved is not None and saved["reviewers"] == [
+        {"dispatch_id": "001-mac-01", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high"},
+        {"dispatch_id": "001-mac-02", "provider": "claude", "model": "sonnet", "effort": "high"},
+    ]
+    assert plan_review.reviewer_ids(saved) == ["001-mac-01", "001-mac-02"]
+
+
+def test_a_failed_second_launch_names_the_first_reviewer(tmp_root: Path, launch: Launcher, monkeypatch):
+    from agent_cli.core import AgentError
+
+    def second_fails(root: Path, **kw: Any) -> dict[str, Any]:
+        if launch.calls:
+            raise AgentError("no claude")
+        return launch(root, **kw)
+
+    monkeypatch.setattr(dispatch, "new", second_fails)
+    plan = _plan(tmp_root)
+    with pytest.raises(AgentError, match="launched 001-mac-01 but not its claude reviewer: no claude"):
+        _review(tmp_root, plan)
+    assert plan_review.record(tmp_root, plan_review.digest(PLAN.encode())) is None
 
 
 def test_an_edit_after_launch_changes_neither_the_sha_nor_the_embedded_text(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     rec = _review(tmp_root, plan)
     plan.write_text(PLAN + "\n2. Also build Y.\n", encoding="utf-8", newline="")
-    assert plan_review.record(tmp_root, rec["sha256"]) == {k: v for k, v in rec.items() if k != "state"}
+    assert plan_review.record(tmp_root, rec["sha256"]) == {k: v for k, v in rec.items() if k != "states"}
     assert Path(rec["snapshot"]).read_text(encoding="utf-8") == PLAN
-    assert "Also build Y" not in launch.calls[0]["prompt"]
+    assert all("Also build Y" not in c["prompt"] for c in launch.calls)
     # The verdict approves only its snapshot's sha: the edited plan is not covered...
-    launch.write("001-mac-01", state="done", summary="VERDICT: agree\nOptional: none")
-    assert "plan changed since review 001-mac-01" in _denied(_gate(tmp_root, plan))
+    _finish(launch, "VERDICT: agree\nOptional: none")
+    assert "plan changed since review 001-mac-01 and 001-mac-02" in _denied(_gate(tmp_root, plan))
     # ...and restoring the reviewed bytes restores the approval.
     plan.write_text(PLAN, encoding="utf-8", newline="")
     assert _gate(tmp_root, plan) == {}
@@ -159,10 +205,65 @@ def test_a_running_or_revised_review_of_the_same_sha_is_not_relaunched(tmp_root:
     _review(tmp_root, plan)
     with pytest.raises(Exception, match="still running"):
         _review(tmp_root, plan)
-    launch.write("001-mac-01", state="done", summary="VERDICT: revise\nBlocking: step 1 duplicates Codex")
-    with pytest.raises(Exception, match="asked for revision"):
+    _finish(launch, "VERDICT: revise\nBlocking: step 1 duplicates Codex")
+    with pytest.raises(Exception, match="001-mac-01 of this exact plan asked for revision"):
         _review(tmp_root, plan)
-    assert len(launch.calls) == 1
+    _finish(launch, "VERDICT: agree", "VERDICT: agree")
+    assert (
+        "001-mac-01 and 001-mac-02 already agreed"
+        in ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID).text
+    )
+    assert len(launch.calls) == 2
+
+
+# --- the combined verdict -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("codex", "claude", "state", "named"),
+    [
+        ("VERDICT: agree", "VERDICT: agree", "agree", "001-mac-01 and 001-mac-02"),
+        ("VERDICT: agree", "VERDICT: revise\nBlocking: x", "revise", "001-mac-02"),
+        (
+            "VERDICT: revise\nBlocking: x",
+            "VERDICT: revise\nBlocking: y",
+            "revise",
+            "001-mac-01 and 001-mac-02",
+        ),
+        ("VERDICT: agree", None, "running", "001-mac-02"),
+        ("VERDICT: revise\nBlocking: x", None, "running", "001-mac-02"),
+        ("VERDICT: agree", "Looks fine.", "none", "001-mac-02"),
+    ],
+)
+def test_the_two_verdicts_combine(
+    tmp_root: Path, launch: Launcher, codex: str, claude: str | None, state: str, named: str
+):
+    rec = _review(tmp_root, _plan(tmp_root))
+    launch.write("001-mac-01", state="done", summary=codex)
+    if claude is not None:
+        launch.write("001-mac-02", state="done", summary=claude)
+    seen = plan_review.verdict(tmp_root, rec)
+    assert (seen.state, seen.dispatch_id) == (state, named)
+    if state == "none":
+        assert seen.detail == "reviewer 001-mac-02 (claude sonnet): it ended done without a verdict line"
+
+
+def test_a_one_reviewer_record_from_before_still_reads(tmp_root: Path, launch: Launcher):
+    plan = _plan(tmp_root)
+    sha = plan_review.digest(PLAN.encode())
+    launch.write("001-mac-07", state="done", prompt=f"review {sha}", summary="VERDICT: agree")
+    old = {"sha256": sha, "plan_path": str(plan.resolve()), "dispatch_id": "001-mac-07", "provider": "codex"}
+    plan_review.reviews_dir(tmp_root).mkdir(parents=True, exist_ok=True)
+    (plan_review.reviews_dir(tmp_root) / f"{sha}.json").write_text(json.dumps(old), encoding="utf-8")
+    assert plan_review.verdict(tmp_root, old) == plan_review.Verdict("agree", "001-mac-07", "VERDICT: agree")
+    assert _gate(tmp_root, plan) == {}
+    assert (
+        "001-mac-07 already agreed"
+        in ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID).text
+    )
+    launch.write("001-mac-07", state="done", summary="VERDICT: revise\nBlocking: x")
+    assert "001-mac-07 asked for revision" in _denied(_gate(tmp_root, plan))
+    assert launch.calls == []
 
 
 # --- the gate -----------------------------------------------------------------------------------
@@ -195,20 +296,22 @@ def test_no_review_denies_with_the_launch_to_run(tmp_root: Path):
 def test_a_running_review_denies_and_names_it(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
-    assert "001-mac-01 of this exact plan is still running" in _denied(_gate(tmp_root, plan))
+    assert "001-mac-01 and 001-mac-02 of this exact plan is still running" in _denied(_gate(tmp_root, plan))
+    launch.write("001-mac-01", state="done", summary="VERDICT: agree")
+    assert "001-mac-02 of this exact plan is still running" in _denied(_gate(tmp_root, plan))
 
 
 def test_a_revise_verdict_denies(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
-    launch.write("001-mac-01", state="done", summary="VERDICT: revise\nBlocking: no acceptance")
+    _finish(launch, "VERDICT: revise\nBlocking: no acceptance")
     assert "001-mac-01 asked for revision" in _denied(_gate(tmp_root, plan))
 
 
 def test_an_agree_verdict_on_the_presented_sha_passes(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
-    launch.write("001-mac-01", state="done", summary="VERDICT: agree\nOptional: rename step 1")
+    _finish(launch, "VERDICT: agree\nOptional: rename step 1")
     assert _gate(tmp_root, plan) == {}
     # The same bytes presented as text only (no readable file), short of the final newline.
     assert _gate(tmp_root, text=PLAN.rstrip("\n")) == {}
@@ -217,8 +320,10 @@ def test_an_agree_verdict_on_the_presented_sha_passes(tmp_root: Path, launch: La
 def test_an_agree_that_is_not_the_first_line_or_not_done_does_not_pass(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
-    launch.write("001-mac-01", state="done", summary="Looks fine.\nVERDICT: agree")
-    assert "gave no verdict" in _denied(_gate(tmp_root, plan))
+    _finish(launch, "Looks fine.\nVERDICT: agree")
+    assert "001-mac-01 gave no verdict: reviewer 001-mac-01 (codex gpt-6.1-sol)" in _denied(
+        _gate(tmp_root, plan)
+    )
     launch.write("001-mac-01", state="failed", summary="VERDICT: agree")
     assert "gave no verdict" in _denied(_gate(tmp_root, plan))
 
@@ -226,6 +331,7 @@ def test_an_agree_that_is_not_the_first_line_or_not_done_does_not_pass(tmp_root:
 def test_a_record_whose_dispatch_reviewed_another_sha_is_not_a_verdict(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
+    _finish(launch, "VERDICT: agree")
     launch.write("001-mac-01", state="done", prompt="some other work order", summary="VERDICT: agree")
     assert "not a review of this sha" in _denied(_gate(tmp_root, plan))
 
@@ -233,10 +339,10 @@ def test_a_record_whose_dispatch_reviewed_another_sha_is_not_a_verdict(tmp_root:
 def test_agree_on_an_older_sha_then_an_edit_denies(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
-    launch.write("001-mac-01", state="done", summary="VERDICT: agree")
+    _finish(launch, "VERDICT: agree")
     assert _gate(tmp_root, plan) == {}
     plan.write_text(PLAN + "3. Ship it.\n", encoding="utf-8", newline="")
-    assert "the plan changed since review 001-mac-01" in _denied(_gate(tmp_root, plan))
+    assert "the plan changed since review 001-mac-01 and 001-mac-02" in _denied(_gate(tmp_root, plan))
 
 
 def test_the_third_round_hands_the_decision_to_the_owner(tmp_root: Path, launch: Launcher):
@@ -244,7 +350,7 @@ def test_the_third_round_hands_the_decision_to_the_owner(tmp_root: Path, launch:
     for n in (1, 2, 3):
         plan.write_text(PLAN + f"\nround {n}\n", encoding="utf-8", newline="")
         _review(tmp_root, plan)
-        launch.write(f"001-mac-{n:02d}", state="done", summary="VERDICT: revise\nBlocking: x")
+        _finish(launch, "VERDICT: revise\nBlocking: x", n=n)
         if n < 3:
             assert "asked for revision" in _denied(_gate(tmp_root, plan))
     result = _gate(tmp_root, plan)
@@ -330,9 +436,10 @@ def test_a_build_with_no_agreed_review_on_its_feature_warns(tmp_root: Path, laun
     )
     _review(tmp_root, _plan(tmp_root))
     _set_feature(tmp_root, "001-mac-01", 1)
-    launch.write("001-mac-01", state="done", summary="VERDICT: revise\nBlocking: x")
+    _set_feature(tmp_root, "001-mac-02", 1)
+    _finish(launch, "VERDICT: agree", "VERDICT: revise\nBlocking: x")
     assert plan_review.launch_warning(tmp_root, feature=1, row="design")
-    launch.write("001-mac-01", state="done", summary="VERDICT: agree")
+    _finish(launch, "VERDICT: agree")
     assert plan_review.launch_warning(tmp_root, feature=1, row="build") == ""
     # Another feature's agreement does not cover this one.
     assert "feature 002" in plan_review.launch_warning(tmp_root, feature=2, row="build")

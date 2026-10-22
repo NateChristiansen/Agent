@@ -94,7 +94,7 @@ def test_setup_skips_obsidian_plugin_rows_that_are_not_objects(
     assert step["detail"] == "0 file(s) in .obsidian/"
 
 
-def test_a_plan_review_record_provider_that_is_not_a_string_reads_as_claude(
+def test_a_plan_review_session_provider_that_is_not_a_string_still_launches_both_reviewers(
     tmp_root: Path, monkeypatch: pytest.MonkeyPatch
 ):
     sessions.set_record(tmp_root, SID, name="mgr-008-x")
@@ -102,16 +102,22 @@ def test_a_plan_review_record_provider_that_is_not_a_string_reads_as_claude(
     plan = tmp_root / ".agent" / "scratch" / "plan.md"
     plan.parent.mkdir(parents=True, exist_ok=True)
     plan.write_text("# plan\n", encoding="utf-8")
-    seen: dict[str, Any] = {}
+    launches: list[dict[str, Any]] = []
+
+    def fake_new(root: Path, **kw: Any) -> dict[str, Any]:
+        launches.append(kw)
+        return {"id": f"001-mac-0{len(launches)}", "state": "queued"}
+
     monkeypatch.setattr(
         "agent_cli.verify_record.harness_repo",
         lambda root: argparse.Namespace(name="agent", default_branch="main"),
     )
-    monkeypatch.setattr(
-        dispatch, "new", lambda root, **kw: seen.update(kw) or {"id": "001-mac-01", "state": "queued"}
-    )
+    monkeypatch.setattr(dispatch, "new", fake_new)
     ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
-    assert seen["provider"] == "codex"
+    assert [(k["provider"], k["model"], k["effort"]) for k in launches] == [
+        ("codex", "gpt-6.1-sol", "high"),
+        ("claude", "sonnet", "high"),
+    ]
     with pytest.raises(AgentError, match="exactly one plan path"):
         ops.dispatch_plan_review(tmp_root, paths=[str(plan), str(plan)], session_id=SID)
 

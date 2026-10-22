@@ -1,18 +1,20 @@
-"""Plan review: one fresh, read-only reviewer on the other client per plan version.
+"""Plan review: two fresh, blind, read-only reviewers per plan version, Codex and Claude.
 
 This replaces manager pairing. Two long-lived managers agreeing to a plan's hash needed a
 second live manager, a pair record on both sessions and a Stop-hook reading chat for approval
 asks; that hook blocked a Codex manager's trust question to the owner. Now the manager
 launches the `dispatch` tool's `plan-review` action: the harness reads the plan once, freezes the
 bytes as `.agent/plan-reviews/<sha>.md` (read-only), embeds them in the work order, and records
-`<sha>.json`. `plan-gate` lets `ExitPlanMode` through only for a sha a finished review agreed
-to, a plan that declares itself small, or after `ROUND_CAP` reviews of one plan file.
+`<sha>.json` naming both reviewer dispatches. `plan-gate` lets `ExitPlanMode` through only for a
+sha both finished reviewers agreed to, a plan that declares itself small, or after `ROUND_CAP`
+reviews of one plan file. A record from before the second reviewer names one `dispatch_id` and
+reads as that one review.
 
 The hash is sha256 of the plan bytes with trailing newlines reduced to exactly one. ExitPlanMode's
 `plan` text usually lacks the file's final newline, and an editor may add a second one; neither
 changes what the owner reads. Nothing else is normalised, so any other edit voids a verdict.
 
-The record is keyed by sha, so it names one version and its review alone. This module only reads
+The record is keyed by sha, so it names one version and its reviews alone. This module only reads
 records and files: the hook imports it and must stay fast.
 """
 
@@ -100,21 +102,56 @@ def records_for(root: Path, plan_path: str) -> list[dict[str, Any]]:
 
 @dataclass(frozen=True)
 class Verdict:
-    """Where one review stands: `agree`, `revise`, `running`, or `none` (ended without a verdict,
-    or its dispatch is missing). `detail` is the dispatch state or the summary's first line."""
+    """Where a review stands: `agree`, `revise`, `running`, or `none` (ended without a verdict,
+    or its dispatch is missing). `dispatch_id` names the reviewers the state comes from; `detail`
+    is the dispatch state or the summary's first line."""
 
     state: str
     dispatch_id: str
     detail: str = ""
 
 
+def reviewer_ids(rec: dict[str, Any]) -> list[str]:
+    """The record's reviewer dispatches: its `reviewers`, or the one `dispatch_id` of a record
+    written before there were two."""
+    if "reviewers" in rec:
+        return [str(r.get("dispatch_id") or "") for r in dict_list(rec.get("reviewers"))]
+    return [str(rec.get("dispatch_id") or "")]
+
+
 def verdict(root: Path, rec: dict[str, Any]) -> Verdict:
-    """Read the review's dispatch. A dispatch whose work order does not carry the record's sha
+    """Combine the reviewers' verdicts: `running` while any runs, `revise` if any revised, `agree`
+    only if all agreed, else `none` naming the reviewer that gave no verdict."""
+    sha = str(rec.get("sha256") or "")
+    ids = reviewer_ids(rec)
+    if not ids:
+        return Verdict("none", "", "its record names no reviewer")
+    seen = [_one(root, dispatch_id, sha) for dispatch_id in ids]
+    if len(seen) == 1:
+        return seen[0]
+    for state in ("running", "revise"):
+        hit = [v for v in seen if v.state == state]
+        if hit:
+            return Verdict(state, " and ".join(v.dispatch_id for v in hit), hit[0].detail)
+    silent = [v for v in seen if v.state != "agree"]
+    if not silent:
+        return Verdict("agree", " and ".join(ids), seen[0].detail)
+    who = {
+        str(r.get("dispatch_id") or ""): f" ({r.get('provider')} {r.get('model')})"
+        for r in dict_list(rec.get("reviewers"))
+    }
+    return Verdict(
+        "none",
+        " and ".join(v.dispatch_id for v in silent),
+        "; ".join(f"reviewer {v.dispatch_id}{who.get(v.dispatch_id, '')}: {v.detail}" for v in silent),
+    )
+
+
+def _one(root: Path, dispatch_id: str, sha: str) -> Verdict:
+    """Read one reviewer's dispatch. A dispatch whose work order does not carry the record's sha
     is not that review, whatever the record says."""
     from .dispatch.state import load
 
-    dispatch_id = str(rec.get("dispatch_id") or "")
-    sha = str(rec.get("sha256") or "")
     try:
         d = load(root, dispatch_id)
     except Exception:  # noqa: BLE001 — a missing or unreadable dispatch is no verdict
@@ -144,10 +181,10 @@ def launch_warning(root: Path, *, feature: int | None, row: str | None) -> str:
         return ""
     for rec in all_records(root):
         try:
-            reviewed = load(root, str(rec.get("dispatch_id") or "")).get("feature")
+            reviewed = {load(root, dispatch_id).get("feature") for dispatch_id in reviewer_ids(rec)}
         except Exception:  # noqa: BLE001, S112 — an unreadable review is not this feature's agreement
             continue
-        if reviewed == feature and verdict(root, rec).state == "agree":
+        if reviewed == {feature} and verdict(root, rec).state == "agree":
             return ""
     return (
         f"plan review: feature {feature:03d} has no agreed plan review on record. Run the `dispatch` "
