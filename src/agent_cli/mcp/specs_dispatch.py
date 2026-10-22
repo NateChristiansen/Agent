@@ -268,6 +268,27 @@ def dispatch(
             note=message,
             reraise_of=reraise_of,
         )
+    if action == "code-review":
+        return ops.dispatch_code_review(
+            ctx.root,
+            dispatch_id=dispatch_id,
+            branch=branch,
+            base=base,
+            paths=paths,
+            repo=repo,
+            session_id=ctx.session_id(session_id, required=True),
+        )
+    if action == "code-ledger":
+        return ops.dispatch_code_ledger(
+            ctx.root,
+            dispatch_id=dispatch_id,
+            branch=branch,
+            repo=repo,
+            finding_id=finding_id,
+            disposition=disposition,
+            note=message,
+            reraise_of=reraise_of,
+        )
     raise AgentError(
         f"unknown dispatch action {action!r}"
     )  # unreachable: the schema enum already refuses this
@@ -309,7 +330,8 @@ DISPATCH_TOOLS: dict[str, ToolSpec] = {
         "supervisor `collect`; keep a worker's untracked files `collect-files`; remove worktrees `cleanup`; "
         "drop a lost checkout's registration `reconcile`; put an unfinished one back `restore`; delete an "
         "abandoned worker's scratch `discard-files`; outcomes and spend `ledger`; review a plan `plan-review`; "
-        "read or dispose of a plan's review findings `plan-ledger`. "
+        "read or dispose of a plan's review findings `plan-ledger`; review a branch head `code-review`; "
+        "read or dispose of a branch's review findings `code-ledger`. "
         "Ids read `NNN-<tag>-SS` (e.g. 001-mac-01), or legacy `NNN-SS`. "
         "`new` (repo, prompt; feature defaults to current; a manager session id, so pass `session_id` from "
         "the session-start block when the server cannot see it) sends a self-contained work order into its "
@@ -406,7 +428,12 @@ DISPATCH_TOOLS: dict[str, ToolSpec] = {
         "round raised again. Never show the ledger to a reviewer. With finding_id and disposition=fixed "
         "(message = the changed section) or disposition=rejected (message = the reason) it records your "
         "disposition; with finding_id and reraise_of=<earlier id> it links a re-raise. It does not run in "
-        "plan mode. `list`, `show` and `watch` stay one release as `dispatch_read` aliases; this `show` returns "
+        "plan mode. `code-review` (a build dispatch_id, or branch, base and paths = [the acceptance file], "
+        "optionally repo; session_id) runs the same round on a branch head: two blind reviewers pinned to "
+        "the head sha with the base as comparison, then one verifier. Each call advances that head's round; "
+        "a complete round on the same head is reported, a new head starts a new round, and after three "
+        "complete rounds of the branch the owner decides with the ledger shown. `code-ledger` (dispatch_id "
+        "or branch, optionally repo) is `plan-ledger` for a branch. `list`, `show` and `watch` stay one release as `dispatch_read` aliases; this `show` returns "
         "the full record, clears chat-pending and, for the launcher or adopting manager, marks the verdict read.",
         destructive=True,
     ),

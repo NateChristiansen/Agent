@@ -24,6 +24,7 @@ from __future__ import annotations
 from . import adrs, dispatch, features, infra, notes, reconcile, repos, sessions, status
 from ._shared import Op, render_views
 from .adrs import adr_new
+from .code_review import dispatch_code_ledger, dispatch_code_review
 from .dispatch import (
     DISPATCH_WATCH_LINES,
     dispatch_abandon,
@@ -233,6 +234,8 @@ __all__ = [
     "dispatch_ack",
     "dispatch_cancel",
     "dispatch_cleanup",
+    "dispatch_code_ledger",
+    "dispatch_code_review",
     "dispatch_collect",
     "dispatch_collect_files",
     "dispatch_consume",

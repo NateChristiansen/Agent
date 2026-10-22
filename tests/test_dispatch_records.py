@@ -12,14 +12,18 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from agent_cli import capture as capture_mod
-from agent_cli import dispatch, launcher, sessions, templates
+from agent_cli import dispatch, frontmatter, launcher, sessions, templates
 from agent_cli import features as features_mod
+from agent_cli import plan_review_ledger as ledger
 from agent_cli import repos as repos_mod
 from agent_cli.core import AgentError
+from agent_cli.ops import code_review as ops_code_review
+from agent_cli.ops import plan_review as ops_plan_review
 from dispatch_helpers import (  # noqa: F401 -- droot is a pytest fixture, used only as a parameter name
     PROMPT,
     _log,
@@ -469,3 +473,101 @@ def test_detach_spawns_supervisor_in_new_session(droot: Path, fake_claude, monke
     assert fake_claude.calls() == []
     with pytest.raises(AgentError, match="is queued"):
         dispatch.resume(droot, dispatch_id="001-mac-01", answer="x")
+
+
+# ------------------------------------------------------------------ blind review dispatches
+
+EARLIER_VERDICT = "The previous review returned VERDICT: revise because widget.py:1 was wrong."
+
+
+def _context_names_a_verdict(root: Path) -> None:
+    plan = root / "features/001-alpha-work/plan.md"
+    meta, body = frontmatter.load(plan)
+    frontmatter.dump(plan, meta, body.replace("## Context\n", f"## Context\n\n{EARLIER_VERDICT}\n"))
+
+
+def _readonly(root: Path, monkeypatch: pytest.MonkeyPatch, order: str, provider: str, **over: Any) -> dict:
+    """One `launch_readonly` launch through the real `dispatch.new`, placed in the alpha feature."""
+    real = dispatch.new
+    monkeypatch.setattr(
+        dispatch,
+        "new",
+        lambda r, **kw: real(
+            r, **{**kw, "feature": "1", "tasks": ["1"], "budget_reason": "review row", **over}
+        ),
+    )
+    model, effort = ("gpt-6.1-sol", "high") if provider == "codex" else ("sonnet", "high")
+    return ledger.launch_readonly(
+        root,
+        prompt=order,
+        provider=provider,
+        model=model,
+        effort=effort,
+        row="review",
+        choice_reason="blind review",
+        session_id=None,
+        repo="alpha",
+        target="main",
+    )
+
+
+def _orders() -> dict[str, tuple[str, str]]:
+    entries = [{"id": "F1", "text": "widget.py:1 returns 2", "round": 1, "client": "codex"}]
+    return {
+        "plan reviewer": ("claude", ops_plan_review.work_order("ab" * 32, "# Plan\n\nBuild the widget.\n")),
+        "code reviewer": (
+            "codex",
+            ops_code_review.work_order("aaa111", "bbb222", "1. `widget()` returns 3."),
+        ),
+        "verifier": ("codex", ledger.verifier_work_order("ab" * 32, "# Plan\n", entries)),
+    }
+
+
+@pytest.mark.parametrize("who", ["plan reviewer", "code reviewer", "verifier"])
+def test_a_blind_review_prompt_carries_no_feature_context(droot: Path, monkeypatch, who: str):
+    """A feature's Context records earlier verdicts; a reviewer that read them was not blind."""
+    _context_names_a_verdict(droot)
+    provider, order = _orders()[who]
+    p = _readonly(droot, monkeypatch, order, provider, dry_run=True)
+    text = p["prompt"]
+    assert EARLIER_VERDICT not in text
+    assert p["blind"] is True
+    assert "Alpha work" not in text and "add the readme line" not in text
+    for section in ("## Feature context", "## Tasks assigned to you", "## Repo notes", "feature folder"):
+        assert section not in text
+    assert "\nnonce: " in text and order.strip("\n") in text
+    assert "## Workspace" in text and f"- branch: {p['branch']}" in text and "- review target: main" in text
+
+
+def test_a_blind_dispatch_stays_blind_on_resume_and_escalation(droot: Path, monkeypatch, fake_claude):
+    _context_names_a_verdict(droot)
+    q = envelope("question", open_questions=["which file?"])
+    fake_claude.scenario([one(q), one(envelope(cost=0.1))])
+    _, order = _orders()["plan reviewer"]
+    real = dispatch.new
+    d = _readonly(droot, monkeypatch, order, "claude", watch=True)
+    assert d["state"] == "question" and d["blind"] is True
+    assert dispatch.load(droot, d["id"])["blind"] is True
+    assert EARLIER_VERDICT not in dispatch.file(droot, d["id"], ".prompt.md").read_text(encoding="utf-8")
+    dispatch.resume(droot, dispatch_id=d["id"], answer="read the plan file", watch=True)
+    assert all(EARLIER_VERDICT not in c["prompt"] for c in fake_claude.calls())
+    monkeypatch.setattr(dispatch, "new", real)
+    up = dispatch.new(
+        droot,
+        repo=None,
+        feature="1",
+        prompt="Review again at high effort.",
+        escalate_from=d["id"],
+        budget_reason="review row",
+        dry_run=True,
+    )
+    assert up["blind"] is True and EARLIER_VERDICT not in up["prompt"]
+    assert "## Feature context" not in up["prompt"]
+
+
+def test_an_ordinary_dispatch_keeps_its_feature_context(droot: Path):
+    _context_names_a_verdict(droot)
+    p = _new(droot, tasks=["1"], dry_run=True)
+    assert "blind" not in p
+    assert "## Feature context" in p["prompt"] and EARLIER_VERDICT in p["prompt"]
+    assert "1. (#1) add the readme line" in p["prompt"] and "## Repo notes" in p["prompt"]

@@ -23,10 +23,11 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from .. import dispatch as dispatch_mod
 from .. import plan_review, sessions
 from .. import plan_review_ledger as ledger_mod
 from ..core import AgentError, atomic_write, iso, now
@@ -43,8 +44,8 @@ REVIEWERS: tuple[tuple[str, str, str], ...] = (
 AGAIN = "call `plan-review` again on the same plan after the supervisor reports a return"
 
 
-def _write_snapshot(path: Path, body: bytes) -> None:
-    """Write the frozen plan read-only. One that exists already holds these exact bytes (its
+def write_snapshot(path: Path, body: bytes) -> None:
+    """Write frozen review input (a plan, an acceptance) read-only. One that exists already holds these exact bytes (its
     name is their hash), and a read-only file cannot be replaced on Windows, so it is kept."""
     if path.exists():
         return
@@ -66,14 +67,9 @@ def work_order(sha: str, text: str) -> str:
         f"Plan review of sha256 {sha}: a fresh, read-only review of a plan before the owner sees it.\n\n"
         "Review only the plan snapshot below. It is frozen: do not open the plan's live file, which may "
         "have changed since. Change no file; this dispatch is read-only.\n\n"
-        "Do not stop with a certain number of findings. Deeply review the entire plan and bring back the "
-        "ENTIRE list of findings, to avoid multiple revision rounds as best possible.\n\n"
+        f"{plan_review.exhaustive('plan')}\n\n"
         "Blocking rules:\n"
-        "1. A threshold or bar that is not in the plan's own acceptance criteria is optional, never "
-        "blocking.\n"
-        "2. Blocking means a failure against the plan's acceptance on a path real use takes or "
-        "plausibly would. A failure needing tampering, stacked faults, or input no one produces is "
-        "optional unless you show it is likely.\n\n"
+        f"{plan_review.blocking_rules(plan_review.BAR, plan_review.ACCEPTANCE)}\n\n"
         f"Reply: the first line of your returned summary is exactly `{plan_review.AGREE}` or "
         f"`{plan_review.REVISE}`. Revise only for blocking findings. List each blocking finding under "
         "`Blocking:`, and label every other point `Optional:`. Each finding states its path and the "
@@ -211,13 +207,60 @@ def _ends_section(heading: re.Match[str], level: int, current: list[str] | None)
     return current is None or heading["label"].strip().casefold() not in _FIELD
 
 
-# ---------------------------------------------------------------- the round record
+# ---------------------------------------------------------------- the round engine
 
 
-def _save(root: Path, rec: dict[str, Any]) -> None:
+@dataclass(frozen=True)
+class Flow:
+    """What the round engine needs from one review action: its names, the record key holding
+    the reviewed version, where a round record lives, the round's ledger, the reviewers' work
+    order and placement (`launch_readonly` keywords), and what a finished round tells the
+    manager: `passes` when nothing blocks, `shut` after the verified blocking ids."""
+
+    noun: str
+    action: str
+    again: str
+    version: str
+    path: Callable[[Path, dict[str, Any]], Path]
+    book: Callable[[Path, dict[str, Any]], ledger_mod.Book]
+    order: Callable[[dict[str, Any]], str]
+    placement: Callable[[dict[str, Any]], dict[str, Any]]
+    reason: str
+    passes: str
+    shut: str
+
+    @property
+    def again_line(self) -> str:
+        return f"{self.again[0].upper()}{self.again[1:]}"
+
+
+def _plan_order(rec: dict[str, Any]) -> str:
+    body = Path(str(rec["snapshot"])).read_bytes().decode("utf-8", errors="replace")
+    return work_order(str(rec["sha256"]), body)
+
+
+PLAN = Flow(
+    noun="plan review",
+    action="plan-review",
+    again=AGAIN,
+    version="sha256",
+    path=lambda root, rec: plan_review.round_path(root, str(rec["sha256"]), int(rec["round"])),
+    book=lambda root, rec: ledger_mod.plan_book(root, str(rec["plan_path"])),
+    order=_plan_order,
+    # The plan travels in the work order, so landed main is the right checkout.
+    placement=lambda rec: {},
+    reason="plan review: one of two blind reviewers, read-only",
+    passes="ExitPlanMode passes on these bytes.",
+    shut=(
+        "ExitPlanMode stays shut on these bytes. Revise the plan and record each disposition "
+        "(`plan-ledger`), or reject a finding with reasons; then call `plan-review` again for a fresh round."
+    ),
+)
+
+
+def save(root: Path, flow: Flow, rec: dict[str, Any]) -> None:
     rec["updated_at"] = iso(now())
-    path = plan_review.round_path(root, str(rec["sha256"]), int(rec["round"]))
-    atomic_write(path, json.dumps(rec, indent=2, sort_keys=True) + "\n")
+    atomic_write(flow.path(root, rec), json.dumps(rec, indent=2, sort_keys=True) + "\n")
 
 
 def _label(slots: list[dict[str, Any]]) -> str:
@@ -238,31 +281,48 @@ def _next_round(root: Path, plan: str, sha: str) -> int:
     return n
 
 
-def _launch_reviewer(root: Path, order: str, provider: str, model: str, effort: str, sid: str | None) -> str:
-    from ..verify_record import harness_repo
-
-    repo = harness_repo(root)
-    result = dispatch_mod.new(
+def _launch_reviewer(
+    root: Path,
+    flow: Flow,
+    order: str,
+    placement: dict[str, Any],
+    provider: str,
+    model: str,
+    effort: str,
+    sid: str | None,
+) -> str:
+    result = ledger_mod.launch_readonly(
         root,
-        repo=str(repo.name),
-        feature="current",
         prompt=order,
         provider=provider,
-        row=ROW,
         model=model,
         effort=effort,
-        # The plan travels in the work order, so landed main is the right checkout.
-        base=repo.default_branch,
-        writes=[],
-        no_checks=True,
-        # The owner's standing rule launches this review without a per-launch preview.
-        just_go=True,
-        # The plan's own fences are data under review, not commands the reviewer runs.
-        allow_unmatched=True,
-        choice_reason="plan review: one of two blind reviewers, read-only",
+        row=ROW,
+        choice_reason=flow.reason,
         session_id=sid,
+        **placement,
     )
     return str(result["id"])
+
+
+def launch_reviewers(
+    root: Path, flow: Flow, order: str, placement: dict[str, Any], sid: str | None
+) -> list[dict[str, Any]]:
+    """Launch a round's blind reviewers on one work order; their slots, in `REVIEWERS` order."""
+    reviewers: list[dict[str, Any]] = []
+    for provider, model, effort in REVIEWERS:
+        try:
+            dispatch_id = _launch_reviewer(root, flow, order, placement, provider, model, effort, sid)
+        except AgentError as exc:
+            if not reviewers:
+                raise
+            launched = _label(reviewers)
+            raise AgentError(
+                f"{flow.noun} launched {launched} but not its {provider} reviewer: {exc}. "
+                f"Cancel {launched}, then call {flow.action} again."
+            ) from exc
+        reviewers.append({"dispatch_id": dispatch_id, "provider": provider, "model": model, "effort": effort})
+    return reviewers
 
 
 def _dispatch(root: Path, dispatch_id: str) -> tuple[str, str]:
@@ -304,10 +364,8 @@ def dispatch_plan_review(root: Path, *, paths: list[str], session_id: str | None
             seen = plan_review.verdict(root, latest)
             if seen.state == "running":
                 return Op(latest, f"review {seen.dispatch_id} of this exact plan is still running; {AGAIN}.")
-        elif latest is not None and latest.get("phase") == "reviewing":
-            return _reviewing(root, latest, sid)
-        elif latest is not None and latest.get("phase") == "verifying":
-            return _verifying(root, latest, sid)
+        elif latest is not None and latest.get("phase") in ("reviewing", "verifying"):
+            return advance(root, PLAN, latest, sid)
         return _launch_round(root, plan, raw, sha, sid)
 
 
@@ -315,21 +373,9 @@ def _launch_round(root: Path, plan: Path, raw: bytes, sha: str, sid: str | None)
     body = plan_review.normalise(raw)
     round_no = _next_round(root, str(plan), sha)
     snapshot = plan_review.reviews_dir(root) / f"{sha}.md"
-    _write_snapshot(snapshot, body)
+    write_snapshot(snapshot, body)
     order = work_order(sha, body.decode("utf-8", errors="replace"))
-    reviewers: list[dict[str, Any]] = []
-    for provider, model, effort in REVIEWERS:
-        try:
-            dispatch_id = _launch_reviewer(root, order, provider, model, effort, sid)
-        except AgentError as exc:
-            if not reviewers:
-                raise
-            launched = _label(reviewers)
-            raise AgentError(
-                f"plan review launched {launched} but not its {provider} reviewer: {exc}. "
-                f"Cancel {launched}, then call plan-review again."
-            ) from exc
-        reviewers.append({"dispatch_id": dispatch_id, "provider": provider, "model": model, "effort": effort})
+    reviewers = launch_reviewers(root, PLAN, order, {}, sid)
     rec: dict[str, Any] = {
         "sha256": sha,
         "plan_path": str(plan),
@@ -343,7 +389,7 @@ def _launch_round(root: Path, plan: Path, raw: bytes, sha: str, sid: str | None)
         "session_id": sid,
         "launched_at": iso(now()),
     }
-    _save(root, rec)
+    save(root, PLAN, rec)
     names = " and ".join(f"{r['dispatch_id']} ({r['provider']} {r['model']})" for r in reviewers)
     return Op(
         rec,
@@ -352,29 +398,41 @@ def _launch_round(root: Path, plan: Path, raw: bytes, sha: str, sid: str | None)
     )
 
 
-def _relaunch(root: Path, rec: dict[str, Any], slot: dict[str, Any], sid: str | None) -> str:
-    body = Path(str(rec["snapshot"])).read_bytes().decode("utf-8", errors="replace")
-    order = work_order(str(rec["sha256"]), body)
+def advance(root: Path, flow: Flow, rec: dict[str, Any], sid: str | None) -> Op:
+    """Move a `reviewing` or `verifying` round one step (module docstring)."""
+    if rec.get("phase") == "verifying":
+        return _verifying(root, flow, rec, sid)
+    return _reviewing(root, flow, rec, sid)
+
+
+def _relaunch(root: Path, flow: Flow, rec: dict[str, Any], slot: dict[str, Any], sid: str | None) -> str:
     new_id = _launch_reviewer(
-        root, order, str(slot["provider"]), str(slot["model"]), str(slot["effort"]), sid
+        root,
+        flow,
+        flow.order(rec),
+        flow.placement(rec),
+        str(slot["provider"]),
+        str(slot["model"]),
+        str(slot["effort"]),
+        sid,
     )
     slot["relaunch_of"] = slot["dispatch_id"]
     slot["dispatch_id"] = new_id
     return new_id
 
 
-def _stalled(root: Path, rec: dict[str, Any], why: str) -> Op:
+def _stalled(root: Path, flow: Flow, rec: dict[str, Any], why: str) -> Op:
     rec["stalled"] = why
-    _save(root, rec)
+    save(root, flow, rec)
     return Op(
         rec,
-        f"plan review round {rec['round']} cannot complete: {why}. It stays incomplete; bring it to "
+        f"{flow.noun} round {rec['round']} cannot complete: {why}. It stays incomplete; bring it to "
         "the owner, who decides how to go on.",
     )
 
 
-def _reviewing(root: Path, rec: dict[str, Any], sid: str | None) -> Op:
-    sha = str(rec["sha256"])
+def _reviewing(root: Path, flow: Flow, rec: dict[str, Any], sid: str | None) -> Op:
+    sha = str(rec[flow.version])
     slots = dict_list(rec.get("reviewers"))
     running: list[str] = []
     failed: list[tuple[dict[str, Any], str]] = []
@@ -397,34 +455,39 @@ def _reviewing(root: Path, rec: dict[str, Any], sid: str | None) -> Op:
         why = "; ".join(
             f"reviewer {s['relaunch_of']} and its relaunch {s['dispatch_id']}: {w}" for s, w in twice
         )
-        return _stalled(root, rec, f"{why}, so no usable return")
+        return _stalled(root, flow, rec, f"{why}, so no usable return")
     if running:
         return Op(
             rec,
-            f"plan review round {rec['round']}: reviewer {' and '.join(running)} is still running; "
-            f"nothing launched. {AGAIN[0].upper()}{AGAIN[1:]}.",
+            f"{flow.noun} round {rec['round']}: reviewer {' and '.join(running)} is still running; "
+            f"nothing launched. {flow.again_line}.",
         )
     relaunched: list[str] = []
     for slot, _ in failed:
-        relaunched.append(_relaunch(root, rec, slot, sid))
+        relaunched.append(_relaunch(root, flow, rec, slot, sid))
         # Saved per relaunch, so a later launch failure cannot lead a retry to relaunch this slot again.
         rec["dispatch_id"] = _label(slots)
         rec["reviewers"] = slots
-        _save(root, rec)
+        save(root, flow, rec)
     if relaunched:
         why = "; ".join(f"{s['relaunch_of']}: {w}" for s, w in failed)
         return Op(
             rec,
-            f"plan review round {rec['round']}: relaunched {', '.join(relaunched)} once ({why}). "
-            f"When it returns, {AGAIN}.",
+            f"{flow.noun} round {rec['round']}: relaunched {', '.join(relaunched)} once ({why}). "
+            f"When it returns, {flow.again}.",
         )
-    return _to_verifier(root, rec, slots, texts, sid)
+    return _to_verifier(root, flow, rec, slots, texts, sid)
 
 
 def _to_verifier(
-    root: Path, rec: dict[str, Any], slots: list[dict[str, Any]], texts: dict[str, list[str]], sid: str | None
+    root: Path,
+    flow: Flow,
+    rec: dict[str, Any],
+    slots: list[dict[str, Any]],
+    texts: dict[str, list[str]],
+    sid: str | None,
 ) -> Op:
-    plan, round_no = str(rec["plan_path"]), int(rec["round"])
+    book, round_no = flow.book(root, rec), int(rec["round"])
     if "findings" not in rec:
         ids: list[str] = []
         for slot in slots:
@@ -432,8 +495,8 @@ def _to_verifier(
             if found:
                 added = ledger_mod.add_findings(
                     root,
-                    plan,
-                    plan_sha=str(rec["sha256"]),
+                    book,
+                    plan_sha=str(rec[flow.version]),
                     round_no=round_no,
                     dispatch_id=str(slot["dispatch_id"]),
                     client=str(slot["provider"]),
@@ -441,49 +504,48 @@ def _to_verifier(
                 )
                 ids += [str(e["id"]) for e in added]
         rec["findings"] = ids
-        _save(root, rec)
+        save(root, flow, rec)
     if not rec["findings"]:
         rec["phase"], rec["blocking"] = "complete", []
-        _save(root, rec)
+        save(root, flow, rec)
         return Op(
             rec,
-            f"plan review round {round_no} is complete and clean: neither reviewer raised a finding. "
-            "ExitPlanMode passes on these bytes.",
+            f"{flow.noun} round {round_no} is complete and clean: neither reviewer raised a finding. "
+            f"{flow.passes}",
         )
     # A call that failed after launching the verifier left it on the ledger: adopt that one.
-    held = as_dict_or_none(ledger_mod.load(root, plan)["verifiers"].get(str(round_no)))
+    held = as_dict_or_none(ledger_mod.load(root, book)["verifiers"].get(str(round_no)))
     if held is None:
         held = {
             "dispatch_id": ledger_mod.launch_verifier(
-                root, plan_path=plan, round_no=round_no, session_id=sid
+                root, plan_path=book, round_no=round_no, session_id=sid
             )["id"]
         }
     rec["verifier"] = {"dispatch_id": str(held["dispatch_id"])}
     rec["phase"] = "verifying"
-    _save(root, rec)
+    save(root, flow, rec)
     return Op(
         rec,
-        f"plan review round {round_no}: {len(rec['findings'])} finding(s) in the ledger "
-        f"({', '.join(rec['findings'])}); verifier {held['dispatch_id']} launched. When it returns, {AGAIN}.",
+        f"{flow.noun} round {round_no}: {len(rec['findings'])} finding(s) in the ledger "
+        f"({', '.join(rec['findings'])}); verifier {held['dispatch_id']} launched. When it returns, {flow.again}.",
     )
 
 
-def _verifying(root: Path, rec: dict[str, Any], sid: str | None) -> Op:
-    plan, round_no = str(rec["plan_path"]), int(rec["round"])
+def _verifying(root: Path, flow: Flow, rec: dict[str, Any], sid: str | None) -> Op:
+    book, round_no = flow.book(root, rec), int(rec["round"])
     verifier = as_dict_or_none(rec.get("verifier")) or {}
     vid = str(verifier.get("dispatch_id") or "")
     state, summary = _dispatch(root, vid)
     if state in plan_review.RUNNING_STATES:
         return Op(
             rec,
-            f"plan review round {round_no}: verifier {vid} is still running; nothing launched. "
-            f"{AGAIN[0].upper()}{AGAIN[1:]}.",
+            f"{flow.noun} round {round_no}: verifier {vid} is still running; nothing launched. {flow.again_line}.",
         )
     if state == "done":
-        missing = ledger_mod.record_verifier(root, plan, round_no=round_no, summary=summary, dispatch_id=vid)
+        missing = ledger_mod.record_verifier(root, book, round_no=round_no, summary=summary, dispatch_id=vid)
     else:
         missing = [str(f) for f in cast("list[object]", rec.get("findings") or [])]
-    ledger = ledger_mod.load(root, plan)
+    ledger = ledger_mod.load(root, book)
     disputes = ledger_mod.disputes(ledger)
     if not missing:
         kept = [
@@ -491,32 +553,28 @@ def _verifying(root: Path, rec: dict[str, Any], sid: str | None) -> Op:
         ]
         rec["phase"], rec["blocking"] = "complete", kept
         rec.pop("stalled", None)
-        _save(root, rec)
+        save(root, flow, rec)
         if kept:
-            tail = (
-                f"verified blocking: {', '.join(kept)}. ExitPlanMode stays shut on these bytes. Revise the plan "
-                "and record each disposition (`plan-ledger`), or reject a finding with reasons; then call "
-                "`plan-review` again for a fresh round."
-            )
+            tail = f"verified blocking: {', '.join(kept)}. {flow.shut}"
         else:
-            tail = "no finding is verified blocking. ExitPlanMode passes on these bytes."
+            tail = f"no finding is verified blocking. {flow.passes}"
         return Op(
             {**rec, "disputes": disputes},
-            f"plan review round {round_no} is complete: {tail} Disputes for the owner: "
-            f"{_disputes_text(disputes)}.",
+            f"{flow.noun} round {round_no} is complete: {tail} Disputes for the owner: "
+            f"{disputes_text(disputes)}.",
         )
     why = f"verifier {vid} ended {state or 'unknown'} leaving {', '.join(missing)} without a result"
     if verifier.get("relaunch_of"):
-        return _stalled(root, rec, f"the relaunched {why}; disputes: {_disputes_text(disputes)}")
-    new = ledger_mod.launch_verifier(root, plan_path=plan, round_no=round_no, session_id=sid, replaces=vid)
+        return _stalled(root, flow, rec, f"the relaunched {why}; disputes: {disputes_text(disputes)}")
+    new = ledger_mod.launch_verifier(root, plan_path=book, round_no=round_no, session_id=sid, replaces=vid)
     rec["verifier"] = {"dispatch_id": str(new["id"]), "relaunch_of": vid}
-    _save(root, rec)
+    save(root, flow, rec)
     return Op(
         rec,
-        f"plan review round {round_no}: {why}; relaunched the verifier once as {new['id']}. When it "
-        f"returns, {AGAIN}.",
+        f"{flow.noun} round {round_no}: {why}; relaunched the verifier once as {new['id']}. When it "
+        f"returns, {flow.again}.",
     )
 
 
-def _disputes_text(disputes: list[dict[str, Any]]) -> str:
+def disputes_text(disputes: list[dict[str, Any]]) -> str:
     return ", ".join(f"{d['finding']['id']} ({d['kind']})" for d in disputes) or "none"

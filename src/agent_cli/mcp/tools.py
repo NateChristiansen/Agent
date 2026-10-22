@@ -41,6 +41,8 @@ DispatchAction = Literal[
     "plan-review",
     "consume",
     "plan-ledger",
+    "code-review",
+    "code-ledger",
 ]
 PlanDisposition = Literal["fixed", "rejected"]
 #: `dispatch_read`'s actions: the read-only ones, which `dispatch` keeps as aliases for one release.

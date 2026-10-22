@@ -161,6 +161,7 @@ def new(
     task_check: dict[str, Any] | None = None,
     compare: str | None = None,
     pr: str | None = None,
+    blind: bool = False,
 ) -> dict[str, Any]:
     """Create and start a dispatch (A1 `new`). `task_check` is the summary of the pickup check
     the caller ran before launch; it is kept on the record and never gates. `provider` and `row`
@@ -176,7 +177,8 @@ def new(
     repo values; `writes` reserves paths on the board (`write_scope.reserve`). `max_attempts`
     may lower the automatic-retry cap from `MAX_ATTEMPTS` (1 queues no timeout retry). `repo` may
     be omitted only for a research request (`_launch_repo`); `compare` and `pr` are a review's
-    comparison base and PR identity (`_review`)."""
+    comparison base and PR identity (`_review`). `blind` composes the work order with no feature
+    Context, tasks or repo notes (`compose_prompt`); an escalation of a blind dispatch stays blind."""
     if not prompt or not prompt.strip():
         raise AgentError("the work order is empty; pass `prompt`")
     if max_attempts is not None and (type(max_attempts) is not int or not 1 <= max_attempts <= MAX_ATTEMPTS):
@@ -211,6 +213,7 @@ def new(
             )
         feature = str(old["feature"])
         repo = repo or str(old["repo"])
+        blind = blind or old.get("blind") is True
     feat = features_mod.resolve(root, feature, session_id)
     if not feat.is_open:
         raise AgentError(f"feature {feat.number} is {feat.status}; dispatch only into open features")
@@ -304,6 +307,7 @@ def new(
         escalated_from=escalated_from,
         forked_from=escalate_from if forked_from_session else None,
         review=review,
+        blind=bool(blind),
     )
     ts = iso(now())
     d: dict[str, Any] = {
@@ -345,6 +349,7 @@ def new(
         "just_go": bool(just_go),
         "mcp": mcp_profiles,
         "no_checks": bool(no_checks),
+        **({"blind": True} if blind else {}),
         "escalated_from": escalate_from or None,
         "launched_by_session": _launching_session(root, session_id),
         "forked_from_session": forked_from_session,
@@ -415,6 +420,7 @@ def new(
             "notify": channels,
             "mcp": mcp_profiles,
             "no_checks": bool(no_checks),
+            **({"blind": True} if blind else {}),
             "escalated_from": escalate_from or None,
             "forked_from_session": forked_from_session,
             "prompt_bytes": len(text.encode("utf-8")),

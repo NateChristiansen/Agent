@@ -58,6 +58,7 @@ def compose_prompt(
     escalated_from: tuple[str, str] | None = None,
     forked_from: str | None = None,
     review: Mapping[str, object] | None = None,
+    blind: bool = False,
 ) -> str:
     """The work order on stdin (A3): task verbatim, feature context, assigned tasks, repo
     notes, workspace, and the thread on resumes. `escalated_from` (item 2, `--escalate-from`)
@@ -65,8 +66,11 @@ def compose_prompt(
     reads what the previous one was last told. `forked_from` is the same escalation when the
     old session could be forked instead: the whole conversation is already in this
     worker's context, so nothing is pasted. But the old work order is in there too, nonce and
-    all, and this is where the new one is told to win."""
-    context = plan_section(feature.body, "Context") or "(the plan has no Context yet)"
+    all, and this is where the new one is told to win.
+
+    A `blind` order (a reviewer or a verifier) keeps only the nonce, the task and the workspace:
+    a feature's Context, its tasks and its folder record earlier verdicts, and a reviewer that
+    reads them anchors toward agreement."""
     lines = [
         f"# Work order {dispatch_id} — {repo.name}",
         "",
@@ -93,12 +97,41 @@ def compose_prompt(
             old_text.strip("\n") or "(no manager message recorded)",
             "",
         ]
+    lines += ["## Task", "", prompt.strip("\n"), ""]
+    if blind:
+        lines += ["## Workspace", "", *_workspace_lines(branch, worktree, base, review)]
+        lines.append("- never push, never open a PR")
+    else:
+        lines += _feature_lines(repo=repo, feature=feature, prompt=prompt, tasks=tasks, root=root)
+        lines += ["", "## Workspace", "", *_workspace_lines(branch, worktree, base, review)]
+        lines += [
+            "- commit here as you go; never push, never open a PR",
+            f"- the feature folder is readable at {root / feature.rel_dir(root)} (read-only)",
+        ]
+    if thread:
+        lines += ["", "## Thread", ""]
+        lines += _thread_lines(thread)
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _workspace_lines(
+    branch: str, worktree: Path, base: str, review: Mapping[str, object] | None
+) -> list[str]:
+    return [f"- branch: {branch}", f"- path: {worktree}", f"- base: {base}", *_review_lines(review)]
+
+
+def _feature_lines(
+    *,
+    repo: repos_mod.Repo,
+    feature: features_mod.Feature,
+    prompt: str,
+    tasks: list[features_mod.Task],
+    root: Path,
+) -> list[str]:
+    """The Context, assigned tasks, repo notes and conventions sections of a work order."""
+    context = plan_section(feature.body, "Context") or "(the plan has no Context yet)"
     kind = "Request" if feature.is_request else "Feature"
-    lines += [
-        "## Task",
-        "",
-        prompt.strip("\n"),
-        "",
+    lines = [
         f"## {kind} context",
         "",
         f"{kind} {feature.number} {feature.slug}: {feature.meta.get('title', '')}".rstrip(": "),
@@ -128,21 +161,7 @@ def compose_prompt(
     conv = conventions_mod.prompt_section(repo.abs_path(root), prompt, rules)
     if conv:
         lines += ["", *conv]
-    lines += [
-        "",
-        "## Workspace",
-        "",
-        f"- branch: {branch}",
-        f"- path: {worktree}",
-        f"- base: {base}",
-        *_review_lines(review),
-        "- commit here as you go; never push, never open a PR",
-        f"- the feature folder is readable at {root / feature.rel_dir(root)} (read-only)",
-    ]
-    if thread:
-        lines += ["", "## Thread", ""]
-        lines += _thread_lines(thread)
-    return "\n".join(lines).rstrip("\n") + "\n"
+    return lines
 
 
 def compose_followup(d: dict[str, Any]) -> str:

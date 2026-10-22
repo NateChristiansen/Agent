@@ -47,6 +47,28 @@ EXEMPT_RE = re.compile(r"^\s*review:\s*(small|none)\b\s*[—:-]?\s*\S", re.IGNOR
 RUNNING_STATES = frozenset({"queued", "running"})
 #: Rubric rows that build or design; `dispatch new` warns when one launches unreviewed.
 IMPLEMENTATION_ROWS = frozenset({"build", "design", "max"})
+#: What a plan's blocking rules name (`blocking_rules`).
+BAR = "the plan's own acceptance criteria"
+ACCEPTANCE = "the plan's acceptance"
+
+
+def exhaustive(what: str) -> str:
+    """The instruction that asks a reviewer for every finding in `what`, not a sample."""
+    return (
+        f"Do not stop with a certain number of findings. Deeply review the entire {what} and bring back "
+        "the ENTIRE list of findings, to avoid multiple revision rounds as best possible."
+    )
+
+
+def blocking_rules(bar: str, acceptance: str) -> str:
+    """The two numbered rules every reviewer and verifier labels by. `bar` names where a threshold
+    must be written to block; `acceptance` what a blocking failure is against."""
+    return (
+        f"1. A threshold or bar that is not in {bar} is optional, never blocking.\n"
+        f"2. Blocking means a failure against {acceptance} on a path real use takes or plausibly would. "
+        "A failure needing tampering, stacked faults, or input no one produces is optional unless you "
+        "show it is likely."
+    )
 
 
 def reviews_dir(root: Path) -> Path:
@@ -82,7 +104,8 @@ def round_path(root: Path, sha: str, round_no: int) -> Path:
     return reviews_dir(root) / f"{sha}-{round_no}.json"
 
 
-def _read(paths: list[Path]) -> list[dict[str, Any]]:
+def read_records(paths: list[Path]) -> list[dict[str, Any]]:
+    """The readable JSON objects at `paths`, oldest launch first."""
     found: list[dict[str, Any]] = []
     for path in paths:
         try:
@@ -117,7 +140,7 @@ def records(root: Path, sha: str) -> list[dict[str, Any]]:
     base = reviews_dir(root)
     if not base.is_dir():
         return []
-    return _read([base / f"{sha}.json", *sorted(base.glob(f"{sha}-*.json"))])
+    return read_records([base / f"{sha}.json", *sorted(base.glob(f"{sha}-*.json"))])
 
 
 def all_records(root: Path) -> list[dict[str, Any]]:
@@ -125,7 +148,7 @@ def all_records(root: Path) -> list[dict[str, Any]]:
     base = reviews_dir(root)
     if not base.is_dir():
         return []
-    return _read(sorted(base.glob("*.json")))
+    return read_records(sorted(base.glob("*.json")))
 
 
 def records_for(root: Path, plan_path: str) -> list[dict[str, Any]]:
