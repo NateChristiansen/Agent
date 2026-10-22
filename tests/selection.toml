@@ -61,14 +61,17 @@ paths = [
   "src/agent_cli/activity_gate.py", "src/agent_cli/dispatch/lifecycle.py", "src/agent_cli/dispatch/supervisor.py",
   "src/agent_cli/land.py", "tests/dispatch_helpers.py",
 ]
-tests = ["tests/test_activity_launch.py"]
+tests = [
+  "tests/test_activity_launch.py", "tests/test_request_dispatch.py", "tests/test_docs_refs.py",
+  "tests/test_prose_rules.py",
+]
 
 [[bundle]]
 name = "reconcile-sources"
 # The terminal commit saves the ledger intents that publication appends; the source tests drive it
 # through the dispatch helpers.
 paths = ["src/agent_cli/dispatch/terminal.py", "tests/dispatch_helpers.py"]
-tests = ["tests/test_reconcile_sources.py"]
+tests = ["tests/test_reconcile_sources.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py"]
 
 [[bundle]]
 name = "land-helpers"

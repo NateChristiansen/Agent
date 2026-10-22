@@ -329,12 +329,14 @@ def test_the_guard_runs_after_peer_stop_and_before_lease_yield_and_activity():
         "capture",
         "peer-stop",
         "ask-guard",
+        "record-guard",
         "lease-yield",
         "activity",
     ]
     assert [m.name for m in GROUPS["codex-stop"].members] == [
         "capture",
         "ask-guard",
+        "record-guard",
         "lease-yield",
         "codex-activity",
     ]

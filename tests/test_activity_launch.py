@@ -206,7 +206,7 @@ def _branch(root: Path, name: str) -> None:
 
 
 def _uncertified(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse(root: Path, cand: str) -> dict[str, Any]:
+    def refuse(root: Path, cand: str, *, git: object, old: str, budget_raise: str | None) -> dict[str, Any]:
         raise AssertionError("a refused landing reached the certificate")
 
     monkeypatch.setattr(land, "_certificate", refuse)
