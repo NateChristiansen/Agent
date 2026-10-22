@@ -16,7 +16,7 @@ import re
 import shlex
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .. import core, sessions
@@ -357,6 +357,9 @@ def _writes_protected(root: Path, tok: str) -> bool:
         return False
 
 
+SCRATCH_REL = core.agent_path(PurePosixPath(), "scratch").as_posix()
+
+
 def activity_guard(root: Path, payload: dict[str, Any], raw: str) -> str:
     """Status-only manager edit check. This hook is not a sandbox for arbitrary writers."""
     try:
@@ -385,11 +388,7 @@ def activity_guard(root: Path, payload: dict[str, Any], raw: str) -> str:
                 branch = (
                     head.removeprefix("ref: refs/heads/") if head.startswith("ref: refs/heads/") else None
                 )
-            if (
-                rel == "features"
-                or rel.startswith(("features/", ".agent/scratch/"))
-                or rel == ".agent/scratch"
-            ):
+            if rel in ("features", SCRATCH_REL) or rel.startswith(("features/", SCRATCH_REL + "/")):
                 return ""
         else:
             rel = relative(root, raw)
