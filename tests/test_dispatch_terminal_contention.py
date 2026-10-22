@@ -248,6 +248,64 @@ def test_deferred_and_failed_publication_still_queue_worker_retention(wired, mon
     assert queued_ids == [d["id"], d["id"]] and not terminal.pending_path(wired.root, d).exists()
 
 
+def test_a_deferral_whose_spool_failed_is_requeued_by_recovery_until_it_lands(wired, monkeypatch):
+    from agent_cli.hooks import transcript_retention as retention
+    from agent_cli.usage import job
+
+    monkeypatch.delenv("AGENT_NOW", raising=False)
+    monkeypatch.delenv("AGENT_NO_USAGE", raising=False)
+    launched = []
+    monkeypatch.setattr(job, "spawn", lambda cmd, root: launched.append(cmd))
+    spool = wired.root / retention.BASE / "pending"
+    real_save = retention.save
+    unwritable = True
+
+    def flaky(path, data):
+        if unwritable and path.parent == spool:
+            raise OSError("spool unwritable")
+        real_save(path, data)
+
+    monkeypatch.setattr(retention, "save", flaky)
+    d, feat, outcome = verified_outcome(wired, monkeypatch)
+    with held_by_process(wired.root, d["id"], 5):
+        terminal.finalize(wired.root, d, feat, outcome, retry_budget=0.05)
+    marker = terminal.retention_marker(wired.root, d)
+    assert terminal.pending_path(wired.root, d).exists() and marker.exists()
+    assert not list(spool.glob("*.json"))
+
+    terminal.recover_pending(wired.root, [d["id"]])  # publishes, but the spool is still down
+    assert not terminal.pending_path(wired.root, d).exists()
+    assert marker.exists() and not list(spool.glob("*.json"))
+
+    unwritable = False
+    terminal.recover_pending(wired.root, [d["id"]])
+    assert [load_(p)["dispatch_id"] for p in spool.glob("*.json")] == [d["id"]] and launched
+    assert not marker.exists()
+    terminal.recover_pending(wired.root, [d["id"]])  # bounded: a queued retention is not queued again
+    assert len(list(spool.glob("*.json"))) == 1
+
+
+def load_(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_consumer_that_did_not_start_keeps_its_spooled_request_without_a_retry_marker(wired, monkeypatch):
+    from agent_cli.hooks import transcript_retention as retention
+    from agent_cli.usage import job
+
+    monkeypatch.delenv("AGENT_NOW", raising=False)
+    monkeypatch.delenv("AGENT_NO_USAGE", raising=False)
+
+    def no_consumer(cmd, root):
+        raise OSError("cannot launch")
+
+    monkeypatch.setattr(job, "spawn", no_consumer)
+    d, feat, outcome = verified_outcome(wired, monkeypatch)
+    terminal.finalize(wired.root, d, feat, outcome)
+    assert len(list((wired.root / retention.BASE / "pending").glob("*.json"))) == 1
+    assert not terminal.retention_marker(wired.root, d).exists()
+
+
 def test_a_retention_failure_never_blocks_the_terminal_commit(wired, monkeypatch, capsys):
     from agent_cli.hooks import transcript_retention
 

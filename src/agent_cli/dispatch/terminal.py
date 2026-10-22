@@ -83,9 +83,11 @@ def retention_record(d: dict[str, Any]) -> dict[str, Any]:
 def retain_transcripts(root: Path, d: dict[str, Any]) -> None:
     """Queue the worker's transcripts for detached, bounded retention; nothing is copied here.
     Fails open: retention never fails or delays publication, and a request already spooled
-    survives a consumer that did not start."""
+    survives a consumer that did not start. A failure before anything is spooled leaves a
+    marker that `recover_pending` retries until the work is queued."""
     from ..hooks import transcript_retention
 
+    marker = retention_marker(root, d)
     try:
         current = load(root, d["id"])
     except AgentError, OSError, ValueError:
@@ -94,6 +96,31 @@ def retain_transcripts(root: Path, d: dict[str, Any]) -> None:
         transcript_retention.enqueue(root, retention_record(current))
     except Exception as exc:  # noqa: BLE001 — retention is best effort beside the terminal commit
         sys.stderr.write(f"note: transcript retention not queued for {d.get('id')} ({exc})\n")
+        if _spooled(root, d["id"]):
+            marker.unlink(missing_ok=True)
+            return
+        try:
+            atomic_write(marker, json.dumps({"dispatch": d["id"]}) + "\n")
+        except OSError as marker_exc:
+            sys.stderr.write(f"note: retention retry not recorded for {d.get('id')} ({marker_exc})\n")
+        return
+    marker.unlink(missing_ok=True)
+
+
+def retention_marker(root: Path, d: dict[str, Any]) -> Path:
+    return file(root, d["id"], ".retention.pending")
+
+
+def _spooled(root: Path, dispatch_id: str) -> bool:
+    from ..hooks import transcript_retention
+
+    try:
+        return any(
+            transcript_retention.load(path).get("dispatch_id") == dispatch_id
+            for path in (root / transcript_retention.BASE / "pending").glob("*.json")
+        )
+    except OSError, ValueError, AttributeError:
+        return False
 
 
 def _commit(
@@ -296,6 +323,16 @@ def recover_pending(root: Path, dispatch_ids: list[str] | None = None, *, limit:
             d = saved["dispatch"]
             feat = features_mod.resolve(root, str(d["feature"]))
             finalize(root, d, feat, saved["outcome"], retry_budget=0, retain=False)
+        except AgentError, OSError, ValueError, KeyError, TypeError:
+            continue
+    markers = (
+        [path for did in dispatch_ids for path in dispatches_dir(root).glob(f"{did}.retention.pending")]
+        if dispatch_ids is not None
+        else sorted(dispatches_dir(root).glob("*.retention.pending"))
+    )
+    for path in markers[:limit]:
+        try:
+            retain_transcripts(root, load(root, path.name.removesuffix(".retention.pending")))
         except AgentError, OSError, ValueError, KeyError, TypeError:
             continue
 
