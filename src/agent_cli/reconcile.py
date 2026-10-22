@@ -40,6 +40,9 @@ DISPOSITIONS = ("task", "new-task", "no-task", "waiting", "not-accepted")
 PENDING = "pending"
 OBLIGATION = "reconcile"
 INTENT = "reconcile_pending"
+# `{attempt, sha}`: the worktree HEAD a committed attempt ended at, saved with its intents. A
+# landing accepts that attempt's result only when the commit is in a landed tip.
+RESULT_HEAD = "result_head"
 # Dispatch states whose result raises items; questions, probes and owner-closed ones do not.
 RAISING_STATES = ("done", "blocked", "failed")
 

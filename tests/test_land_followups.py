@@ -8,6 +8,7 @@ prepared land journal and settled after `done`, by the landing or by recovery, m
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,8 @@ import pytest
 
 from agent_cli import land_followups as followups
 from agent_cli import land_journal as jn
-from agent_cli import land_recover, ops, peers, sessions, status
+from agent_cli import land_recover, ops, peers, reconcile, sessions, status
+from agent_cli.core import AgentError
 from agent_cli.dispatch import state
 from agent_cli.journal import pending
 from agent_cli.ops import peer_wake
@@ -43,6 +45,9 @@ def landed(tmp_root: Path, notes_remote: Path, run, monkeypatch: pytest.MonkeyPa
     ops.task_add(tmp_root, text="build the thing", feature="1")
     ops.task_add(tmp_root, text="accept it natively", feature="1")
     sessions.set_record(tmp_root, "mgr-a", name="mgr-a", pid=os.getpid())
+    _git(tmp_root, "init", "-q", "-b", BRANCH, "--template=")
+    _git(tmp_root, "commit", "-q", "--allow-empty", "-m", "the work")
+    head = _git(tmp_root, "rev-parse", "HEAD")
     state.save(
         tmp_root,
         {
@@ -54,9 +59,19 @@ def landed(tmp_root: Path, notes_remote: Path, run, monkeypatch: pytest.MonkeyPa
             "attempt": 1,
             "tasks": [1],
             "launched_by_session": "mgr-a",
+            "git": {"commits": [{"sha": head, "subject": "the work"}], "files": []},
+            reconcile.RESULT_HEAD: {"attempt": 1, "sha": head},
         },
     )
     return outcomes
+
+
+def _git(root: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=root, capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
 
 
 def _journal(ident: str = "20261009T010000-aaaaaa", **extra: object) -> dict:
@@ -73,8 +88,9 @@ def _journal(ident: str = "20261009T010000-aaaaaa", **extra: object) -> dict:
 
 
 def _prepared(root: Path, ident: str = "20261009T010000-aaaaaa", **extra: object) -> dict:
-    """A done journal carrying the ledger sources its landing saved before it was first written."""
-    journal = _journal(ident, **extra)
+    """A done journal that landed the branch's head, carrying the ledger sources its landing saved
+    before it was first written."""
+    journal = _journal(ident, **{"tip": _git(root, "rev-parse", BRANCH), **extra})
     followups.record_sources(journal, followups.landing_intents(root, journal))
     return journal
 
@@ -354,34 +370,18 @@ def test_a_member_without_a_dispatch_registers_a_landing_source_for_its_bound_fe
     assert _source_rows(tmp_root) == [f"landing:{journal['id']}"]
 
 
-@pytest.mark.parametrize(
-    ("change", "expected"),
-    [
-        ({"state": "running"}, []),
-        ({"finished": "2026-10-09T01:00:05+00:00"}, []),
-        ({"finished": "2026-10-09T00:59:00+00:00"}, ["accept:001-mac-01"]),
-        (
-            {
-                "finished": "2026-10-08T00:00:00+00:00",
-                "integration": {"journal": "20261001T000000-bbbbbb", "ts": "2026-10-08T01:00:00+00:00"},
-            },
-            [],
-        ),
-        (
-            {
-                "finished": "2026-10-09T00:30:00+00:00",
-                "integration": {"journal": "20261001T000000-bbbbbb", "ts": "2026-10-08T01:00:00+00:00"},
-            },
-            ["accept:001-mac-01"],
-        ),
-    ],
-)
-def test_only_a_result_finished_before_the_landing_and_since_any_earlier_one_is_accepted(
-    tmp_root: Path, landed, change: dict, expected: list[str]
-):
-    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), **change})
-    journal = _journal("20261009T010000-aaaaaa")
-    assert [i["source"] for i in followups.landing_intents(tmp_root, journal)] == expected
+def test_membership_is_by_the_landed_tip_and_an_unanswerable_git_lands_nothing(tmp_root: Path, landed):
+    tip = _git(tmp_root, "rev-parse", BRANCH)
+    # Finish and integration times say nothing; only the tip does.
+    stamped = {"finished": "2026-10-09T02:00:00+00:00", "integration": {"journal": "20261001T000000-bbbbbb"}}
+    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), **stamped})
+    sources = [i["source"] for i in followups.landing_intents(tmp_root, _journal(tip=tip))]
+    assert sources == ["accept:001-mac-01"]
+    pruned = {reconcile.RESULT_HEAD: {"attempt": 1, "sha": "b" * 40}}  # a commit Git no longer has
+    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), **pruned})
+    assert followups.landing_intents(tmp_root, _journal(tip=tip)) == []
+    with pytest.raises(AgentError, match="git cannot tell"):
+        followups.landing_intents(tmp_root, _journal(tip="c" * 40))
 
 
 def test_a_branch_whose_only_record_is_unfinished_raises_no_landing_source(

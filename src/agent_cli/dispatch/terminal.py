@@ -257,6 +257,9 @@ def _prepare(
         terminal_committed=True,
         verification_cleanup_pending=False,
     )
+    current.pop(reconcile.RESULT_HEAD, None)
+    if head := _work_head(current):
+        current[reconcile.RESULT_HEAD] = {"attempt": current["attempt"], "sha": head}
     current.pop(reconcile.INTENT, None)
     if intents := source_intents(root, current):
         current[reconcile.INTENT] = intents
@@ -291,6 +294,16 @@ def source_intents(root: Path, d: dict[str, Any]) -> list[dict[str, Any]]:
         if (accept := reconcile.accept_source(d, None, feature=feature)) is not None:
             intents.append(accept)
     return intents
+
+
+def _work_head(d: dict[str, Any]) -> str | None:
+    worktree = Path(str(d.get("worktree") or ""))
+    if not d.get("worktree") or not worktree.is_dir():
+        return None
+    try:
+        return gate.worktree_head(worktree)
+    except AgentError:
+        return None
 
 
 def _register(root: Path, current: dict[str, Any], feat: features_mod.Feature) -> None:

@@ -219,6 +219,57 @@ def _nothing_landed(root: Path, main: str) -> None:
     assert not list((root / ".agent").glob("land/*.json"))
 
 
+def _two_tasks(root: Path) -> None:
+    f = features.resolve(root, "1")
+    f.body = "## Tasks\n\n- [ ] build\n- [ ] build more\n"
+    f.save()
+
+
+def _finished(root: Path, ident: str, *, at: str = "feature", task: int = 1, **extra: Any) -> dict[str, Any]:
+    """A done dispatch on `feature` whose committed attempt ended at `at`, as its terminal commit
+    saves it."""
+    sha = git(root, "rev-parse", at)
+    d = {
+        **next((r for r in state.load_all(root) if r["id"] == ident), {}),
+        "id": ident,
+        "repo": "Harness",
+        "short": "harness",
+        "branch": "feature",
+        "feature": 1,
+        "kind": "work",
+        "attempt": 1,
+        "state": "done",
+        "tasks": [task],
+        "git": {"commits": [{"sha": sha, "subject": "work"}], "files": []},
+        **extra,
+    }
+    if reconcile.RESULT_HEAD not in extra:
+        d[reconcile.RESULT_HEAD] = {"attempt": d["attempt"], "sha": sha}
+    return state.save(root, d)
+
+
+def _work(root: Path, name: str, *, reset: str | None = None) -> str:
+    """Commit `<name>.txt` on `feature` from a worktree beside the checkout, first resetting the
+    branch to `reset` when given. Returns the new commit."""
+    wt = root.parent / "feature-wt"
+    if not wt.exists():
+        git(root, "worktree", "add", "-q", str(wt), "feature")
+    if reset:
+        git(wt, "reset", "-q", "--hard", reset)
+    (wt / f"{name}.txt").write_text(f"{name}\n")
+    git(wt, "add", "-A")
+    git(wt, "commit", "-q", "-m", name)
+    return git(wt, "rev-parse", "HEAD")
+
+
+def _owed(root: Path) -> list[tuple[str, str]]:
+    return sorted((i.source, i.item) for i in reconcile.ledger(root, "1").owed)
+
+
+def _on_main(root: Path, path: str) -> bool:
+    return bool(git(root, "ls-tree", "main", path))
+
+
 def test_an_inactive_member_is_refused_before_any_candidate_or_certificate(
     harness: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -285,38 +336,116 @@ def test_a_landing_whose_sources_cannot_be_worked_out_lands_nothing_and_owes_not
     assert reconcile.ledger(harness, "1").owed == []
 
 
-def test_work_started_on_the_branch_while_the_certificate_runs_is_not_accepted(
+def test_work_finished_on_the_branch_while_the_certificate_runs_is_not_accepted(
     harness: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    f = features.resolve(harness, "1")
-    f.body = "## Tasks\n\n- [ ] build\n- [ ] build more\n"
-    f.save()
-    landed = {"repo": "Harness", "short": "harness", "branch": "feature", "feature": 1, "attempt": 1}
-    state.save(harness, {**landed, "id": "001-mac-01", "state": "done", "tasks": [1]})
+    _two_tasks(harness)
+    _finished(harness, "001-mac-01")
 
     def meanwhile(root: Path, cand: str, **_: object) -> dict[str, Any]:
-        state.save(harness, {**landed, "id": "001-mac-02", "state": "running", "tasks": [2]})
+        _finished(harness, "001-mac-02", task=2)
         return {"run_id": "certified-in-test", "reused": True}
 
     monkeypatch.setattr(land, "_certificate", meanwhile)
     land.land(harness, "feature", strategy="ff")
-    owed = sorted((i.source, i.item) for i in reconcile.ledger(harness, "1").owed)
-    assert owed == [("accept:001-mac-01", "task#1")]
+    assert _owed(harness) == [("accept:001-mac-01", "task#1")]
 
 
-@pytest.mark.parametrize("pending", ["queued", "running", "question", "cancelled"])
-def test_unfinished_work_already_on_the_branch_is_not_accepted_by_the_landing(
-    harness: Path, certified, pending: str
+@pytest.mark.parametrize(
+    "other",
+    [
+        {"state": "queued"},
+        {"state": "running"},
+        {"state": "question"},
+        {"state": "cancelled"},
+        {"kind": "probe"},
+        {"writes": []},
+        {"no_diff": {"attempt": 1}},
+        {reconcile.RESULT_HEAD: None},  # finalized by code that kept no head: history
+        {"attempt": 2},  # its head is the first attempt's; the second has not committed
+    ],
+)
+def test_only_a_committed_result_with_work_on_the_branch_is_accepted_by_the_landing(
+    harness: Path, certified, other: dict[str, Any]
 ):
-    f = features.resolve(harness, "1")
-    f.body = "## Tasks\n\n- [ ] build\n- [ ] build more\n"
-    f.save()
-    landed = {"repo": "Harness", "short": "harness", "branch": "feature", "feature": 1, "attempt": 1}
-    state.save(harness, {**landed, "id": "001-mac-01", "state": "done", "tasks": [1]})
-    state.save(harness, {**landed, "id": "001-mac-02", "state": pending, "tasks": [2]})
+    _two_tasks(harness)
+    _finished(harness, "001-mac-01")
+    head = {reconcile.RESULT_HEAD: {"attempt": 1, "sha": git(harness, "rev-parse", "feature")}}
+    _finished(harness, "001-mac-02", task=2, **{**head, **other})
     land.land(harness, "feature", strategy="ff")
-    owed = sorted((i.source, i.item) for i in reconcile.ledger(harness, "1").owed)
-    assert owed == [("accept:001-mac-01", "task#1")]
+    assert _owed(harness) == [("accept:001-mac-01", "task#1")]
+
+
+def test_a_result_finished_after_the_tips_were_pinned_is_not_accepted(
+    harness: Path, certified, monkeypatch: pytest.MonkeyPatch
+):
+    from datetime import UTC, datetime
+
+    _two_tasks(harness)
+    _finished(harness, "001-mac-01")
+    pin = land.require_members  # runs once the member tips are captured
+
+    def late(root: Path, branches: list[str]) -> None:
+        pin(root, branches)
+        now = datetime.now(UTC).replace(microsecond=0).isoformat()  # the landing's own second
+        _finished(harness, "001-mac-02", at=_work(harness, "late"), task=2, finished=now)
+
+    monkeypatch.setattr(land, "require_members", late)
+    land.land(harness, "feature", strategy="ff")
+    assert not _on_main(harness, "late.txt")
+    assert _owed(harness) == [("accept:001-mac-01", "task#1")]
+
+
+def test_a_result_whose_work_the_branch_no_longer_holds_is_not_accepted(harness: Path, certified):
+    _two_tasks(harness)
+    _finished(harness, "001-mac-01")  # its work: a.txt, new.txt and gone.txt
+    _finished(harness, "001-mac-02", at=_work(harness, "replacement", reset="main"), task=2)
+    land.land(harness, "feature", strategy="ff")
+    assert _on_main(harness, "replacement.txt") and not _on_main(harness, "new.txt")
+    assert _owed(harness) == [("accept:001-mac-02", "task#2")]
+
+
+def test_a_result_finished_between_the_landing_id_and_the_tip_capture_is_accepted(
+    harness: Path, certified, monkeypatch: pytest.MonkeyPatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    _two_tasks(harness)
+    capture = land.main_ref  # first runs after the landing's id is made, before any tip is read
+
+    def finishing(git_obs: Any) -> str:
+        if not state.load_all(harness):
+            later = (datetime.now(UTC) + timedelta(seconds=1)).isoformat()
+            _finished(harness, "001-mac-01", at=_work(harness, "included"), finished=later)
+        return capture(git_obs)
+
+    monkeypatch.setattr(land, "main_ref", finishing)
+    land.land(harness, "feature", strategy="ff")
+    assert _on_main(harness, "included.txt")
+    assert _owed(harness) == [("accept:001-mac-01", "task#1")]
+
+
+def test_each_result_generation_is_accepted_by_the_first_landing_that_brings_it(harness: Path, certified):
+    def settle(source: str, task: int) -> None:
+        item = {"item": f"task#{task}", "disposition": "not-accepted", "reason": "fixture, read"}
+        reconcile.decide(harness, "1", source, [item])
+
+    _two_tasks(harness)
+    _finished(harness, "001-mac-01")
+    land.land(harness, "feature", strategy="merge")
+    assert _owed(harness) == [("accept:001-mac-01", "task#1")]
+    settle("accept:001-mac-01", 1)
+    # A later result on the branch lands; the first one's unchanged result is not owed again.
+    _finished(harness, "001-mac-02", at=_work(harness, "second"), task=2)
+    land.land(harness, "feature", strategy="merge")
+    assert _owed(harness) == [("accept:001-mac-02", "task#2")]
+    settle("accept:001-mac-02", 2)
+    # The first dispatch resumed and committed a new result: a new generation, owed once more.
+    _finished(harness, "001-mac-01", at=_work(harness, "third"), attempt=2, result={"summary": "again"})
+    journal = land.land(harness, "feature", strategy="merge")
+    assert _owed(harness) == [("accept:001-mac-01", "task#1")]
+    [item] = reconcile.ledger(harness, "1").owed
+    assert item.G.startswith("2:") and item.G.endswith("@" + journal["id"])
 
 
 @pytest.mark.parametrize("days", [1, 14])
@@ -327,16 +456,13 @@ def test_a_stop_after_done_registers_only_the_landed_work_at_any_age(
 
     from agent_cli import land_followups, land_recover, log
 
-    f = features.resolve(harness, "1")
-    f.body = "## Tasks\n\n- [ ] build\n- [ ] build more\n"
-    f.save()
-    landed = {"repo": "Harness", "short": "harness", "branch": "feature", "feature": 1, "attempt": 1}
-    state.save(harness, {**landed, "id": "001-mac-01", "state": "done", "tasks": [1]})
+    _two_tasks(harness)
+    _finished(harness, "001-mac-01")
     with monkeypatch.context() as stopped:
         stopped.setattr(land_followups, "reconcile", lambda *a: {})
         land.land(harness, "feature", strategy="ff")
-    # Started on the same branch after the landing; none of its work is on main.
-    state.save(harness, {**landed, "id": "001-mac-02", "state": "running", "tasks": [2]})
+    # Finished on the same branch after the landing; none of its work is on main.
+    _finished(harness, "001-mac-02", at=_work(harness, "after"), task=2)
     monkeypatch.setenv("AGENT_NOW", (datetime.now(UTC) + timedelta(days=days)).isoformat())
     land_recover.recover_all(harness, harness)
     owed = sorted((i.source, i.item) for i in reconcile.ledger(harness, "1").owed)

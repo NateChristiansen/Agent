@@ -4,6 +4,7 @@ without the intent are history and never become owed."""
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 from datetime import datetime
@@ -50,6 +51,11 @@ def _owed(root: Path) -> list[tuple[str, str]]:
     return sorted((i.source, i.item) for i in reconcile.ledger(root, "1").owed)
 
 
+def _worktree_head(d: dict[str, Any]) -> str:
+    proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d["worktree"], capture_output=True, text=True)
+    return proc.stdout.strip()
+
+
 def _expected(d: dict[str, Any]) -> list[tuple[str, str]]:
     return [
         (f"accept:{d['id']}", "task#1"),
@@ -79,14 +85,16 @@ def test_the_intent_is_saved_in_the_commit_before_any_append(
 
     def crash(feature, pending):
         record = state.load(droot, pending["source"].split(":", 1)[1])
-        seen.append((record.get("finished"), [p["source"] for p in record.get(reconcile.INTENT, [])]))
+        listed = [p["source"] for p in record.get(reconcile.INTENT, [])]
+        seen.append((record.get("finished"), listed, record.get(reconcile.RESULT_HEAD)))
         raise OSError("killed before the append")
 
     with monkeypatch.context() as patched:
         patched.setattr(reconcile, "append_source", crash)
         d = _done(droot, fake_claude)
-    finished, listed = seen[0]
+    finished, listed, head = seen[0]
     assert finished and listed == [f"dispatch:{d['id']}", f"accept:{d['id']}"]
+    assert head == {"attempt": 1, "sha": _worktree_head(d)}
     assert [p["source"] for p in state.load(droot, d["id"])[reconcile.INTENT]] == listed
     assert _sources(droot) == []
     assert _owed(droot) == _expected(d)  # the heal appends once and clears
@@ -225,7 +233,11 @@ def test_a_late_collect_of_a_never_published_attempt_registers_it(
     with monkeypatch.context() as patched:
         patched.setattr(terminal, "requires_lease", lambda *_args: True)
         d = _new_fast(droot, tasks=[1])
-    assert not state.load(droot, d["id"])["terminal_committed"] and _sources(droot) == []
+    held = state.load(droot, d["id"])
+    assert not held["terminal_committed"] and _sources(droot) == []
+    assert reconcile.RESULT_HEAD not in held  # no landing can accept an uncommitted attempt
     dispatch.collect(droot, dispatch_id=d["id"])
-    assert state.load(droot, d["id"])["terminal_committed"]
+    collected = state.load(droot, d["id"])
+    assert collected["terminal_committed"]
+    assert collected[reconcile.RESULT_HEAD] == {"attempt": 1, "sha": _worktree_head(d)}
     assert _owed(droot) == _expected(d)[1:]

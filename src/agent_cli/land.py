@@ -512,11 +512,12 @@ def _land(
             cand = candidate(git, old, tip, chosen, ident, branch, message)
         cand = refresh_adr_index(git, cand, ident)
         check_prepared(main, git, {"old": old, "cand": cand, "paths": obs.changed_paths(git, old, cand)})
-        # Pinned before the certificate runs, so work started on a member branch meanwhile is not
-        # this landing's to accept. Like the terminal commit, the event does not happen without them.
+        # Worked out from the pinned member tips before the certificate runs: a result is accepted
+        # only if its attempt's end commit is in one. Like the terminal commit, the event does not
+        # happen without them.
         try:
             intents = followups.landing_intents(
-                root, {"id": ident, "cand": cand, "members": [{"branch": b} for b, _ in members]}
+                root, {"id": ident, "cand": cand, "members": [{"branch": b, "tip": t} for b, t in members]}
             )
         except Exception as exc:  # noqa: BLE001 — refused before any evidence, certificate or journal
             raise AgentError(
