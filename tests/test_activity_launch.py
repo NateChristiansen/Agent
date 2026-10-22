@@ -252,6 +252,59 @@ def test_owed_items_refuse_a_landing(harness: Path, monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.parametrize("days", [1, 14])
+def test_a_landing_whose_sources_cannot_be_worked_out_lands_nothing_and_owes_nothing(
+    harness: Path, monkeypatch: pytest.MonkeyPatch, days: int
+):
+    from datetime import UTC, datetime, timedelta
+
+    from agent_cli import land_followups, land_recover
+
+    _uncertified(monkeypatch)
+    f = features.resolve(harness, "1")
+    f.body = "## Tasks\n\n- [ ] build\n- [ ] build more\n"
+    f.save()
+    landed = {"repo": "Harness", "short": "harness", "branch": "feature", "feature": 1, "attempt": 1}
+    state.save(harness, {**landed, "id": "001-mac-01", "state": "done", "tasks": [1]})
+    real = land_followups.landing_intents
+    calls: list[str] = []
+
+    def unreadable(root: Path, journal: dict[str, Any]) -> list[dict[str, Any]]:
+        calls.append(str(journal["id"]))
+        if len(calls) == 1:
+            raise OSError("feature file unreadable")
+        return real(root, journal)
+
+    monkeypatch.setattr(land_followups, "landing_intents", unreadable)
+    main = git(harness, "rev-parse", "main")
+    with pytest.raises(AgentError, match="ledger sources"):
+        land.land(harness, "feature", strategy="ff")
+    _nothing_landed(harness, main)
+    state.save(harness, {**landed, "id": "001-mac-02", "state": "running", "tasks": [2]})
+    monkeypatch.setenv("AGENT_NOW", (datetime.now(UTC) + timedelta(days=days)).isoformat())
+    land_recover.recover_all(harness, harness)
+    assert reconcile.ledger(harness, "1").owed == []
+
+
+def test_work_started_on_the_branch_while_the_certificate_runs_is_not_accepted(
+    harness: Path, monkeypatch: pytest.MonkeyPatch
+):
+    f = features.resolve(harness, "1")
+    f.body = "## Tasks\n\n- [ ] build\n- [ ] build more\n"
+    f.save()
+    landed = {"repo": "Harness", "short": "harness", "branch": "feature", "feature": 1, "attempt": 1}
+    state.save(harness, {**landed, "id": "001-mac-01", "state": "done", "tasks": [1]})
+
+    def meanwhile(root: Path, cand: str, **_: object) -> dict[str, Any]:
+        state.save(harness, {**landed, "id": "001-mac-02", "state": "running", "tasks": [2]})
+        return {"run_id": "certified-in-test", "reused": True}
+
+    monkeypatch.setattr(land, "_certificate", meanwhile)
+    land.land(harness, "feature", strategy="ff")
+    owed = sorted((i.source, i.item) for i in reconcile.ledger(harness, "1").owed)
+    assert owed == [("accept:001-mac-01", "task#1")]
+
+
+@pytest.mark.parametrize("days", [1, 14])
 def test_a_stop_after_done_registers_only_the_landed_work_at_any_age(
     harness: Path, certified, monkeypatch: pytest.MonkeyPatch, days: int
 ):

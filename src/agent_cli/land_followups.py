@@ -12,10 +12,10 @@ the land flock after a landing and before an allocation. A held candidate stays 
 its reasons, and the obligation stays pending until every candidate is removed, gone or owned by a
 later landing, with no age limit.
 
-The `reconcile` obligation registers the landing's acceptance sources in the feature ledger: the
-sources are saved on the prepared journal before `done`, so they name only the work this landing
-includes and the ledger's heal finishes them at any age, then appended once each. Journals
-prepared without the obligation register nothing.
+The `reconcile` obligation registers the landing's acceptance sources in the feature ledger. The
+landing works them out before its certificate and saves them on the journal it first writes, or
+lands nothing; recovery and the ledger's heal only replay those saved sources, once each and at any
+age. Journals prepared without the obligation register nothing.
 """
 
 from __future__ import annotations
@@ -33,27 +33,18 @@ from .records.narrow import as_dict, as_list
 PENDING = "pending"
 CLEANUP = "cleanup"
 RECONCILE = OBLIGATION
-# The `reconcile` obligation before its sources are saved on the journal: left at `done` only when
-# `record_sources` could not work them out. Only this module moves it on, so the ledger's heal,
-# which settles a `pending` obligation from the saved sources, never settles a landing whose
-# sources were not yet worked out.
-RECORDING = "recording"
 SETTLED = ("removed", "gone", "superseded")
 RETRY_LIMIT = 8
 
 
 def initial() -> dict[str, str]:
     """The obligations a prepared journal starts with."""
-    return {"milestone": PENDING, "notices": PENDING, CLEANUP: PENDING, RECONCILE: RECORDING}
+    return {"milestone": PENDING, "notices": PENDING, CLEANUP: PENDING}
 
 
-def record_sources(root: Path, journal: dict[str, Any]) -> None:
-    """Save the landing's ledger sources on the prepared journal, before it is first written, and
-    make the obligation `pending`. Never raises: sources it cannot work out stay `recording`."""
-    try:
-        intents = landing_intents(root, journal)
-    except Exception:  # noqa: BLE001 — bookkeeping never stops a landing; worked out after done
-        return
+def record_sources(journal: dict[str, Any], intents: list[dict[str, Any]]) -> None:
+    """Save the landing's ledger sources (`landing_intents`) on the prepared journal before it is
+    first written, with the `reconcile` obligation pending."""
     journal[INTENT] = intents
     journal["obligations"] = {**as_dict(journal.get("obligations")), RECONCILE: PENDING}
 
@@ -62,7 +53,7 @@ def outstanding(journal: dict[str, Any]) -> bool:
     """A successful landing that still owes its metadata. Aborted and legacy journals never do;
     cleanup is `cleanup_owed`, which recovery's metadata pass does not replay."""
     obligations = {k: v for k, v in as_dict(journal.get("obligations")).items() if k != CLEANUP}
-    return journal.get("state") == "done" and bool({PENDING, RECORDING} & set(obligations.values()))
+    return journal.get("state") == "done" and PENDING in obligations.values()
 
 
 def cleanup_owed(journal: dict[str, Any]) -> bool:
@@ -99,7 +90,7 @@ def reconcile(root: Path, main: Path, journal: dict[str, Any]) -> dict[str, Any]
     except Exception:  # noqa: BLE001, S110 — whatever is still pending is retried by recovery
         pass
     try:
-        if obligations.get(RECONCILE) in (RECORDING, PENDING) and _sources(root, main, journal, obligations):
+        if obligations.get(RECONCILE) == PENDING and _sources(root, journal):
             obligations[RECONCILE] = "done"
     except Exception:  # noqa: BLE001, S110 — the saved sources stay pending for recovery or the heal
         pass
@@ -112,17 +103,12 @@ def reconcile(root: Path, main: Path, journal: dict[str, Any]) -> dict[str, Any]
     return obligations
 
 
-def _sources(root: Path, main: Path, journal: dict[str, Any], obligations: dict[str, Any]) -> bool:
-    """Work out the landing's ledger sources and save them on the journal before appending any
-    (`recording` becomes `pending`), then append each once. True when every one is in its
-    feature's log; a crash after the save leaves the ledger's heal to finish them."""
+def _sources(root: Path, journal: dict[str, Any]) -> bool:
+    """Append each of the journal's saved ledger sources once. True when every one is in its
+    feature's log; what is left is the ledger's heal's to finish."""
     from . import features as features_mod
     from . import reconcile as reconcile_mod
 
-    if obligations[RECONCILE] == RECORDING:
-        journal[INTENT] = landing_intents(root, journal)
-        obligations[RECONCILE] = PENDING
-        jn.write(main, {**journal, "obligations": dict(obligations)})
     complete = True
     for intent in (dict(as_dict(p)) for p in as_list(journal.get(INTENT))):
         try:

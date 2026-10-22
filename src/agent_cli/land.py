@@ -512,6 +512,17 @@ def _land(
             cand = candidate(git, old, tip, chosen, ident, branch, message)
         cand = refresh_adr_index(git, cand, ident)
         check_prepared(main, git, {"old": old, "cand": cand, "paths": obs.changed_paths(git, old, cand)})
+        # Pinned before the certificate runs, so work started on a member branch meanwhile is not
+        # this landing's to accept. Like the terminal commit, the event does not happen without them.
+        try:
+            intents = followups.landing_intents(
+                root, {"id": ident, "cand": cand, "members": [{"branch": b} for b, _ in members]}
+            )
+        except Exception as exc:  # noqa: BLE001 — refused before any evidence, certificate or journal
+            raise AgentError(
+                f"nothing landed: this landing's ledger sources could not be worked out ({exc}). "
+                "Fix that, then land again"
+            ) from None
         foreign_lock = jn.lock_file(main).exists()
         # A known refusal must not create an evidence commit or ref for a fast-forward.
         if not foreign_lock:
@@ -560,11 +571,11 @@ def _land(
             "obligations": followups.initial(),
             "session": os.environ.get("AGENT_LAND_SESSION") or None,  # who asked, for the notices
         }
+        followups.record_sources(journal, intents)
         jn.op_update(main, op, state="landing", journal=ident, record=record["run_id"])
         if foreign_lock:
             jn.advance(main, journal, "aborted", why="another git process held the index")
             raise AgentError("another git process held the index")
-        followups.record_sources(root, journal)
         transact(main, git, journal)
         followups.reconcile(root, main, journal)  # integration marks, milestone, task notices
         return journal

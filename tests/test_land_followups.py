@@ -22,7 +22,7 @@ from agent_cli.ops import peer_wake
 
 BRANCH = "agent/001-x-mac-01"
 DAY_TS = "2026-10-09T01:00:00-06:00"
-SETTLED = {"milestone": "recorded", "notices": "done", "reconcile": "done"}
+SETTLED = {"milestone": "recorded", "notices": "done"}
 
 
 @pytest.fixture
@@ -70,6 +70,13 @@ def _journal(ident: str = "20261009T010000-aaaaaa", **extra: object) -> dict:
         "obligations": followups.initial(),
         **extra,
     }
+
+
+def _prepared(root: Path, ident: str = "20261009T010000-aaaaaa", **extra: object) -> dict:
+    """A done journal carrying the ledger sources its landing saved before it was first written."""
+    journal = _journal(ident, **extra)
+    followups.record_sources(journal, followups.landing_intents(root, journal))
+    return journal
 
 
 def _rows(root: Path) -> list[dict]:
@@ -220,8 +227,8 @@ def test_a_batch_landing_gives_one_milestone(tmp_root: Path, landed):
     assert len(_landings(tmp_root)) == 1
 
 
-def test_aborted_and_legacy_journals_owe_nothing(tmp_root: Path, landed):
-    aborted = _journal("20261009T040000-dddddd", state="aborted")
+def test_aborted_and_legacy_journals_owe_nothing(tmp_root: Path, landed, manager):
+    aborted = _prepared(tmp_root, "20261009T040000-dddddd", state="aborted")  # its sources saved
     legacy = {k: v for k, v in _journal("20261009T050000-eeeeee").items() if k != "obligations"}
     for journal in (aborted, legacy):
         jn.write(tmp_root, journal)
@@ -229,6 +236,7 @@ def test_aborted_and_legacy_journals_owe_nothing(tmp_root: Path, landed):
         assert not followups.outstanding(journal)
     assert _landings(tmp_root) == []
     assert _rows(tmp_root) == []
+    assert _owed(tmp_root) == [] and _source_rows(tmp_root) == []
 
 
 # ---------------------------------------------------------------- reconcile sources
@@ -259,7 +267,7 @@ ACCEPT = [("accept:001-mac-01", "task#1")]
 def test_a_landing_registers_acceptance_of_its_open_tasks_once(tmp_root: Path, landed, manager):
     from agent_cli import reconcile
 
-    journal = _journal()
+    journal = _prepared(tmp_root)
     jn.write(tmp_root, journal)
     assert followups.reconcile(tmp_root, tmp_root, journal)["reconcile"] == "done"
     saved = jn.read(tmp_root, journal["id"])
@@ -284,7 +292,7 @@ def test_sources_are_saved_on_the_journal_before_any_append_and_the_heal_finishe
         seen.append((on_disk["obligations"]["reconcile"], [p["source"] for p in on_disk[reconcile.INTENT]]))
         raise OSError("killed before the append")
 
-    journal = _journal()
+    journal = _prepared(tmp_root)
     jn.write(tmp_root, journal)
     with monkeypatch.context() as patched:
         patched.setattr(reconcile, "append_source", crash)
@@ -300,7 +308,7 @@ def test_sources_are_saved_on_the_journal_before_any_append_and_the_heal_finishe
 def test_a_crash_after_the_append_before_done_recovers_without_a_second_entry(
     tmp_root: Path, landed, manager, monkeypatch: pytest.MonkeyPatch
 ):
-    journal = _journal()
+    journal = _prepared(tmp_root)
     jn.write(tmp_root, journal)
     real = jn.write
 
@@ -319,16 +327,16 @@ def test_a_crash_after_the_append_before_done_recovers_without_a_second_entry(
     assert _source_rows(tmp_root) == ["accept:001-mac-01"]
 
 
-def test_a_stop_before_the_sources_are_saved_is_left_to_land_recovery_not_the_heal(
+def test_a_stop_right_after_done_is_finished_by_the_heal_past_recoverys_window(
     tmp_root: Path, landed, manager
 ):
-    journal = _journal()
-    jn.write(tmp_root, journal)  # done on disk, nothing reconciled: the obligation is still recording
-    assert _owed(tmp_root) == []  # the heal never settles a landing whose sources were not worked out
-    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "recording"
-    land_recover.recover(tmp_root, journal["id"])
-    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "done"
+    journal = _prepared(tmp_root, ts="2026-09-01T01:00:00-06:00")
+    jn.write(tmp_root, journal)  # done on disk, nothing reconciled
+    land_recover.recover_all(tmp_root, tmp_root)  # older than its window: recovery leaves it
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "pending"
     assert _owed(tmp_root) == ACCEPT
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "done"
+    assert _owed(tmp_root) == ACCEPT and _source_rows(tmp_root) == ["accept:001-mac-01"]
 
 
 def test_a_member_without_a_dispatch_registers_a_landing_source_for_its_bound_feature(
@@ -336,19 +344,18 @@ def test_a_member_without_a_dispatch_registers_a_landing_source_for_its_bound_fe
 ):
     bound = {"agent/manager-bound": 1}
     monkeypatch.setattr("agent_cli.activity_gate.bound_feature", lambda root, branch: bound.get(branch))
-    journal = _journal(branch="agent/manager-bound")
+    journal = _prepared(tmp_root, branch="agent/manager-bound")
     jn.write(tmp_root, journal)
     followups.reconcile(tmp_root, tmp_root, journal)
     assert _owed(tmp_root) == [(f"landing:{journal['id']}", "landing")]
-    unbound = _journal("20261009T060000-ffffff", branch="agent/nobody")
+    unbound = _prepared(tmp_root, "20261009T060000-ffffff", branch="agent/nobody")
     jn.write(tmp_root, unbound)
     assert followups.reconcile(tmp_root, tmp_root, unbound)["reconcile"] == "done"
     assert _source_rows(tmp_root) == [f"landing:{journal['id']}"]
 
 
 def test_legacy_journals_register_no_sources(tmp_root: Path, landed, manager):
-    obligations = {k: v for k, v in followups.initial().items() if k != "reconcile"}
-    journal = _journal(obligations=obligations)
+    journal = _journal()
     jn.write(tmp_root, journal)
     land_recover.recover(tmp_root, journal["id"])
     assert "reconcile" not in jn.read(tmp_root, journal["id"])["obligations"]
