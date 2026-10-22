@@ -171,7 +171,7 @@ tests = [
   "tests/test_dispatch_launch*.py", "tests/test_dispatch_mcp_launch.py", "tests/test_dispatch_resume*.py",
   "tests/test_dispatch_verification_preflight.py", "tests/test_dispatch_spend.py", "tests/test_ops_behaviour.py",
   "tests/test_maintenance.py", "tests/test_policy_corpus.py", "tests/test_dispatch_attempt_limit.py",
-  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+  "tests/test_request_dispatch.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
 ]
 
 [[bundle]]
@@ -199,7 +199,8 @@ paths = [
 tests = [
   "tests/test_handoff*.py", "tests/test_convention*.py", "tests/test_dispatch_spend.py",
   "tests/test_policy_corpus.py", "tests/test_sdk_permission_denials.py", "tests/test_journal_denials.py",
-  "tests/test_dispatch_return_*.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+  "tests/test_dispatch_return_*.py", "tests/test_request_dispatch.py", "tests/test_transcript_retention.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
 ]
 
 [[bundle]]
@@ -248,7 +249,7 @@ name = "requests"
 # snapshot and views, the session-start digest, and the typed tool and CLI route.
 paths = ["src/agent_cli/requests.py", "src/agent_cli/ops/requests.py", "src/agent_cli/cli/request.py"]
 tests = [
-  "tests/test_requests.py", "tests/test_features.py", "tests/test_feature_close_retro.py",
+  "tests/test_requests.py", "tests/test_request_dispatch.py", "tests/test_features.py", "tests/test_feature_close_retro.py",
   "tests/test_status.py", "tests/test_task_views.py", "tests/test_documents.py", "tests/test_hooks_session.py",
   "tests/test_mcp_server.py", "tests/test_mcp_contract.py", "tests/test_mcp_wording.py",
   "tests/test_cli_parser_reuse.py", "tests/test_ops_cases.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",

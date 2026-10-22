@@ -222,3 +222,38 @@ def test_notification_merges_audit_without_overwriting_a_concurrent_read(wired, 
     assert after["notification_probe"] == "concurrent read kept"
     assert after["chat_pending"] is False
     assert after["notify_log"][-1]["results"]["macos"] == "sent"
+
+
+def test_deferred_and_failed_publication_still_queue_worker_retention(wired, monkeypatch):
+    from agent_cli.hooks import transcript_retention
+
+    queued_ids: list[str] = []
+    monkeypatch.setattr(
+        transcript_retention, "enqueue", lambda root, record: queued_ids.append(record["dispatch_id"])
+    )
+    d, feat, outcome = verified_outcome(wired, monkeypatch)
+    with held_by_process(wired.root, d["id"], 5):
+        terminal.finalize(wired.root, d, feat, outcome, retry_budget=0.05)
+    assert queued_ids == [d["id"]]  # publication deferred behind a busy guard; retention is not
+
+    def broken(*args):
+        raise RuntimeError("publication failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(terminal, "_publish", broken)
+        with pytest.raises(RuntimeError, match="publication failed"):
+            terminal.finalize(wired.root, d, feat, outcome)
+    assert queued_ids == [d["id"], d["id"]]
+
+
+def test_a_retention_failure_never_blocks_the_terminal_commit(wired, monkeypatch, capsys):
+    from agent_cli.hooks import transcript_retention
+
+    def unavailable(root, record):
+        raise OSError("spool unwritable")
+
+    monkeypatch.setattr(transcript_retention, "enqueue", unavailable)
+    d, feat, outcome = verified_outcome(wired, monkeypatch)
+    after = terminal.finalize(wired.root, d, feat, outcome)
+    assert after["state"] == "done" and after["terminal_committed"]
+    assert f"transcript retention not queued for {d['id']} (spool unwritable)" in capsys.readouterr().err

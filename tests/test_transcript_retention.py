@@ -9,6 +9,7 @@ import pytest
 
 from agent_cli import capture, features, sessions
 from agent_cli.hooks import transcript_retention as retention
+from dispatch_helpers import _new_fast, droot, envelope, one  # noqa: F401 -- droot is a pytest fixture
 
 pytestmark = pytest.mark.usefixtures("notes_remote")
 
@@ -284,6 +285,94 @@ def test_interrupted_copy_keeps_previous_evidence_and_pending_request(tmp_root, 
     retention.run(tmp_root)
     assert not pending.exists()
     assert "new tail" in saved.read_text()
+
+
+def _consume(root, record, name):
+    """What the detached consumer does with one queued terminal record."""
+    retention.save(root / retention.BASE / "pending" / f"{name}.json", record)
+    retention.run(root)
+
+
+def test_a_finished_claude_worker_and_its_subagent_are_retained_without_manager_stop(
+    droot, fake_claude, monkeypatch
+):
+    from pathlib import Path
+
+    from agent_cli import dispatch
+    from agent_cli.dispatch import terminal
+    from agent_cli.dispatch.handoffs import transcript_path
+
+    queued = []
+    monkeypatch.setattr(retention, "enqueue", lambda root, record: queued.append(record))
+    fake_claude.scenario([one(envelope())])
+    d = dispatch.load(droot, _new_fast(droot)["id"])
+    assert queued[-1] == terminal.retention_record(d)
+    record = queued[-1]
+    source = Path(record["transcript_path"])
+    assert (record["session_id"], record["dispatch_id"], record["feature"]) == (d["session_id"], d["id"], 1)
+    assert source == transcript_path(d)
+
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text('{"type":"user","text":"work order"}\n{"type":"assistant","text":"worker tools"}\n')
+    child = source.parent / source.stem / "subagents" / "agent-1.jsonl"
+    child.parent.mkdir(parents=True)
+    child.write_text('{"type":"assistant","text":"subagent tools"}\n')
+    _consume(droot, record, "first")
+    saved, saved_child = evidence(droot, record, source), evidence(droot, record, child)
+    source.write_text(
+        source.read_text() + '{"type":"atis-latch","secret":"hidden"}\n{"type":"assistant","text":"tail"}\n'
+    )
+    _consume(droot, record, "tail")
+    assert "tail" in saved.read_text() and "hidden" not in saved.read_text()
+    source.unlink()
+    child.unlink()
+    _consume(droot, record, "gone")
+    assert "worker tools" in saved.read_text() and "subagent tools" in saved_child.read_text()
+    outcome = report(droot, record, source)
+    assert outcome["status"] == "missing" and outcome["associations"][0]["dispatch_id"] == d["id"]
+    assert saved.stat().st_mode & 0o077 == 0 if os.name != "nt" else True
+
+
+def test_a_finished_codex_worker_is_found_by_its_native_thread_not_the_synthetic_session(
+    tmp_root, monkeypatch
+):
+    from agent_cli.dispatch import terminal
+
+    native = tmp_root / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(native))
+    (native / "sessions").mkdir(parents=True)
+    rollouts = []
+    for sid, parent in (("thread-1", ""), ("thread-1-child", "thread-1"), ("synthetic-uuid", "")):
+        path = native / "sessions" / f"rollout-{sid}.jsonl"
+        meta = {"id": sid, "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}}}
+        path.write_text(
+            json.dumps({"type": "session_meta", "payload": meta})
+            + f'\n{{"type":"response_item","payload":"{sid} tools"}}\n'
+        )
+        rollouts.append(path)
+    d = {
+        "id": "001-mac-01",
+        "feature": 1,
+        "provider": "codex",
+        "session_id": "synthetic-uuid",
+        "codex_thread_id": "thread-1",
+    }
+    record = terminal.retention_record(d)
+    assert (record["session_id"], record["transcript_path"]) == ("thread-1", None)
+    _consume(tmp_root, record, "codex")
+    pointer = retention.load(tmp_root / retention.reports(record)[0])
+    assert pointer["status"] == "discovered" and len(pointer["related_reports"]) == 2
+    for path in rollouts[:2]:
+        saved = evidence(tmp_root, record, path)
+        path.unlink()
+        assert "tools" in saved.read_text()
+    assert not report(tmp_root, record, rollouts[2])
+
+    lost = terminal.retention_record({**d, "id": "001-mac-02", "codex_thread_id": None})
+    assert lost["session_id"] is None
+    _consume(tmp_root, lost, "no-thread")
+    outcome = retention.load(tmp_root / retention.reports(lost)[0])
+    assert outcome["status"] == "unavailable" and outcome["preserved"] is None
 
 
 def test_trigger_during_copy_is_consumed_before_worker_releases_queue(tmp_root, monkeypatch):
