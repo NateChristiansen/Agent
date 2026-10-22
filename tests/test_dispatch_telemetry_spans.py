@@ -19,7 +19,7 @@ from agent_cli.dispatch import recovery, terminal, verification
 from agent_cli.dispatch import reverify as reverify_mod
 from agent_cli.dispatch import verification_gate as gate
 from agent_cli.dispatch.state import load
-from dispatch_helpers import _new, _set_alpha_dispatch, droot, envelope, one  # noqa: F401
+from dispatch_helpers import _new, _set_alpha_dispatch, droot, envelope, one, settle  # noqa: F401
 from test_dispatch_telemetry import _events, _queued, isolated_sink, troot, verifier_envs  # noqa: F401
 from test_dispatch_verification import diagnose, finish, ready, running  # noqa: F401
 
@@ -112,6 +112,7 @@ def test_done_and_failed_check_paths_record_one_event_each(troot: Path, fake_cla
     done = _new(troot)
     outcome = _one_verification(troot, done["id"])["outcome"]
     assert outcome == "verified", f"outcome {outcome!r}\n{diagnose(troot, done['id'])}"
+    settle(troot, done)
 
     _set_alpha_dispatch(troot, verify=[{"command": "false", "timeout_seconds": 3}], verify_timeout_seconds=5)
     failed = _new(troot)

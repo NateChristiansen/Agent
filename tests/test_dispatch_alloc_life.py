@@ -16,7 +16,7 @@ from agent_cli.core import AgentError
 from agent_cli.dispatch import allocation, lifecycle, recovery, supervisor
 from agent_cli.dispatch import reverify as reverify_mod
 from agent_cli.dispatch.worktrees import ensure_worktree
-from dispatch_helpers import DEAD_PID, _new, _new_fast, droot, envelope, one  # noqa: F401
+from dispatch_helpers import DEAD_PID, _new, _new_fast, droot, envelope, one, settle  # noqa: F401
 from test_dispatch_alloc import GuardLog, _no_detach, _old_lease
 from test_dispatch_reverify import _blocked_by_dirt
 from test_dispatch_verification import ready  # noqa: F401
@@ -83,6 +83,7 @@ def test_a_stale_reservation_never_refuses_what_the_worker_lease_allows(droot: P
     stop the next dispatch reusing that worktree: its holder would not hold the worker lease."""
     fake_claude.scenario([one(envelope())])
     d1 = _new_fast(droot)
+    settle(droot, d1)
     leases.take_marked(
         droot,
         allocation.worktree_area("alpha", d1["worktree"]),
