@@ -388,8 +388,9 @@ BEFORE: dict[str, dict[tuple[str, str | None], list[str]]] = {
         ("PostToolUse", "apply_patch"): ["codex-activity", "render-after-plan-edit"],
     },
 }
-#: Members a group gained after phase 7; `test_ask_guard` pins where they run.
-ADDED = {"ask-guard"}
+#: Members a group gained after phase 7; `test_ask_guard` and `test_record_guard_follows_ask_guard`
+#: pin where they run.
+ADDED = {"ask-guard", "record-guard"}
 
 
 def _config(client: str) -> dict[str, Any]:
@@ -405,6 +406,19 @@ def test_grouping_keeps_every_hook_on_its_event_and_tool(client: str):
         for group in (g for g in GROUPS.values() if g.client == client and g.event == event):
             inside = [m.name for m in group.members if m.name in after]
             assert inside == [n for n in before if n in inside], (event, tool, group.name)
+
+
+@pytest.mark.parametrize("group", ["stop", "codex-stop"])
+def test_record_guard_follows_ask_guard_before_the_turn_end_members(group: str):
+    names = [m.name for m in GROUPS[group].members]
+    at = names.index("record-guard")
+    assert names[at - 1] == "ask-guard"
+    assert {"lease-yield"} <= set(names[at + 1 :])
+    assert next(m for m in GROUPS[group].members if m.name == "record-guard").budget == 5
+
+
+def test_the_claude_stop_group_wires_35_seconds():
+    assert GROUPS["stop"].timeout == 35
 
 
 @pytest.mark.parametrize("client", ["claude", "codex"])

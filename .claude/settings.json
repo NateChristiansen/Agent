@@ -46,7 +46,7 @@
           {
             "type": "command",
             "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent hook stop",
-            "timeout": 30
+            "timeout": 35
           },
           {
             "type": "command",

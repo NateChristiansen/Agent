@@ -9,7 +9,8 @@ state after their answer is discarded.
 
 Combine outputs in member order. PreToolUse stops on the first deny, otherwise returns the first
 ask. UserPromptSubmit stops on the first block. Stop runs all members and joins block reasons,
-passing _stop_blocked onward so activity stays working and leases stay held; ask-guard runs first.
+passing _stop_blocked onward so activity stays working and leases stay held; ask-guard runs first,
+then record-guard.
 Join additionalContext in order and keep the first value of other fields. Return lone outputs
 unchanged.
 
@@ -45,6 +46,9 @@ class Member:
 #: wired Claude timeouts unchanged. Both Stop groups share its capped announcement and
 #: missing-command checks.
 ASK_GUARD = Member("ask-guard", 0)
+#: record-guard folds the feature's ledger, which heals pending intents first; it follows ask-guard
+#: so an ask block spends nothing of it.
+RECORD_GUARD = Member("record-guard", 5)
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,7 @@ _GROUPS = (
             Member("capture", 10),
             Member("peer-stop", 5),
             ASK_GUARD,
+            RECORD_GUARD,
             Member("lease-yield", 5),
             Member("activity", 5),
         ),
@@ -173,7 +178,13 @@ _GROUPS = (
         "codex",
         "Stop",
         None,
-        (Member("capture", 10), ASK_GUARD, Member("lease-yield", 5), Member("codex-activity", 5)),
+        (
+            Member("capture", 10),
+            ASK_GUARD,
+            RECORD_GUARD,
+            Member("lease-yield", 5),
+            Member("codex-activity", 5),
+        ),
     ),
     # Codex plan patches re-render just as Claude Edit/Write events do in post-tool.
     Group(
