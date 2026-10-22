@@ -4,10 +4,13 @@ callbacks. Deferred imports preserve call-time lookup without loading provider S
 
 from __future__ import annotations
 
+import fnmatch
 import os
+import re
 import shlex
-from pathlib import Path
-from typing import Any, Literal
+import stat
+from pathlib import Path, PurePath
+from typing import Any, Literal, cast
 
 import yaml
 from claude_agent_sdk import HookContext, HookInput, HookJSONOutput, HookMatcher
@@ -210,11 +213,16 @@ def decide(
        one rule per clone per verb (128 of them today, still in `build_settings`). Removing
        them is a follow-up once a live run shows the callback catching these);
     4. a command in the read-only class (`readonly_policy.py`): allowed, on both providers;
-    5. everything else: denied, naming the command as the thing to ask about.
+    5. a native `Edit` of this worktree's own regular `.claude/settings.json`, when the dispatch's
+       `writes` names that exact file, the repo grants exactly `Edit(//<that absolute path>)` and
+       no deny rule could cover it (`_settings_edit`): allowed;
+    6. everything else: denied, naming the command as the thing to ask about.
 
     `repo` is here because the deny list is built from the worker's own settings, and a repo
     that ever adds deny rules of its own should be read the same way BASE_DENY is.
     """
+    if tool_name == "Edit":
+        return _settings_edit(tool_input, d, repo, root)
     command = _bash_command(tool_input) if tool_name == "Bash" else ""
     if command:
         rules, hide = dispatch_rules(root, repo, d)
@@ -287,6 +295,98 @@ def _git_read_target(command: str, d: dict[str, Any], root: Path) -> str:
         if target == os.path.normpath(str(clone)):
             return GIT_READ_REASON.format(verb=toks[3], what=f"the registered clone `{other.short}`")
     return ""
+
+
+SETTINGS_FILE = ".claude/settings.json"
+SETTINGS_EDIT_REASON = "the declared `.claude/settings.json` edit, granted exactly by the repo"
+
+
+def _settings_edit(
+    tool_input: dict[str, Any] | None, d: dict[str, Any], repo: repos_mod.Repo, root: Path
+) -> tuple[Literal["allow", "deny"], str]:
+    """Allow one native Edit of the worktree's own settings file when both the dispatch's writes and
+    the repo's exact grant consent to it. Anything not provably that file is a plain fall-through."""
+    target = _settings_target(tool_input, d)
+    if target is None or _settings_grant(target) not in repo.allowed_tools:
+        return "deny", NO_RULE_REASON
+    try:
+        rules, hide = dispatch_rules(root, repo, d)
+    except AgentError:
+        return "deny", NO_RULE_REASON
+    for rule in rules["deny"]:
+        if _edit_deny_covers(rule, target):
+            return "deny", DENY_RULE_REASON.format(rule=f"`{shown_deny(rule, hide)}`")
+    return "allow", SETTINGS_EDIT_REASON
+
+
+def _settings_target(tool_input: dict[str, Any] | None, d: dict[str, Any]) -> Path | None:
+    """The worktree's `.claude/settings.json` when `tool_input` is a well-formed Edit of exactly that
+    regular file, reached through no symlink, and `writes` names it; otherwise None."""
+    from .write_scope import canonical_writes
+
+    if not isinstance(tool_input, dict):
+        return None
+    raw = tool_input.get("file_path")
+    if not isinstance(raw, str) or "\0" in raw or _dotted(raw):
+        return None
+    if not all(isinstance(tool_input.get(key), str) for key in ("old_string", "new_string")):
+        return None
+    if not isinstance(tool_input.get("replace_all", False), bool):
+        return None
+    writes, worktree = d.get("writes"), d.get("worktree")
+    if not isinstance(writes, list):
+        return None
+    items = cast("list[object]", writes)
+    paths = [w for w in items if isinstance(w, str)]
+    if len(paths) != len(items):
+        return None
+    try:
+        if SETTINGS_FILE not in (canonical_writes(paths) or []):
+            return None
+    except AgentError:
+        return None
+    if not isinstance(worktree, str) or not worktree or _dotted(worktree):
+        return None
+    wt = Path(worktree)
+    target = wt / ".claude" / "settings.json"
+    path = Path(raw)
+    if not wt.is_absolute() or not path.is_absolute() or path != target:
+        return None
+    try:
+        if target.resolve(strict=True) != target or not stat.S_ISREG(os.lstat(target).st_mode):
+            return None
+    except OSError, RuntimeError:
+        return None
+    return target
+
+
+def _dotted(path: str) -> bool:
+    return any(part in (".", "..") for part in re.split(r"[\\/]", path))
+
+
+def _settings_grant(target: PurePath) -> str:
+    """The one repo rule that grants `target`: Claude Code's `//` absolute-path spelling."""
+    return f"Edit(//{target.as_posix().lstrip('/')})"
+
+
+def _edit_deny_covers(rule: str, target: PurePath) -> bool:
+    """Whether deny `rule` could cover an Edit of `target`. Only an absolute exact path or
+    `<dir>/**` is read as a path; any other Edit rule shape counts as covering it."""
+    match = permissions.RULE_RE.match(rule.strip())
+    if match is None:
+        return True
+    if not fnmatch.fnmatchcase("Edit", match.group("tool")):
+        return False
+    arg = match.group("arg")
+    if arg is None or not arg.startswith("//"):
+        return True
+    body = arg[2:].lstrip("/").replace("\\", "/")
+    tree = body.endswith("/**")
+    base = body[:-3] if tree else body
+    if not base or any(ch in base for ch in "*?[{") or "//" in base or _dotted(base):
+        return True
+    have, want = target.as_posix().lstrip("/").casefold(), base.rstrip("/").casefold()
+    return have == want or (tree and have.startswith(want + "/"))
 
 
 def build_mcp_config(

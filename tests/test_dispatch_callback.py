@@ -8,6 +8,7 @@ outside this file needs it.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from claude_agent_sdk import CanUseToolShadowedWarning
 from agent_cli import dispatch, ops
 from agent_cli import features as features_mod
 from agent_cli import repos as repos_mod
+from agent_cli.core import AgentError
 from dispatch_helpers import (  # noqa: F401 -- droot is a fixture
     _new_fast,
     _options,
@@ -113,6 +115,207 @@ def test_decide_denies_a_tool_that_is_not_bash(droot: Path, fake_claude):
     assert dispatch.decide("NotebookEdit", {"notebook_path": "x.ipynb"}, d, repo, droot) == (
         "deny",
         dispatch.NO_RULE_REASON,
+    )
+
+
+def _settings_edit(droot: Path, fake_claude) -> tuple[dict, Any, Path, dict]:
+    """A dispatch that declares `.claude/settings.json`, a repo granting exactly that file, the
+    regular file itself, and the Edit payload the worker sent. The worktree sits beside the harness
+    root, as live worktrees do: one under it is the main vault's generated deny."""
+    d, repo = _record_and_repo(droot, fake_claude)
+    worktree = droot.parent / "wt-outside"
+    target = worktree / ".claude" / "settings.json"
+    target.parent.mkdir(parents=True)
+    target.write_text("{}\n", encoding="utf-8")
+    d = {**d, "worktree": str(worktree), "writes": ["src/x.py", ".claude/settings.json"]}
+    grant = f"Edit(//{target.as_posix().lstrip('/')})"
+    repo = replace(repo, dispatch={**repo.dispatch, "allowed_tools": [grant]})
+    payload = {"file_path": str(target), "old_string": "{}", "new_string": '{"a": 1}'}
+    return d, repo, target, payload
+
+
+def _ask(droot: Path, d: dict, repo: Any, tool: str, payload: Any) -> Any:
+    from claude_agent_sdk import ToolPermissionContext
+
+    callback = dispatch.supervisor.permission_callback(droot, d, repo)
+    return asyncio.run(callback(tool, payload, ToolPermissionContext(tool_use_id="toolu_edit")))
+
+
+def test_the_callback_allows_the_declared_settings_edit_only_with_both_consents(droot: Path, fake_claude):
+    from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+
+    d, repo, _target, payload = _settings_edit(droot, fake_claude)
+    assert isinstance(_ask(droot, d, repo, "Edit", payload), PermissionResultAllow)
+    assert dispatch.permission_events(dispatch.load(droot, "001-mac-01"))[-1]["decision"] == "allow"
+
+    bare = replace(repo, dispatch={**repo.dispatch, "allowed_tools": []})
+    for writes in (None, [], ["src/x.py"], [".claude"], [".claude/settings.json", "../x"]):
+        answer = _ask(droot, {**d, "writes": writes}, repo, "Edit", payload)
+        assert isinstance(answer, PermissionResultDeny), writes
+    assert isinstance(_ask(droot, d, bare, "Edit", payload), PermissionResultDeny)
+    assert isinstance(_ask(droot, {**d, "writes": None}, bare, "Edit", payload), PermissionResultDeny)
+
+
+def test_decide_refuses_a_settings_edit_the_repo_grants_only_broadly(droot: Path, fake_claude):
+    d, repo, target, payload = _settings_edit(droot, fake_claude)
+    wt = Path(d["worktree"]).as_posix().lstrip("/")
+    for grants in (
+        ["Edit"],
+        [f"Edit(//{wt}/**)"],
+        [f"Edit(//{wt}/.claude/*)"],
+        [f"Edit(/{target.as_posix().lstrip('/')})"],
+        [f"Edit({target.as_posix()})"],
+        ["Edit(.claude/settings.json)"],
+        [f"Write(//{target.as_posix().lstrip('/')})"],
+    ):
+        granted = replace(repo, dispatch={**repo.dispatch, "allowed_tools": grants})
+        assert dispatch.decide("Edit", payload, d, granted, droot)[0] == "deny", grants
+
+
+def test_decide_refuses_other_files_worktrees_tools_and_malformed_payloads(droot: Path, fake_claude):
+    d, repo, target, payload = _settings_edit(droot, fake_claude)
+    wt = Path(d["worktree"])
+    other = droot.parent / "other-worker"
+    (other / ".claude").mkdir(parents=True)
+    (other / ".claude" / "settings.json").write_text("{}\n", encoding="utf-8")
+    (wt / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
+    for path in (
+        str(wt / ".claude" / "settings.local.json"),
+        str(other / ".claude" / "settings.json"),
+        f"{wt}/src/../.claude/settings.json",
+        f"{wt}/.claude/./settings.json",
+        f"{wt}/.claude/../.claude/settings.json",
+        f"{other}/../{wt.name}/.claude/settings.json",
+        ".claude/settings.json",
+        "",
+    ):
+        assert dispatch.decide("Edit", {**payload, "file_path": path}, d, repo, droot)[0] == "deny", path
+    for tool in ("Write", "MultiEdit", "NotebookEdit", "edit"):
+        assert dispatch.decide(tool, payload, d, repo, droot)[0] == "deny", tool
+    bad: Any
+    for bad in (
+        None,
+        {},
+        [payload],
+        {**payload, "file_path": None},
+        {**payload, "file_path": [str(target)]},
+        {**payload, "file_path": str(target) + "\0"},
+        {**payload, "old_string": None},
+        {k: v for k, v in payload.items() if k != "new_string"},
+        {**payload, "replace_all": "yes"},
+    ):
+        assert dispatch.decide("Edit", bad, d, repo, droot)[0] == "deny", bad
+    assert dispatch.decide("Edit", {**payload, "replace_all": True}, d, repo, droot)[0] == "allow"
+    for worktree in (None, "", "relative/wt", str(other), f"{other}/../{wt.name}", f"{wt}/."):
+        assert dispatch.decide("Edit", payload, {**d, "worktree": worktree}, repo, droot)[0] == "deny"
+
+
+def test_decide_refuses_a_settings_file_reached_through_a_symlink(droot: Path, fake_claude, tmp_path: Path):
+    import pytest
+
+    d, repo, target, payload = _settings_edit(droot, fake_claude)
+    real = tmp_path / "real-settings.json"
+    real.write_text("{}\n", encoding="utf-8")
+    target.unlink()
+    try:
+        target.symlink_to(real)
+    except OSError:
+        pytest.skip("this host cannot create symlinks")
+    assert dispatch.decide("Edit", payload, d, repo, droot)[0] == "deny"
+
+    target.unlink()
+    assert dispatch.decide("Edit", payload, d, repo, droot)[0] == "deny", "a missing file is not consent"
+    target.mkdir()
+    assert dispatch.decide("Edit", payload, d, repo, droot)[0] == "deny", "nor is a directory"
+    target.rmdir()
+
+    # a symlinked parent: the worktree reached through a link to itself
+    link = tmp_path / "wt-link"
+    link.symlink_to(Path(d["worktree"]), target_is_directory=True)
+    target.write_text("{}\n", encoding="utf-8")
+    linked = link / ".claude" / "settings.json"
+    grant = f"Edit(//{linked.as_posix().lstrip('/')})"
+    via = replace(repo, dispatch={**repo.dispatch, "allowed_tools": [grant]})
+    linked_payload = {**payload, "file_path": str(linked)}
+    assert dispatch.decide("Edit", linked_payload, {**d, "worktree": str(link)}, via, droot)[0] == "deny"
+
+
+def test_decide_lets_an_applicable_edit_deny_win_over_the_settings_consent(
+    droot: Path, fake_claude, monkeypatch
+):
+    from agent_cli.dispatch import rules
+
+    d, repo, target, payload = _settings_edit(droot, fake_claude)
+    wt = Path(d["worktree"])
+    real = rules.dispatch_rules
+
+    def with_deny(extra: list[str]):
+        def patched(root, repo, d):
+            found, hide = real(root, repo, d)
+            return {**found, "deny": [*found["deny"], *extra]}, hide
+
+        return patched
+
+    for deny in (
+        "Edit",
+        "Edit*",
+        "Ed*",
+        f"Edit(//{target.as_posix().lstrip('/')})",
+        f"Edit(//{wt.as_posix().lstrip('/')}/**)",
+        f"Edit(//{wt.parent.as_posix().lstrip('/')}/**)",
+        f"Edit(///{wt.as_posix().lstrip('/')}/**)",
+        f"Edit({wt}/**)",
+        "Edit(/.claude/settings.json)",
+        "Edit(.claude/**)",
+        "Edit(//**/settings.json)",
+    ):
+        monkeypatch.setattr(rules, "dispatch_rules", with_deny([deny]))
+        behavior, reason = dispatch.decide("Edit", payload, d, repo, droot)
+        assert behavior == "deny", deny
+    for unrelated in (
+        "Write",
+        "MultiEdit(//x/**)",
+        "Bash(rm:*)",
+        f"Edit(//{wt.as_posix().lstrip('/')}/src/**)",
+    ):
+        monkeypatch.setattr(rules, "dispatch_rules", with_deny([unrelated]))
+        assert dispatch.decide("Edit", payload, d, repo, droot)[0] == "allow", unrelated
+
+    def broken(root, repo, d):
+        raise AgentError("selected worker MCP profiles are unknown")
+
+    monkeypatch.setattr(rules, "dispatch_rules", broken)
+    assert dispatch.decide("Edit", payload, d, repo, droot)[0] == "deny"
+
+
+def test_decide_keeps_the_generated_main_vault_deny_on_the_settings_edit(droot: Path, fake_claude):
+    """The generated `Edit(//<root>/**)` deny covers a worktree under the harness root."""
+    d, repo, _target, payload = _settings_edit(droot, fake_claude)
+    inside = droot / "wt-inside"
+    (inside / ".claude").mkdir(parents=True)
+    target = inside / ".claude" / "settings.json"
+    target.write_text("{}\n", encoding="utf-8")
+    assert dispatch.decide("Edit", payload, d, repo, droot)[0] == "allow"
+    grant = f"Edit(//{target.as_posix().lstrip('/')})"
+    repo = replace(repo, dispatch={**repo.dispatch, "allowed_tools": [grant]})
+    behavior, reason = dispatch.decide(
+        "Edit", {**payload, "file_path": str(target)}, {**d, "worktree": str(inside)}, repo, droot
+    )
+    assert behavior == "deny" and "is never a worker's" in reason
+
+
+def test_the_settings_grant_spelling_is_the_absolute_double_slash_form():
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    from agent_cli.dispatch import rules
+
+    assert (
+        rules._settings_grant(PurePosixPath("/Users/me/wt/.claude/settings.json"))  # pyright: ignore[reportPrivateUsage]
+        == "Edit(//Users/me/wt/.claude/settings.json)"
+    )
+    assert (
+        rules._settings_grant(PureWindowsPath(r"C:\Users\me\wt\.claude\settings.json"))  # pyright: ignore[reportPrivateUsage]
+        == "Edit(//C:/Users/me/wt/.claude/settings.json)"
     )
 
 
