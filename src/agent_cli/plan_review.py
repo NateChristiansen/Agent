@@ -1,21 +1,26 @@
-"""Plan review: two fresh, blind, read-only reviewers per plan version, Codex and Claude.
+"""Plan review in blind rounds: two fresh, read-only reviewers (Codex and Claude), then one
+verifier, all on one frozen plan version.
 
 This replaces manager pairing. Two long-lived managers agreeing to a plan's hash needed a
 second live manager, a pair record on both sessions and a Stop-hook reading chat for approval
-asks; that hook blocked a Codex manager's trust question to the owner. Now the manager
-launches the `dispatch` tool's `plan-review` action: the harness reads the plan once, freezes the
-bytes as `.agent/plan-reviews/<sha>.md` (read-only), embeds them in the work order, and records
-`<sha>.json` naming both reviewer dispatches. `plan-gate` lets `ExitPlanMode` through only for a
-sha both finished reviewers agreed to, a plan that declares itself small, or after `ROUND_CAP`
-reviews of one plan file. A record from before the second reviewer names one `dispatch_id` and
-reads as that one review.
+asks; that hook blocked a Codex manager's trust question to the owner. Now the manager calls the
+`dispatch` tool's `plan-review` action: the harness reads the plan once, freezes the bytes as
+`.agent/plan-reviews/<sha>.md` (read-only), embeds them in the work order, and records the round
+as `<sha>-<round>.json`. Each later `plan-review` call on the same plan, made after the supervisor
+reports a return, advances that round: `reviewing` (both reviewers' findings go to the ledger),
+`verifying` (one verifier keeps or refutes each finding), `complete`. `plan-gate` lets
+`ExitPlanMode` through when the latest complete round on the presented sha kept no finding as
+blocking, for a plan that declares itself small, or after `ROUND_CAP` complete rounds of one plan
+file, when the owner decides.
+
+A record from before rounds is `<sha>.json` with one `dispatch_id` or two `reviewers`. It reads as
+one round, complete once it has a verdict, clean when its reviewers agreed.
 
 The hash is sha256 of the plan bytes with trailing newlines reduced to exactly one. ExitPlanMode's
 `plan` text usually lacks the file's final newline, and an editor may add a second one; neither
 changes what the owner reads. Nothing else is normalised, so any other edit voids a verdict.
 
-The record is keyed by sha, so it names one version and its reviews alone. This module only reads
-records and files: the hook imports it and must stay fast.
+This module only reads records and files: the hook imports it and must stay fast.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .core import agent_path
 from .records.narrow import as_dict_or_none, dict_list
@@ -72,11 +77,39 @@ def exempt(text: str) -> str | None:
     return None
 
 
-def record(root: Path, sha: str) -> dict[str, Any] | None:
-    try:
-        return as_dict_or_none(json.loads((reviews_dir(root) / f"{sha}.json").read_text(encoding="utf-8")))
-    except OSError, ValueError:
-        return None
+def round_path(root: Path, sha: str, round_no: int) -> Path:
+    return reviews_dir(root) / f"{sha}-{round_no}.json"
+
+
+def _read(paths: list[Path]) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for path in paths:
+        try:
+            data = as_dict_or_none(json.loads(path.read_text(encoding="utf-8")))
+        except OSError, ValueError:
+            continue
+        if data is not None:
+            found.append(data)
+    return sorted(found, key=_launch_order)
+
+
+def _launch_order(rec: dict[str, Any]) -> tuple[str, int]:
+    return str(rec.get("launched_at") or ""), round_no(rec)
+
+
+def round_no(rec: dict[str, Any]) -> int:
+    """The record's round number; 0 for a record from before rounds."""
+    value = rec.get("round")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def records(root: Path, sha: str) -> list[dict[str, Any]]:
+    """Every readable record of this sha, oldest launch first: the legacy `<sha>.json` and each
+    round's `<sha>-<round>.json`."""
+    base = reviews_dir(root)
+    if not base.is_dir():
+        return []
+    return _read([base / f"{sha}.json", *sorted(base.glob(f"{sha}-*.json"))])
 
 
 def all_records(root: Path) -> list[dict[str, Any]]:
@@ -84,20 +117,46 @@ def all_records(root: Path) -> list[dict[str, Any]]:
     base = reviews_dir(root)
     if not base.is_dir():
         return []
-    found: list[dict[str, Any]] = []
-    for path in sorted(base.glob("*.json")):
-        try:
-            data = as_dict_or_none(json.loads(path.read_text(encoding="utf-8")))
-        except OSError, ValueError:
-            continue
-        if data is not None:
-            found.append(data)
-    return sorted(found, key=lambda r: str(r.get("launched_at") or ""))
+    return _read(sorted(base.glob("*.json")))
 
 
 def records_for(root: Path, plan_path: str) -> list[dict[str, Any]]:
     """Every review record of this resolved plan path, oldest launch first."""
     return [r for r in all_records(root) if r.get("plan_path") == plan_path]
+
+
+def is_round(rec: dict[str, Any]) -> bool:
+    """A round record has a `phase`; a record from before rounds has none."""
+    return "phase" in rec
+
+
+def blocking(rec: dict[str, Any]) -> list[str]:
+    """The finding ids the verifier kept as blocking in a complete round."""
+    raw = rec.get("blocking")
+    return [str(i) for i in cast("list[object]", raw)] if isinstance(raw, list) else []
+
+
+def complete(root: Path, rec: dict[str, Any]) -> bool:
+    """A round is complete at phase `complete`; a legacy record once it has a verdict."""
+    if is_round(rec):
+        return rec.get("phase") == "complete"
+    return verdict(root, rec).state in ("agree", "revise")
+
+
+def clean(root: Path, rec: dict[str, Any]) -> bool:
+    """A complete round that kept no finding as blocking, or a legacy record its reviewers agreed to."""
+    if is_round(rec):
+        return rec.get("phase") == "complete" and isinstance(rec.get("blocking"), list) and not blocking(rec)
+    return verdict(root, rec).state == "agree"
+
+
+def latest_complete(root: Path, recs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return next((r for r in reversed(recs) if complete(root, r)), None)
+
+
+def rounds_used(root: Path, plan_path: str) -> int:
+    """What `ROUND_CAP` counts for a plan file: its complete rounds, and each legacy record as one."""
+    return sum(1 for r in records_for(root, plan_path) if not is_round(r) or r.get("phase") == "complete")
 
 
 @dataclass(frozen=True)
@@ -126,7 +185,7 @@ def verdict(root: Path, rec: dict[str, Any]) -> Verdict:
     ids = reviewer_ids(rec)
     if not ids:
         return Verdict("none", "", "its record names no reviewer")
-    seen = [_one(root, dispatch_id, sha) for dispatch_id in ids]
+    seen = [reviewer_verdict(root, dispatch_id, sha) for dispatch_id in ids]
     if len(seen) == 1:
         return seen[0]
     for state in ("running", "revise"):
@@ -147,7 +206,7 @@ def verdict(root: Path, rec: dict[str, Any]) -> Verdict:
     )
 
 
-def _one(root: Path, dispatch_id: str, sha: str) -> Verdict:
+def reviewer_verdict(root: Path, dispatch_id: str, sha: str) -> Verdict:
     """Read one reviewer's dispatch. A dispatch whose work order does not carry the record's sha
     is not that review, whatever the record says."""
     from .dispatch.state import load
@@ -172,8 +231,8 @@ def _one(root: Path, dispatch_id: str, sha: str) -> Verdict:
 
 
 def launch_warning(root: Path, *, feature: int | None, row: str | None) -> str:
-    """A note for `dispatch new` when an implementation row launches on a feature with no agreed
-    plan review. It warns and never refuses: Codex has no ExitPlanMode to
+    """A note for `dispatch new` when an implementation row launches on a feature with no clean
+    plan-review round (`clean`). It warns and never refuses: Codex has no ExitPlanMode to
     gate, and an exempt plan leaves no record to find."""
     from .dispatch.state import load
 
@@ -184,9 +243,11 @@ def launch_warning(root: Path, *, feature: int | None, row: str | None) -> str:
             reviewed = {load(root, dispatch_id).get("feature") for dispatch_id in reviewer_ids(rec)}
         except Exception:  # noqa: BLE001, S112 — an unreadable review is not this feature's agreement
             continue
-        if reviewed == {feature} and verdict(root, rec).state == "agree":
+        if reviewed == {feature} and clean(root, rec):
             return ""
     return (
-        f"plan review: feature {feature:03d} has no agreed plan review on record. Run the `dispatch` "
-        "action `plan-review` on the plan first, unless it says `review: small|none — <reason>`."
+        f"plan review: feature {feature:03d} has no agreed plan review on record: no review round "
+        "finished with zero verified blocking findings. Run the `dispatch` action `plan-review` on the "
+        "plan first, and call it again on the same plan after the supervisor reports each return, "
+        "unless the plan says `review: small|none — <reason>`."
     )

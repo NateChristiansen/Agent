@@ -7,7 +7,8 @@ path. It sits in a subdirectory because `plan_review.all_records` reads every `*
 findings anchors it toward agreement.
 
 Per round one verifier (Codex, read-only) keeps or refutes each finding, and labels each kept one
-blocking or optional. The manager then records a disposition per finding: `fixed` (with the
+blocking or optional; one that ends without a usable return is relaunched once. `plan-review` fills
+the ledger and launches the verifier as it advances a round. The manager then records a disposition per finding: `fixed` (with the
 changed section) or `rejected` (with a reason). `disputes` lists what the owner should see: a
 Claude reviewer's finding the verifier refuted or called optional, and a finding the manager
 rejected that a later round raised again.
@@ -240,22 +241,41 @@ def verifier_work_order(sha: str, plan_text: str, entries: list[dict[str, Any]])
 
 
 def launch_verifier(
-    root: Path, *, plan_path: str, round_no: int, session_id: str | None = None
+    root: Path,
+    *,
+    plan_path: str,
+    round_no: int,
+    session_id: str | None = None,
+    replaces: str | None = None,
 ) -> dict[str, Any]:
     """Launch the one verifier for a round's findings, on the frozen snapshot those findings
-    judged, and record its dispatch id on the ledger. Returns the dispatch's `new` result."""
+    judged, and record its dispatch id on the ledger. Returns the dispatch's `new` result.
+    `replaces` names the round's verifier that ended without a usable return: it is relaunched
+    once, and a relaunch is never replaced."""
     with _guard(root, plan_path):
-        return _launch_locked(root, plan_path, round_no, session_id)
+        return _launch_locked(root, plan_path, round_no, session_id, replaces)
 
 
-def _launch_locked(root: Path, plan_path: str, round_no: int, session_id: str | None) -> dict[str, Any]:
+def _launch_locked(
+    root: Path, plan_path: str, round_no: int, session_id: str | None, replaces: str | None
+) -> dict[str, Any]:
     from . import dispatch as dispatch_mod
     from . import sessions
     from .verify_record import harness_repo
 
     ledger = load(root, plan_path)
     held = as_dict_or_none(ledger["verifiers"].get(str(round_no)))
-    if held is not None:
+    if replaces is not None:
+        if held is None or held.get("dispatch_id") != replaces:
+            raise AgentError(
+                f"{replaces} is not round {round_no}'s verifier for {plan_path}; nothing was launched"
+            )
+        if held.get("replaces"):
+            raise AgentError(
+                f"{replaces} is already the relaunched verifier of round {round_no} of {plan_path}; "
+                "nothing was launched"
+            )
+    elif held is not None:
         raise AgentError(
             f"round {round_no} of {plan_path} already has verifier {held['dispatch_id']}; "
             "one verifier per round, so nothing was launched"
@@ -291,7 +311,10 @@ def _launch_locked(root: Path, plan_path: str, round_no: int, session_id: str | 
         choice_reason="plan-review verifier: keeps or refutes each finding of a round, read-only",
         session_id=sid,
     )
-    ledger["verifiers"][str(round_no)] = {"dispatch_id": result["id"], "plan_sha": sha}
+    held = {"dispatch_id": result["id"], "plan_sha": sha}
+    if replaces is not None:
+        held["replaces"] = replaces
+    ledger["verifiers"][str(round_no)] = held
     _save(root, plan_path, ledger)
     return result
 
@@ -391,3 +414,44 @@ def disputes(ledger: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _rejected(entry: dict[str, Any]) -> bool:
     return (as_dict_or_none(entry.get("disposition")) or {}).get("state") == "rejected"
+
+
+# ---------------------------------------------------------------- what the owner reads
+
+
+def verified_blocking(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        e
+        for e in entries
+        if (v := as_dict_or_none(e.get("verifier"))) is not None
+        and v.get("result") == "kept"
+        and v.get("label") == "blocking"
+    ]
+
+
+def _short(text: object, limit: int = 160) -> str:
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _disposition(entry: dict[str, Any]) -> str:
+    d = as_dict_or_none(entry.get("disposition"))
+    if d is None:
+        return "no disposition"
+    note = d.get("section") if d.get("state") == "fixed" else d.get("reason")
+    return f"{d.get('state')}: {_short(note, 80)}"
+
+
+def owner_lines(ledger: dict[str, Any]) -> list[str]:
+    """Every verified blocking finding with its disposition, then the disputes, one line each."""
+    lines = [
+        f"{e['id']} (round {e.get('round')}, blocking): {_short(e.get('text'))} [{_disposition(e)}]"
+        for e in verified_blocking(findings(ledger))
+    ]
+    for d in disputes(ledger):
+        entry = d["finding"]
+        tail = f", re-raises rejected {d['rejected']['id']}" if "rejected" in d else ""
+        lines.append(
+            f"dispute {d['kind']}: {entry['id']} (round {entry.get('round')}{tail}): {_short(entry.get('text'))}"
+        )
+    return lines

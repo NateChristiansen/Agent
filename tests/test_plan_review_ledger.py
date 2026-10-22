@@ -237,6 +237,36 @@ def test_a_second_launch_for_a_round_launches_nothing(tmp_root: Path, monkeypatc
         ledger.launch_verifier(tmp_root, plan_path=plan, round_no=1, session_id=SID)
     assert len(calls) == 1
     assert ledger.load(tmp_root, plan)["verifiers"]["1"]["dispatch_id"] == "001-mac-01"
+    # A verifier without a usable return is replaced once, and only by naming it.
+    with pytest.raises(AgentError, match="001-mac-07 is not round 1's verifier"):
+        ledger.launch_verifier(tmp_root, plan_path=plan, round_no=1, session_id=SID, replaces="001-mac-07")
+    ledger.launch_verifier(tmp_root, plan_path=plan, round_no=1, session_id=SID, replaces="001-mac-01")
+    assert ledger.load(tmp_root, plan)["verifiers"]["1"] == {
+        "dispatch_id": "001-mac-02",
+        "plan_sha": sha,
+        "replaces": "001-mac-01",
+    }
+    with pytest.raises(AgentError, match="001-mac-02 is already the relaunched verifier"):
+        ledger.launch_verifier(tmp_root, plan_path=plan, round_no=1, session_id=SID, replaces="001-mac-02")
+    assert len(calls) == 2
+
+
+def test_owner_lines_list_verified_blocking_findings_then_disputes(tmp_root: Path):
+    plan = _plan(tmp_root)
+    _round(tmp_root, plan, 1, "codex", ["Step 1 has no test.", "Rename it."])
+    _round(tmp_root, plan, 1, "claude", ["The gate is weak."])
+    ledger.record_verifier(
+        tmp_root,
+        plan,
+        round_no=1,
+        summary="| F1 | kept | blocking | r |\n| F2 | kept | optional | r |\n| F3 | refuted | - | r |",
+        dispatch_id="001-mac-09",
+    )
+    ledger.dispose(tmp_root, plan, finding_id="F1", disposition="rejected", note="out of scope")
+    assert ledger.owner_lines(ledger.load(tmp_root, plan)) == [
+        "F1 (round 1, blocking): Step 1 has no test. [rejected: out of scope]",
+        "dispute claude-refuted: F3 (round 1): The gate is weak.",
+    ]
 
 
 def test_the_verifier_needs_the_frozen_snapshot(tmp_root: Path):

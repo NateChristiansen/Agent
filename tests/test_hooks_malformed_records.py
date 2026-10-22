@@ -81,14 +81,15 @@ def test_plan_mode_input_that_is_not_an_object_presents_no_plan(tmp_root: Path):
 
 
 @pytest.mark.parametrize("body", ["junk", "[1, 2]", '"text"'])
-def test_a_review_record_that_is_not_an_object_counts_as_no_review(tmp_root: Path, body: str):
+@pytest.mark.parametrize("suffix", ["", "-1"])  # a legacy record and a round record
+def test_a_review_record_that_is_not_an_object_counts_as_no_review(tmp_root: Path, body: str, suffix: str):
     text = "# plan\n\nstep one\n"
     reviews = plan_review.reviews_dir(tmp_root)
     reviews.mkdir(parents=True)
-    (reviews / f"{plan_review.digest(text.encode())}.json").write_text(body, encoding="utf-8")
+    (reviews / f"{plan_review.digest(text.encode())}{suffix}.json").write_text(body, encoding="utf-8")
     out = plan_gate.plan_gate(tmp_root, {"tool_name": "ExitPlanMode", "tool_input": {"plan": text}})
     reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "no cross-client review of this plan yet" in reason
+    assert "no blind review round of this plan yet" in reason
 
 
 @pytest.mark.parametrize("shown", ["abc", {"a": 1}, 5])

@@ -1,8 +1,10 @@
-"""Two blind plan reviewers, Codex and Claude, replace manager pairing (phase 2.1).
+"""Blind plan review rounds replace manager pairing (phase 2.1).
 
-They judge a frozen snapshot of the plan, and `plan-gate` lets ExitPlanMode through only for
-the exact sha both finished reviews agreed to, a plan marked small, or after three rounds.
-The worker launch is mocked throughout: `dispatch.new` writes a record and starts nothing.
+Two reviewers, Codex and Claude, judge a frozen snapshot of the plan; one verifier keeps or refutes
+their findings; `plan-review` advances the round one step per call. `plan-gate` lets ExitPlanMode
+through only when the latest complete round on the exact sha kept no finding as blocking, for a
+plan marked small, or after three complete rounds. The worker launch is mocked throughout:
+`dispatch.new` writes a record and starts nothing.
 """
 
 from __future__ import annotations
@@ -78,9 +80,38 @@ def _review(root: Path, plan: Path) -> dict[str, Any]:
 
 
 def _finish(launch: Launcher, first: str, second: str = "VERDICT: agree", n: int = 1) -> None:
-    """End round `n`'s two reviewers (Codex, then Claude) with these summaries."""
+    """End round `n`'s two reviewers (Codex, then Claude) with these summaries, for a round
+    launched when no verifier ran before it."""
     launch.write(f"001-mac-{2 * n - 1:02d}", state="done", summary=first)
     launch.write(f"001-mac-{2 * n:02d}", state="done", summary=second)
+
+
+def _table(*rows: tuple[str, str, str]) -> str:
+    return "| id | result | label | reason |\n" + "\n".join(
+        f"| {i} | {r} | {lab} | read it |" for i, r, lab in rows
+    )
+
+
+def _round(
+    root: Path,
+    launch: Launcher,
+    plan: Path,
+    codex: str = "VERDICT: agree",
+    claude: str = "VERDICT: agree",
+    table: str | None = None,
+) -> dict[str, Any]:
+    """Run one whole round through `plan-review` calls: launch, both reviewers return, then the
+    verifier (when one launches) returns `table`."""
+    rec = _review(root, plan)
+    assert rec["phase"] == "reviewing"
+    first, second = (r["dispatch_id"] for r in rec["reviewers"])
+    launch.write(first, state="done", summary=codex)
+    launch.write(second, state="done", summary=claude)
+    rec = _review(root, plan)
+    if rec["phase"] == "verifying":
+        launch.write(rec["verifier"]["dispatch_id"], state="done", summary=table or "")
+        rec = _review(root, plan)
+    return rec
 
 
 def _gate(root: Path, plan: Path | None = None, text: str | None = None) -> dict[str, Any]:
@@ -140,8 +171,10 @@ def test_the_launch_freezes_the_plan_and_embeds_it(tmp_root: Path, launch: Launc
         assert str(plan) not in call["prompt"]
     snapshot = Path(rec["snapshot"])
     assert snapshot.read_bytes() == PLAN.encode() and stat.S_IMODE(snapshot.stat().st_mode) == 0o444
-    saved = plan_review.record(tmp_root, sha)
-    assert saved is not None and saved["session_id"] == SID and saved["launched_at"]
+    [saved] = plan_review.records(tmp_root, sha)
+    assert saved["session_id"] == SID and saved["launched_at"]
+    assert (saved["round"], saved["phase"], saved["verifier"]) == (1, "reviewing", None)
+    assert plan_review.round_path(tmp_root, sha, 1).is_file()
 
 
 def test_the_work_order_is_the_deep_contract_then_the_snapshot(tmp_root: Path, launch: Launcher):
@@ -162,8 +195,8 @@ def test_one_launch_starts_two_blind_reviewers_whatever_the_managers_client(
     rec = _review(tmp_root, _plan(tmp_root))
     chosen = [(c["provider"], c["model"], c["effort"]) for c in launch.calls]
     assert chosen == [("codex", "gpt-6.1-sol", "high"), ("claude", "sonnet", "high")]
-    saved = plan_review.record(tmp_root, rec["sha256"])
-    assert saved is not None and saved["reviewers"] == [
+    [saved] = plan_review.records(tmp_root, rec["sha256"])
+    assert saved["reviewers"] == [
         {"dispatch_id": "001-mac-01", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high"},
         {"dispatch_id": "001-mac-02", "provider": "claude", "model": "sonnet", "effort": "high"},
     ]
@@ -182,38 +215,150 @@ def test_a_failed_second_launch_names_the_first_reviewer(tmp_root: Path, launch:
     plan = _plan(tmp_root)
     with pytest.raises(AgentError, match="launched 001-mac-01 but not its claude reviewer: no claude"):
         _review(tmp_root, plan)
-    assert plan_review.record(tmp_root, plan_review.digest(PLAN.encode())) is None
+    assert plan_review.records(tmp_root, plan_review.digest(PLAN.encode())) == []
 
 
 def test_an_edit_after_launch_changes_neither_the_sha_nor_the_embedded_text(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     rec = _review(tmp_root, plan)
     plan.write_text(PLAN + "\n2. Also build Y.\n", encoding="utf-8", newline="")
-    assert plan_review.record(tmp_root, rec["sha256"]) == {k: v for k, v in rec.items() if k != "states"}
+    assert plan_review.records(tmp_root, rec["sha256"]) == [rec]
     assert Path(rec["snapshot"]).read_text(encoding="utf-8") == PLAN
     assert all("Also build Y" not in c["prompt"] for c in launch.calls)
-    # The verdict approves only its snapshot's sha: the edited plan is not covered...
+    # A round covers only its snapshot's sha: the edited plan is not covered...
     _finish(launch, "VERDICT: agree\nOptional: none")
     assert "plan changed since review 001-mac-01 and 001-mac-02" in _denied(_gate(tmp_root, plan))
-    # ...and restoring the reviewed bytes restores the approval.
+    # ...and with the reviewed bytes back, the next call completes the round, which opens the gate.
     plan.write_text(PLAN, encoding="utf-8", newline="")
+    assert "is reviewing" in _denied(_gate(tmp_root, plan))
+    assert _review(tmp_root, plan)["phase"] == "complete"
     assert _gate(tmp_root, plan) == {}
 
 
-def test_a_running_or_revised_review_of_the_same_sha_is_not_relaunched(tmp_root: Path, launch: Launcher):
+def test_a_running_round_launches_nothing(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
-    with pytest.raises(Exception, match="still running"):
-        _review(tmp_root, plan)
-    _finish(launch, "VERDICT: revise\nBlocking: step 1 duplicates Codex")
-    with pytest.raises(Exception, match="001-mac-01 of this exact plan asked for revision"):
-        _review(tmp_root, plan)
-    _finish(launch, "VERDICT: agree", "VERDICT: agree")
+    op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert "001-mac-01 and 001-mac-02 is still running; nothing launched" in op.text
+    launch.write("001-mac-01", state="done", summary="VERDICT: agree")
+    op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert "reviewer 001-mac-02 is still running" in op.text
+    assert len(launch.calls) == 2
+    # A failed reviewer waits for its running peer: the call still launches nothing.
+    launch.write("001-mac-01", state="failed", summary="crashed")
+    op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert "reviewer 001-mac-02 is still running; nothing launched" in op.text
+    assert len(launch.calls) == 2
+    launch.write("001-mac-02", state="done", summary="VERDICT: agree")
     assert (
-        "001-mac-01 and 001-mac-02 already agreed"
+        "relaunched 001-mac-03 once"
         in ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID).text
     )
+
+
+def test_a_failed_relaunch_launch_keeps_the_earlier_relaunch(tmp_root: Path, launch: Launcher, monkeypatch):
+    from agent_cli.core import AgentError
+
+    plan = _plan(tmp_root)
+    _review(tmp_root, plan)
+    _finish(launch, "no verdict", "no verdict either")
+
+    def second_fails(root: Path, **kw: Any) -> dict[str, Any]:
+        if len(launch.calls) == 3:
+            raise AgentError("dispatch cap")
+        return launch(root, **kw)
+
+    monkeypatch.setattr(dispatch, "new", second_fails)
+    with pytest.raises(AgentError, match="dispatch cap"):
+        _review(tmp_root, plan)
+    [rec] = plan_review.records(tmp_root, plan_review.digest(PLAN.encode()))
+    assert [r["dispatch_id"] for r in rec["reviewers"]] == ["001-mac-03", "001-mac-02"]
+
+
+def test_concurrent_reviews_of_the_same_bytes_at_two_paths_get_separate_rounds(
+    tmp_root: Path, launch: Launcher, monkeypatch
+):
+    import threading
+
+    from agent_cli.ops import plan_review as op_mod
+
+    first, second = _plan(tmp_root), tmp_root / "features" / "001-x" / "copy.md"
+    second.write_text(PLAN, encoding="utf-8", newline="")
+    arrived = threading.Barrier(2, timeout=1)
+    real = op_mod._next_round
+
+    def meet(root: Path, plan: str, sha: str) -> int:
+        try:
+            arrived.wait()  # without a shared sha guard, both calls pick a round here together
+        except threading.BrokenBarrierError:
+            pass
+        return real(root, plan, sha)
+
+    monkeypatch.setattr(op_mod, "_next_round", meet)
+    errors: list[BaseException] = []
+
+    def run(path: Path) -> None:
+        try:
+            ops.dispatch_plan_review(tmp_root, paths=[str(path)], session_id=SID)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(p,)) for p in (first, second)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    recs = plan_review.records(tmp_root, plan_review.digest(PLAN.encode()))
+    assert sorted(r["round"] for r in recs) == [1, 2]
+    assert {r["plan_path"] for r in recs} == {str(first.resolve()), str(second.resolve())}
+
+
+def test_a_second_call_after_a_complete_round_launches_a_fresh_round_on_the_same_bytes(
+    tmp_root: Path, launch: Launcher
+):
+    plan = _plan(tmp_root)
+    first = _round(tmp_root, launch, plan)
+    assert (first["round"], first["phase"], first["blocking"]) == (1, "complete", [])
     assert len(launch.calls) == 2
+    second = _review(tmp_root, plan)
+    assert (second["round"], second["phase"], second["sha256"]) == (2, "reviewing", first["sha256"])
+    assert len(launch.calls) == 4
+    assert [r["round"] for r in plan_review.records(tmp_root, first["sha256"])] == [1, 2]
+    # The earlier clean round still opens the gate while the fresh one runs.
+    assert _gate(tmp_root, plan) == {}
+
+
+# --- reading a reviewer's findings --------------------------------------------------------------
+
+
+def test_every_blocking_and_optional_item_is_one_finding():
+    from agent_cli.ops.plan_review import findings_of
+
+    summary = (
+        "VERDICT: revise\n"
+        "Blocking:\n"
+        "1. Step 2 has no test.\n"
+        "   Path: plan.md step 2; read the steps.\n"
+        "   - sub-point stays with it\n"
+        "2. **Gate** reads the wrong file.\n"
+        "\n"
+        "**Optional:**\n"
+        "- Rename step 1.\n"
+        "- none\n"
+        "Optional: one inline point\n"
+        "Checked:\n"
+        "- every step\n"
+        "\n"
+        "Blocking: none\n"
+    )
+    assert findings_of(summary) == [
+        "Step 2 has no test. Path: plan.md step 2; read the steps. - sub-point stays with it",
+        "**Gate** reads the wrong file.",
+        "Rename step 1.",
+        "one inline point",
+    ]
+    assert findings_of("VERDICT: agree\nOptional: none\nAll good.") == []
 
 
 # --- the combined verdict -----------------------------------------------------------------------
@@ -256,14 +401,44 @@ def test_a_one_reviewer_record_from_before_still_reads(tmp_root: Path, launch: L
     plan_review.reviews_dir(tmp_root).mkdir(parents=True, exist_ok=True)
     (plan_review.reviews_dir(tmp_root) / f"{sha}.json").write_text(json.dumps(old), encoding="utf-8")
     assert plan_review.verdict(tmp_root, old) == plan_review.Verdict("agree", "001-mac-07", "VERDICT: agree")
-    assert _gate(tmp_root, plan) == {}
     assert (
-        "001-mac-07 already agreed"
-        in ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID).text
+        plan_review.records(tmp_root, sha) == [old]
+        and plan_review.rounds_used(tmp_root, str(plan.resolve())) == 1
     )
+    assert _gate(tmp_root, plan) == {}
     launch.write("001-mac-07", state="done", summary="VERDICT: revise\nBlocking: x")
     assert "001-mac-07 asked for revision" in _denied(_gate(tmp_root, plan))
     assert launch.calls == []
+    # A call on the same bytes starts round 2 beside it; the legacy record was round 1.
+    rec = _review(tmp_root, plan)
+    assert (rec["round"], len(launch.calls)) == (2, 2)
+    assert "round 2 (001-mac-01 and 001-mac-02) of this exact plan is reviewing" in _denied(
+        _gate(tmp_root, plan)
+    )
+    launch.write("001-mac-01", state="done", summary="VERDICT: agree")
+    launch.write("001-mac-02", state="done", summary="VERDICT: agree")
+    assert _review(tmp_root, plan)["phase"] == "complete"
+    assert _gate(tmp_root, plan) == {}  # the newest complete round decides
+    assert plan_review.rounds_used(tmp_root, str(plan.resolve())) == 2
+
+
+def test_a_legacy_agreement_opens_until_a_newer_round_completes_with_a_blocking_finding(
+    tmp_root: Path, launch: Launcher
+):
+    plan = _plan(tmp_root)
+    sha = plan_review.digest(PLAN.encode())
+    launch.write("001-mac-07", state="done", prompt=f"review {sha}", summary="VERDICT: agree")
+    old = {"sha256": sha, "plan_path": str(plan.resolve()), "dispatch_id": "001-mac-07"}
+    plan_review.reviews_dir(tmp_root).mkdir(parents=True, exist_ok=True)
+    (plan_review.reviews_dir(tmp_root) / f"{sha}.json").write_text(json.dumps(old), encoding="utf-8")
+    _review(tmp_root, plan)
+    assert _gate(tmp_root, plan) == {}  # round 2 is still reviewing: the legacy agreement stands
+    launch.write("001-mac-01", state="done", summary="VERDICT: revise\nBlocking:\n- Step 1 has no test.")
+    launch.write("001-mac-02", state="done", summary="VERDICT: agree")
+    assert _review(tmp_root, plan)["phase"] == "verifying"
+    launch.write("001-mac-03", state="done", summary=_table(("F1", "kept", "blocking")))
+    _review(tmp_root, plan)
+    assert "round 2 (001-mac-01 and 001-mac-02) kept F1 as blocking" in _denied(_gate(tmp_root, plan))
 
 
 # --- the gate -----------------------------------------------------------------------------------
@@ -279,94 +454,246 @@ def test_a_small_or_none_marker_with_a_reason_passes(tmp_root: Path, marker: str
 
 @pytest.mark.parametrize("marker", ["review: small", "review: smallish change", "reviews: none — x"])
 def test_a_marker_without_a_reason_or_misspelled_does_not_pass(tmp_root: Path, marker: str):
-    assert "no cross-client review" in _denied(_gate(tmp_root, _plan(tmp_root, f"# Plan\n{marker}\n")))
+    assert "no blind review round" in _denied(_gate(tmp_root, _plan(tmp_root, f"# Plan\n{marker}\n")))
 
 
 def test_a_marker_below_the_first_fifteen_lines_does_not_count(tmp_root: Path):
     text = "# Plan\n" + "line\n" * 15 + "review: small — late\n"
-    assert "no cross-client review" in _denied(_gate(tmp_root, _plan(tmp_root, text)))
+    assert "no blind review round" in _denied(_gate(tmp_root, _plan(tmp_root, text)))
 
 
 def test_no_review_denies_with_the_launch_to_run(tmp_root: Path):
     plan = _plan(tmp_root)
     reason = _denied(_gate(tmp_root, plan))
     assert f"action `plan-review` and paths=[{plan.resolve()}]" in reason
+    assert "call `plan-review` again on the same plan after the supervisor reports a return" in reason
 
 
-def test_a_running_review_denies_and_names_it(tmp_root: Path, launch: Launcher):
+def test_a_round_in_progress_denies_and_says_how_it_advances(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
-    assert "001-mac-01 and 001-mac-02 of this exact plan is still running" in _denied(_gate(tmp_root, plan))
-    launch.write("001-mac-01", state="done", summary="VERDICT: agree")
-    assert "001-mac-02 of this exact plan is still running" in _denied(_gate(tmp_root, plan))
+    reason = _denied(_gate(tmp_root, plan))
+    assert "round 1 (001-mac-01 and 001-mac-02) of this exact plan is reviewing" in reason
+    assert "call `plan-review` again on the same plan after the supervisor reports a return" in reason
+    # Both verdicts back but not yet advanced: a reviewer's agreement alone does not open it.
+    _finish(launch, "VERDICT: agree")
+    assert "is reviewing" in _denied(_gate(tmp_root, plan))
+    _finish(launch, "VERDICT: revise\nBlocking:\n- Step 1 has no test.")
+    assert _review(tmp_root, plan)["phase"] == "verifying"
+    assert "is verifying (verifier 001-mac-03)" in _denied(_gate(tmp_root, plan))
 
 
-def test_a_revise_verdict_denies(tmp_root: Path, launch: Launcher):
+@pytest.mark.parametrize(
+    ("codex", "claude", "table"),
+    [
+        ("VERDICT: agree", "VERDICT: agree\nOptional: none", None),  # clean: no findings at all
+        (
+            "VERDICT: revise\nBlocking:\n- Step 1 has no test.",
+            "VERDICT: revise\nBlocking:\n- The gate reads the wrong file.",
+            _table(("F1", "refuted", "-"), ("F2", "refuted", "")),
+        ),
+        (
+            "VERDICT: revise\nBlocking:\n- Step 1 has no test.",
+            "VERDICT: agree\nOptional:\n- Rename step 1.",
+            _table(("F1", "kept", "optional"), ("F2", "kept", "optional")),
+        ),
+    ],
+    ids=["clean", "refuted-only", "optional-only"],
+)
+def test_a_round_with_no_verified_blocking_finding_opens_the_gate(
+    tmp_root: Path, launch: Launcher, codex: str, claude: str, table: str | None
+):
     plan = _plan(tmp_root)
-    _review(tmp_root, plan)
-    _finish(launch, "VERDICT: revise\nBlocking: no acceptance")
-    assert "001-mac-01 asked for revision" in _denied(_gate(tmp_root, plan))
-
-
-def test_an_agree_verdict_on_the_presented_sha_passes(tmp_root: Path, launch: Launcher):
-    plan = _plan(tmp_root)
-    _review(tmp_root, plan)
-    _finish(launch, "VERDICT: agree\nOptional: rename step 1")
+    rec = _round(tmp_root, launch, plan, codex, claude, table)
+    assert (rec["phase"], rec["blocking"]) == ("complete", [])
+    assert len(launch.calls) == (2 if table is None else 3)
     assert _gate(tmp_root, plan) == {}
     # The same bytes presented as text only (no readable file), short of the final newline.
     assert _gate(tmp_root, text=PLAN.rstrip("\n")) == {}
 
 
-def test_an_agree_that_is_not_the_first_line_or_not_done_does_not_pass(tmp_root: Path, launch: Launcher):
+def test_a_verified_blocking_finding_keeps_the_gate_shut(tmp_root: Path, launch: Launcher):
+    from agent_cli import plan_review_ledger as ledger
+
+    plan = _plan(tmp_root)
+    rec = _round(
+        tmp_root,
+        launch,
+        plan,
+        "VERDICT: revise\nBlocking:\n- Step 1 has no test.\nOptional:\n- Rename step 1.",
+        "VERDICT: agree\nOptional: the gate reads the wrong file",
+        _table(("F1", "kept", "blocking"), ("F2", "kept", "optional"), ("F3", "refuted", "-")),
+    )
+    assert (rec["phase"], rec["blocking"], rec["findings"]) == ("complete", ["F1"], ["F1", "F2", "F3"])
+    entries = ledger.findings(ledger.load(tmp_root, str(plan)))
+    assert [(e["id"], e["reviewer"]["client"], e["reviewer"]["dispatch_id"]) for e in entries] == [
+        ("F1", "codex", "001-mac-01"),
+        ("F2", "codex", "001-mac-01"),
+        ("F3", "claude", "001-mac-02"),
+    ]
+    assert entries[0]["text"] == "Step 1 has no test."
+    reason = _denied(_gate(tmp_root, plan))
+    assert "round 1 (001-mac-01 and 001-mac-02) kept F1 as blocking after verification" in reason
+    assert "for a fresh round" in reason
+
+
+def test_the_completing_call_names_blocking_findings_and_disputes(tmp_root: Path, launch: Launcher):
+    plan = _plan(tmp_root)
+    _review(tmp_root, plan)
+    _finish(launch, "VERDICT: revise\nBlocking:\n- Step 1 has no test.", "VERDICT: revise\nBlocking:\n- y")
+    _review(tmp_root, plan)
+    launch.write(
+        "001-mac-03", state="done", summary=_table(("F1", "kept", "blocking"), ("F2", "refuted", "-"))
+    )
+    op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert "round 1 is complete: verified blocking: F1." in op.text
+    assert "Disputes for the owner: F2 (claude-refuted)." in op.text
+    assert isinstance(op.data, dict) and op.data["disputes"][0]["kind"] == "claude-refuted"
+
+
+def test_a_reviewer_without_a_verdict_is_relaunched_once_then_the_round_stays_incomplete(
+    tmp_root: Path, launch: Launcher
+):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
     _finish(launch, "Looks fine.\nVERDICT: agree")
-    assert "001-mac-01 gave no verdict: reviewer 001-mac-01 (codex gpt-6.1-sol)" in _denied(
-        _gate(tmp_root, plan)
-    )
-    launch.write("001-mac-01", state="failed", summary="VERDICT: agree")
-    assert "gave no verdict" in _denied(_gate(tmp_root, plan))
+    op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert "relaunched 001-mac-03 once (001-mac-01: it ended done without a verdict line)" in op.text
+    relaunch = launch.calls[2]
+    assert (relaunch["provider"], relaunch["model"]) == ("codex", "gpt-6.1-sol")
+    assert relaunch["prompt"] == launch.calls[0]["prompt"]
+    assert isinstance(op.data, dict)
+    assert op.data["reviewers"][0] == {
+        "dispatch_id": "001-mac-03",
+        "relaunch_of": "001-mac-01",
+        "provider": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": "high",
+    }
+    launch.write("001-mac-03", state="failed", summary="VERDICT: agree")
+    op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert "round 1 cannot complete: reviewer 001-mac-01 and its relaunch 001-mac-03" in op.text
+    assert "bring it to the owner" in op.text
+    assert len(launch.calls) == 3
+    assert "cannot complete" in _denied(_gate(tmp_root, plan))
+    ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert len(launch.calls) == 3  # a stalled round launches nothing more
+    assert plan_review.rounds_used(tmp_root, str(plan.resolve())) == 0
 
 
-def test_a_record_whose_dispatch_reviewed_another_sha_is_not_a_verdict(tmp_root: Path, launch: Launcher):
+@pytest.mark.parametrize(
+    ("prompt", "summary"),
+    [
+        ("some other work order", "VERDICT: agree"),  # its dispatch reviewed another sha
+        (None, "VERDICT: revise\nAll wrong."),  # revise with no finding listed
+    ],
+)
+def test_an_unusable_reviewer_return_is_relaunched(
+    tmp_root: Path, launch: Launcher, prompt: str | None, summary: str
+):
     plan = _plan(tmp_root)
     _review(tmp_root, plan)
     _finish(launch, "VERDICT: agree")
-    launch.write("001-mac-01", state="done", prompt="some other work order", summary="VERDICT: agree")
-    assert "not a review of this sha" in _denied(_gate(tmp_root, plan))
+    launch.write("001-mac-02", state="done", prompt=prompt, summary=summary)
+    assert (
+        "relaunched 001-mac-03 once"
+        in ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID).text
+    )
+    assert launch.calls[2]["provider"] == "claude"
+
+
+def test_a_verifier_that_leaves_ids_without_a_result_is_relaunched_once(tmp_root: Path, launch: Launcher):
+    from agent_cli import plan_review_ledger as ledger
+
+    plan = _plan(tmp_root)
+    _review(tmp_root, plan)
+    _finish(launch, "VERDICT: revise\nBlocking:\n- a\n- b")
+    assert _review(tmp_root, plan)["phase"] == "verifying"
+    launch.write("001-mac-03", state="done", summary=_table(("F1", "kept", "blocking")))
+    op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert "leaving F2 without a result; relaunched the verifier once as 001-mac-04" in op.text
+    assert ledger.load(tmp_root, str(plan))["verifiers"]["1"]["replaces"] == "001-mac-03"
+    launch.write("001-mac-04", state="done", summary="no table")
+    op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
+    assert "cannot complete: the relaunched verifier 001-mac-04 ended done leaving F1, F2" in op.text
+    assert len(launch.calls) == 4
+    rec = plan_review.records(tmp_root, plan_review.digest(PLAN.encode()))[-1]
+    assert rec["phase"] == "verifying"
+    assert "cannot complete" in _denied(_gate(tmp_root, plan))
 
 
 def test_agree_on_an_older_sha_then_an_edit_denies(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
-    _review(tmp_root, plan)
-    _finish(launch, "VERDICT: agree")
+    _round(tmp_root, launch, plan)
     assert _gate(tmp_root, plan) == {}
     plan.write_text(PLAN + "3. Ship it.\n", encoding="utf-8", newline="")
     assert "the plan changed since review 001-mac-01 and 001-mac-02" in _denied(_gate(tmp_root, plan))
 
 
-def test_the_third_round_hands_the_decision_to_the_owner(tmp_root: Path, launch: Launcher):
+def test_the_third_complete_round_hands_the_decision_to_the_owner_with_the_ledger(
+    tmp_root: Path, launch: Launcher
+):
+    from agent_cli import plan_review_ledger as ledger
+
     plan = _plan(tmp_root)
+    # An incomplete round does not count toward the cap.
+    _review(tmp_root, plan)
+    _finish(launch, "VERDICT: revise\nBlocking:\n- never verified")
+    _review(tmp_root, plan)
     for n in (1, 2, 3):
         plan.write_text(PLAN + f"\nround {n}\n", encoding="utf-8", newline="")
-        _review(tmp_root, plan)
-        _finish(launch, "VERDICT: revise\nBlocking: x", n=n)
+        rec = _round(
+            tmp_root,
+            launch,
+            plan,
+            f"VERDICT: revise\nBlocking:\n- Step {n} has no test.",
+            f"VERDICT: revise\nBlocking:\n- Claude point {n}.",
+            # Ids run on across rounds: round 1 holds F1, each later round two more.
+            _table((f"F{2 * n}", "kept", "blocking"), (f"F{2 * n + 1}", "refuted", "-")),
+        )
+        assert rec["phase"] == "complete"
         if n < 3:
-            assert "asked for revision" in _denied(_gate(tmp_root, plan))
+            assert "as blocking after verification" in _denied(_gate(tmp_root, plan))
+    assert plan_review.rounds_used(tmp_root, str(plan.resolve())) == 3
+    ledger.dispose(tmp_root, str(plan), finding_id="F2", disposition="fixed", note="step 1 now has a test")
     result = _gate(tmp_root, plan)
     assert "permissionDecision" not in result  # never `allow`: the owner's own prompt still shows
-    assert "round cap is reached, so the owner decides" in result["additionalContext"]
+    note = result["additionalContext"]
+    assert "3 complete review rounds" in note and "round cap is reached, so the owner decides" in note
+    assert "- F2 (round 2, blocking): Step 1 has no test. [fixed: step 1 now has a test]" in note
+    assert "- F6 (round 4, blocking): Step 3 has no test. [no disposition]" in note
+    assert "- dispute claude-refuted: F3 (round 2): Claude point 1." in note
+    assert "never verified" not in note
     plan.write_text(
         PLAN + "\nround 4\n", encoding="utf-8", newline=""
     )  # an unreviewed 4th version: still the owner's call
     assert "round cap" in _gate(tmp_root, plan)["additionalContext"]
 
 
+def test_legacy_records_count_one_round_each_toward_the_cap(tmp_root: Path, launch: Launcher):
+    plan = _plan(tmp_root)
+    plan_review.reviews_dir(tmp_root).mkdir(parents=True, exist_ok=True)
+    for n in (1, 2):
+        sha = f"{n:064x}"
+        old = {"sha256": sha, "plan_path": str(plan.resolve()), "dispatch_id": f"001-mac-9{n}"}
+        (plan_review.reviews_dir(tmp_root) / f"{sha}.json").write_text(json.dumps(old), encoding="utf-8")
+    rec = _round(
+        tmp_root,
+        launch,
+        plan,
+        "VERDICT: revise\nBlocking:\n- x",
+        table=_table(("F1", "kept", "blocking")),
+    )
+    assert rec["round"] == 3
+    assert plan_review.rounds_used(tmp_root, str(plan.resolve())) == 3
+    assert "round cap is reached" in _gate(tmp_root, plan)["additionalContext"]
+
+
 def test_an_unmapped_session_and_a_broken_record_never_deny_for_that(tmp_root: Path, monkeypatch):
     plan = _plan(tmp_root, "review: none — owner skipped\n")
     payload = {"session_id": "nobody", "tool_name": "ExitPlanMode", "tool_input": {"planFilePath": str(plan)}}
     assert hooks.run(tmp_root, "plan-gate", json.dumps(payload)) == ("", 0)
-    monkeypatch.setattr(plan_review, "record", lambda root, sha: 1 / 0)
+    monkeypatch.setattr(plan_review, "records", lambda root, sha: 1 / 0)
     assert hooks.run(tmp_root, "plan-gate", json.dumps({**payload, "tool_input": {"plan": "x"}})) == ("", 0)
 
 
@@ -434,12 +761,14 @@ def test_a_build_with_no_agreed_review_on_its_feature_warns(tmp_root: Path, laun
     assert "feature 001 has no agreed plan review" in plan_review.launch_warning(
         tmp_root, feature=1, row="build"
     )
-    _review(tmp_root, _plan(tmp_root))
+    plan = _plan(tmp_root)
+    _review(tmp_root, plan)
     _set_feature(tmp_root, "001-mac-01", 1)
     _set_feature(tmp_root, "001-mac-02", 1)
-    _finish(launch, "VERDICT: agree", "VERDICT: revise\nBlocking: x")
-    assert plan_review.launch_warning(tmp_root, feature=1, row="design")
     _finish(launch, "VERDICT: agree")
+    # Both reviewers agreed, but the round is not complete until `plan-review` advances it.
+    assert plan_review.launch_warning(tmp_root, feature=1, row="design")
+    _review(tmp_root, plan)
     assert plan_review.launch_warning(tmp_root, feature=1, row="build") == ""
     # Another feature's agreement does not cover this one.
     assert "feature 002" in plan_review.launch_warning(tmp_root, feature=2, row="build")
