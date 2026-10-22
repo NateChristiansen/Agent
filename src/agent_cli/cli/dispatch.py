@@ -24,7 +24,11 @@ def add_parser(sub: Subparsers) -> None:
         description="Non-exempt launches require runnable dispatch.verify commands and explicit "
         "verification timeouts. A preview describes planned checks, not verified work.",
     )
-    dn.add_argument("repo", help="registry name or short")
+    dn.add_argument(
+        "repo",
+        nargs="?",
+        help="registry name or short; a research request may omit it and runs in the registered harness",
+    )
     dn.add_argument("--feature", default="current")
     dn.add_argument(
         "--task", nargs="*", action="extend", default=[], help="task numbers handed to the worker"
@@ -73,6 +77,10 @@ def add_parser(sub: Subparsers) -> None:
     dn.add_argument("--branch")
     dn.add_argument("--base")
     dn.add_argument("--target", help="artifact branch or commit; supplies the base for a review row")
+    dn.add_argument(
+        "--compare", help="a review's comparison base, pinned to its commit; separate from the checkout base"
+    )
+    dn.add_argument("--pr", help="a review's PR identity as given to you (number or URL); never inferred")
     dn.add_argument(
         "--mcp",
         metavar="PROFILE",
@@ -273,6 +281,8 @@ def dispatch_new(root: Path, args: argparse.Namespace, out: Output) -> int:
         no_checks=args.no_checks,
         escalate_from=args.escalate_from,
         writes=[] if args.read_only else args.writes,
+        compare=args.compare,
+        pr=args.pr,
     )
     # the dry-run preview is `op.text` now (ops.dispatch_preview_text), so the MCP tool renders
     # the same table this prints instead of handing back a bare dict

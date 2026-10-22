@@ -222,3 +222,166 @@ def test_notification_merges_audit_without_overwriting_a_concurrent_read(wired, 
     assert after["notification_probe"] == "concurrent read kept"
     assert after["chat_pending"] is False
     assert after["notify_log"][-1]["results"]["macos"] == "sent"
+
+
+def test_deferred_and_failed_publication_still_queue_worker_retention(wired, monkeypatch):
+    from agent_cli.hooks import transcript_retention
+
+    queued_ids: list[str] = []
+    monkeypatch.setattr(
+        transcript_retention, "enqueue", lambda root, record: queued_ids.append(record["dispatch_id"])
+    )
+    d, feat, outcome = verified_outcome(wired, monkeypatch)
+    with held_by_process(wired.root, d["id"], 5):
+        terminal.finalize(wired.root, d, feat, outcome, retry_budget=0.05)
+    assert queued_ids == [d["id"]]  # publication deferred behind a busy guard; retention is not
+
+    def broken(*args):
+        raise RuntimeError("publication failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(terminal, "_publish", broken)
+        with pytest.raises(RuntimeError, match="publication failed"):
+            terminal.finalize(wired.root, d, feat, outcome)
+    assert queued_ids == [d["id"], d["id"]]
+    terminal.recover_pending(wired.root, [d["id"]])  # the deferral's retry already queued it
+    assert queued_ids == [d["id"], d["id"]] and not terminal.pending_path(wired.root, d).exists()
+
+
+def test_a_deferral_whose_spool_failed_is_requeued_by_recovery_until_it_lands(wired, monkeypatch):
+    from agent_cli.hooks import transcript_retention as retention
+    from agent_cli.usage import job
+
+    monkeypatch.delenv("AGENT_NOW", raising=False)
+    monkeypatch.delenv("AGENT_NO_USAGE", raising=False)
+    launched = []
+    monkeypatch.setattr(job, "spawn", lambda cmd, root: launched.append(cmd))
+    spool = wired.root / retention.BASE / "pending"
+    real_save = retention.save
+    unwritable = True
+
+    def flaky(path, data):
+        if unwritable and path.parent == spool:
+            raise OSError("spool unwritable")
+        real_save(path, data)
+
+    real_write = terminal.atomic_write
+
+    def no_marker(path, text):
+        if path.name.endswith(".retention.pending"):
+            raise OSError("marker unwritable")
+        real_write(path, text)
+
+    monkeypatch.setattr(retention, "save", flaky)
+    monkeypatch.setattr(terminal, "atomic_write", no_marker)
+    d, feat, outcome = verified_outcome(wired, monkeypatch)
+    with held_by_process(wired.root, d["id"], 5):
+        terminal.finalize(wired.root, d, feat, outcome, retry_budget=0.05)
+    intent = terminal.pending_path(wired.root, d)
+    assert intent.exists() and not list(spool.glob("*.json"))
+
+    terminal.recover_pending(wired.root, [d["id"]])  # publishes, but the spool is still down
+    assert load(wired.root, d["id"])["terminal_committed"]
+    assert intent.exists() and not list(spool.glob("*.json"))
+    terminal.recover_pending(wired.root, [d["id"]])
+    assert intent.exists()
+
+    unwritable = False
+    terminal.recover_pending(wired.root, [d["id"]])
+    assert [load_(p)["dispatch_id"] for p in spool.glob("*.json")] == [d["id"]] and launched
+    assert not intent.exists()
+    terminal.recover_pending(wired.root, [d["id"]])  # bounded: a queued retention is not queued again
+    assert len(list(spool.glob("*.json"))) == 1
+
+
+def queue_touches(monkeypatch, spool: Path) -> list[str]:
+    """Record every read, listing or stat that reaches into the retention queue directory."""
+    from agent_cli.hooks import transcript_retention as retention
+
+    touched: list[str] = []
+
+    def watch(kind, target, real):
+        def inner(*args, **kwargs):
+            if str(spool) in str(target(args)):
+                touched.append(kind)
+            return real(*args, **kwargs)
+
+        return inner
+
+    monkeypatch.setattr(os, "scandir", watch("scandir", lambda a: a[0] if a else "", os.scandir))
+    monkeypatch.setattr(os, "listdir", watch("listdir", lambda a: a[0] if a else "", os.listdir))
+    monkeypatch.setattr(os, "stat", watch("stat", lambda a: a[0] if a else "", os.stat))
+    monkeypatch.setattr(Path, "glob", watch("glob", lambda a: a[0], Path.glob))
+    monkeypatch.setattr(Path, "iterdir", watch("iterdir", lambda a: a[0], Path.iterdir))
+    monkeypatch.setattr(Path, "stat", watch("pathstat", lambda a: a[0], Path.stat))
+    monkeypatch.setattr(retention, "load", watch("load", lambda a: a[0], retention.load))
+    return touched
+
+
+@pytest.mark.parametrize("backlog", [8, 128])
+@pytest.mark.parametrize("launch_fails", [False, True])
+def test_a_failed_enqueue_touches_the_queue_the_same_for_any_unrelated_backlog(
+    wired, monkeypatch, launch_fails, backlog
+):
+    from agent_cli.hooks import transcript_retention as retention
+    from agent_cli.usage import job
+
+    monkeypatch.delenv("AGENT_NOW", raising=False)
+    monkeypatch.delenv("AGENT_NO_USAGE", raising=False)
+    spool = wired.root / retention.BASE / "pending"
+    spool.mkdir(parents=True, exist_ok=True)
+    real_save = retention.save
+
+    def failing_spool(path, data):
+        if path.parent == spool and not launch_fails:
+            raise OSError("spool unwritable")
+        real_save(path, data)
+
+    def no_consumer(cmd, root):
+        raise OSError("cannot launch")
+
+    monkeypatch.setattr(retention, "save", failing_spool)
+    monkeypatch.setattr(job, "spawn", no_consumer)
+    d, _feat, _outcome = verified_outcome(wired, monkeypatch)
+    for n in range(backlog):
+        real_save(spool / f"other-{n}.json", {"dispatch_id": f"other-{n}"})
+    touched = queue_touches(monkeypatch, spool)
+    queued = terminal.retain_transcripts(wired.root, d)
+    assert queued is launch_fails  # a spooled request survives a consumer that did not start
+    assert terminal.retention_marker(wired.root, d).exists() is (not launch_fails)
+    assert not {"scandir", "listdir", "glob", "iterdir", "load"} & set(touched)
+    assert len(touched) <= 4  # the same fixed bound at 8 and at 128 unrelated jobs
+
+
+def load_(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_consumer_that_did_not_start_keeps_its_spooled_request_without_a_retry_marker(wired, monkeypatch):
+    from agent_cli.hooks import transcript_retention as retention
+    from agent_cli.usage import job
+
+    monkeypatch.delenv("AGENT_NOW", raising=False)
+    monkeypatch.delenv("AGENT_NO_USAGE", raising=False)
+
+    def no_consumer(cmd, root):
+        raise OSError("cannot launch")
+
+    monkeypatch.setattr(job, "spawn", no_consumer)
+    d, feat, outcome = verified_outcome(wired, monkeypatch)
+    terminal.finalize(wired.root, d, feat, outcome)
+    assert len(list((wired.root / retention.BASE / "pending").glob("*.json"))) == 1
+    assert not terminal.retention_marker(wired.root, d).exists()
+
+
+def test_a_retention_failure_never_blocks_the_terminal_commit(wired, monkeypatch, capsys):
+    from agent_cli.hooks import transcript_retention
+
+    def unavailable(root, record):
+        raise OSError("spool unwritable")
+
+    monkeypatch.setattr(transcript_retention, "enqueue", unavailable)
+    d, feat, outcome = verified_outcome(wired, monkeypatch)
+    after = terminal.finalize(wired.root, d, feat, outcome)
+    assert after["state"] == "done" and after["terminal_committed"]
+    assert f"transcript retention not queued for {d['id']} (spool unwritable)" in capsys.readouterr().err

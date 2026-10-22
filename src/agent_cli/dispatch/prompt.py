@@ -35,6 +35,13 @@ def plan_section(body: str, name: str) -> str:
     return "\n".join(out).strip("\n")
 
 
+def _review_lines(review: Mapping[str, object] | None) -> list[str]:
+    if not review:
+        return []
+    labels = (("target", "review target"), ("compare_base", "compare against"), ("pr", "pull request"))
+    return [f"- {label}: {review[key]}" for key, label in labels if review.get(key)]
+
+
 def compose_prompt(
     *,
     dispatch_id: str,
@@ -50,6 +57,7 @@ def compose_prompt(
     thread: list[dict[str, Any]] | None = None,
     escalated_from: tuple[str, str] | None = None,
     forked_from: str | None = None,
+    review: Mapping[str, object] | None = None,
 ) -> str:
     """The work order on stdin (A3): task verbatim, feature context, assigned tasks, repo
     notes, workspace, and the thread on resumes. `escalated_from` (item 2, `--escalate-from`)
@@ -85,14 +93,15 @@ def compose_prompt(
             old_text.strip("\n") or "(no manager message recorded)",
             "",
         ]
+    kind = "Request" if feature.is_request else "Feature"
     lines += [
         "## Task",
         "",
         prompt.strip("\n"),
         "",
-        "## Feature context",
+        f"## {kind} context",
         "",
-        f"Feature {feature.number} {feature.slug}: {feature.meta.get('title', '')}".rstrip(": "),
+        f"{kind} {feature.number} {feature.slug}: {feature.meta.get('title', '')}".rstrip(": "),
         "",
         context,
         "",
@@ -126,6 +135,7 @@ def compose_prompt(
         f"- branch: {branch}",
         f"- path: {worktree}",
         f"- base: {base}",
+        *_review_lines(review),
         "- commit here as you go; never push, never open a PR",
         f"- the feature folder is readable at {root / feature.rel_dir(root)} (read-only)",
     ]

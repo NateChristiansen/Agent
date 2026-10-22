@@ -54,7 +54,20 @@ def dispatch_preview_text(p: dict[str, Any]) -> str:
         if p.get("feature") is not None
         else "?"
     )
-    lines = [f"dispatch preview — {p.get('repo')} for feature {feature}"]
+    kind = "request" if str(p.get("label") or "").startswith("Request") else "feature"
+    lines = [f"dispatch preview — {p.get('repo')} for {kind} {feature}"]
+    if p.get("repo_source"):
+        lines.append(f"  repo: {p['repo_source']}")
+    review = as_dict(p.get("review"))
+    lines += [
+        f"  {label}: {review[key]}"
+        for key, label in (
+            ("target", "review target"),
+            ("compare_base", "compare against"),
+            ("pr", "pull request"),
+        )
+        if review.get(key)
+    ]
     if p.get("work_order_url"):
         lines.append(f"  work order: `{p['work_order_url']}`")
     elif p.get("work_order_reason"):
@@ -137,7 +150,7 @@ def dispatch_preview_text(p: dict[str, Any]) -> str:
 def dispatch_new(
     root: Path,
     *,
-    repo: str,
+    repo: str | None,
     prompt: str,
     feature: str = "current",
     tasks: list[int] | list[str] | None = None,
@@ -162,6 +175,8 @@ def dispatch_new(
     provider: str = "claude",
     row: str | None = None,
     writes: list[str] | None = None,
+    compare: str | None = None,
+    pr: str | None = None,
 ) -> Op:
     """Send a self-contained work order to a headless worker (see ADR-0006 and ADR-0008).
 
@@ -201,12 +216,17 @@ def dispatch_new(
         row=row,
         writes=writes,
         task_check=_record_summary(pickup),
+        compare=compare,
+        pr=pr,
     )
     # An unreviewed build or design launch is named, never refused.
     warning = plan_review.launch_warning(root, feature=result.get("feature"), row=result.get("row"))
     tail = f"\n  {warning}" if warning else ""
     # Directory claims conflict with every writer underneath them. Pickup checks are advisory.
-    checks = {"writes_warnings": _broad_writes(root, repo, writes), "task_check": pickup}
+    checks = {
+        "writes_warnings": _broad_writes(root, str(result.get("repo") or repo), writes),
+        "task_check": pickup,
+    }
     if dry_run:
         # Keep the result concise; the dispatch tool description provides launch guidance before
         # the call.

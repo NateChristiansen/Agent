@@ -39,6 +39,15 @@ class WorkerReturn(TypedDict, total=False):
     commands: list[CommandRow]
 
 
+class ReviewProvenance(TypedDict, total=False):
+    """What a review dispatch was pointed at, as the manager supplied it. `compare_base` is the
+    commit the artifact is judged against, never the checkout; `pr` is only ever supplied."""
+
+    target: str | None
+    compare_base: str | None
+    pr: str | None
+
+
 class GitFacts(TypedDict):
     """What git showed for the branch since the dispatch base when the attempt was evaluated."""
 
@@ -76,6 +85,11 @@ def git_of(d: Mapping[str, object]) -> GitFacts | None:
         "commits": cast("list[CommitRow]", dict_list(git.get("commits"))),
         "files": [str(f) for f in as_list(git.get("files"))],
     }
+
+
+def review_of(d: Mapping[str, object]) -> ReviewProvenance | None:
+    """The record's review provenance, or `None` for a non-review or one launched before it was kept."""
+    return cast("ReviewProvenance | None", as_dict_or_none(d.get("review")))
 
 
 def thread_of(d: Mapping[str, object]) -> list[ThreadEntry]:

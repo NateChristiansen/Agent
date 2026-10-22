@@ -4,8 +4,11 @@ You are a worker for one feature of the owner's harness, running inside this rep
 (its project instructions, skills and hooks apply as usual). Rules there addressed to the
 manager (landing, feature records, dispatching) are not yours; this file and
 your work order are. The work order is the first message on this session; it says which
-feature and what to do. This file says how to behave, and it is the same for every dispatch,
-Claude or Codex.
+feature and what to do. For a request (a review, research or bounded fix too small for a
+feature) its context is `## Request context`, the ask is the acceptance, and there may be no
+tasks. A review's Workspace names the target, the comparison base and any PR it was given;
+judge that pinned commit, not a newer one. This file says how to behave, and it is the same for
+every dispatch, Claude or Codex.
 
 ## Where you are
 

@@ -13,6 +13,7 @@ from .. import launcher, maintenance, prices, sessions, worker_mcp
 from .. import log as log_mod
 from .. import repos as repos_mod
 from ..core import AgentError, atomic_write, iso, now
+from ..records.dispatch import ReviewProvenance, review_of
 from ..records.narrow import as_dict, as_str
 from ..repos_validate import check_timeout_minutes, resolve_timeout
 from . import (
@@ -56,7 +57,14 @@ from .state import (
     worktree_path,
 )
 from .supervisor import start
-from .worktrees import ensure_worktree, git_commits, launch_base, reuse_worktree, worktree_dirty
+from .worktrees import (
+    ensure_worktree,
+    git_commits,
+    harness_repo,
+    launch_base,
+    reuse_worktree,
+    worktree_dirty,
+)
 
 
 def _launching_session(root: Path, session_id: str | None) -> str | None:
@@ -66,10 +74,62 @@ def _launching_session(root: Path, session_id: str | None) -> str | None:
         return None
 
 
+def refuse_captured(feat: features_mod.Feature) -> None:
+    """A captured bug or idea is a record, not an authorization: no preview, launch or resume
+    until the owner asks to execute it and the manager sets it active. Ordinary proposed features
+    keep dispatching as before."""
+    if feat.is_request and feat.status == "proposed":
+        raise AgentError(
+            f"{feat.label.lower()} is a captured {feat.meta.get('category') or 'request'}, still proposed; "
+            "capture does not authorize execution. When the owner asks to execute it, set it active "
+            "(feature_set status=active), then dispatch. Nothing was changed."
+        )
+
+
+def _launch_repo(
+    root: Path, registry: repos_mod.Registry, feat: features_mod.Feature, repo: str | None
+) -> tuple[repos_mod.Repo, bool]:
+    """The repo a launch runs in, and whether it was resolved internally (a research request that
+    names none runs in the registered harness, which need not be among the request's repos)."""
+    if repo:
+        return registry.require(repo), False
+    if feat.is_request and feat.meta.get("category") == "research":
+        return harness_repo(root, registry), True
+    raise AgentError(
+        "`repo` is required: name the registered repo the work runs in. Only a research request "
+        "omits it, and then runs in the registered harness."
+    )
+
+
+def _review(
+    rp: repos_mod.Repo,
+    root: Path,
+    row: str | None,
+    target: str | None,
+    compare: str | None,
+    pr: str | None,
+) -> ReviewProvenance | None:
+    """A review's supplied target, pinned comparison base and PR identity; `None` for other rows."""
+    if row != "review":
+        if compare or pr:
+            raise AgentError("`compare` and `pr` record a review's provenance; pass them with row=review")
+        return None
+    compare_sha: str | None = None
+    if compare:
+        found = repos_mod.git_or_none(
+            ["rev-parse", "--verify", "--quiet", f"{compare}^{{commit}}"], rp.abs_path(root)
+        )
+        if not found:
+            raise AgentError(f"comparison base {compare!r} is not a commit in {rp.name}; fetch it first")
+        compare_sha = found.strip()
+    supplied = features_mod.one_line(pr, "pr").strip() if pr else ""
+    return {"target": target or None, "compare_base": compare_sha, "pr": supplied or None}
+
+
 def new(
     root: Path,
     *,
-    repo: str,
+    repo: str | None,
     feature: str,
     prompt: str,
     tasks: tuple[str, ...] | list[str] = (),
@@ -99,6 +159,8 @@ def new(
     writes: list[str] | None = None,
     max_attempts: int | None = None,
     task_check: dict[str, Any] | None = None,
+    compare: str | None = None,
+    pr: str | None = None,
 ) -> dict[str, Any]:
     """Create and start a dispatch (A1 `new`). `task_check` is the summary of the pickup check
     the caller ran before launch; it is kept on the record and never gates. `provider` and `row`
@@ -112,7 +174,9 @@ def new(
     `no_checks` exempts report checks and verification; permissions stay as configured.
     `escalate_from` reuses branch, worktree and effort; `max_turns` and `timeout_minutes` override
     repo values; `writes` reserves paths on the board (`write_scope.reserve`). `max_attempts`
-    may lower the automatic-retry cap from `MAX_ATTEMPTS` (1 queues no timeout retry)."""
+    may lower the automatic-retry cap from `MAX_ATTEMPTS` (1 queues no timeout retry). `repo` may
+    be omitted only for a research request (`_launch_repo`); `compare` and `pr` are a review's
+    comparison base and PR identity (`_review`)."""
     if not prompt or not prompt.strip():
         raise AgentError("the work order is empty; pass `prompt`")
     if max_attempts is not None and (type(max_attempts) is not int or not 1 <= max_attempts <= MAX_ATTEMPTS):
@@ -140,22 +204,28 @@ def new(
         old = load(root, escalate_from)
         if old["state"] in ("queued", "running"):
             raise AgentError(f"{escalate_from} is {old['state']}; wait for it or cancel it first")
-        if branch or base or target:
+        if branch or base or target or compare or pr:
             raise AgentError(
-                "--escalate-from reuses the old dispatch's branch and base; do not also pass --branch/--base/--target"
+                "--escalate-from reuses the old dispatch's branch, base and review provenance; do not "
+                "also pass --branch/--base/--target/--compare/--pr"
             )
         feature = str(old["feature"])
+        repo = repo or str(old["repo"])
     feat = features_mod.resolve(root, feature, session_id)
     if not feat.is_open:
         raise AgentError(f"feature {feat.number} is {feat.status}; dispatch only into open features")
+    refuse_captured(feat)
     maintenance.check(root, feat.number, "escalate" if escalate_from else "launch")
     registry = repos_mod.load_registry(root)
-    rp = registry.require(repo)
+    rp, internal = _launch_repo(root, registry, feat, repo)
+    if internal and writes is None:
+        writes = []  # research returns text; it holds no paths against other writers
     if old is not None and old.get("repo") != rp.name:
         raise AgentError(
             f"{escalate_from} was dispatched to {old.get('repo')}, not {rp.name}; pass that repo to escalate"
         )
-    if rp.name not in (feat.meta.get("repos") or []):
+    # An escalation reuses its parent's repo, which passed this check or was the internal harness.
+    if not internal and old is None and rp.name not in (feat.meta.get("repos") or []):
         raise AgentError(
             f"{rp.short} is not in feature {feat.number}'s repos; add it with "
             f"the feature_set tool (feature {feat.id}, add_repo [{rp.short!r}]) first"
@@ -173,6 +243,11 @@ def new(
     if old is not None:
         model, effort = rubric_mod.escalate(old, rp, model, effort)
     base_ref = str(old["base"]) if old is not None else launch_base(root, rp, base, row=row, target=target)
+    review = (
+        review_of(old)
+        if old is not None
+        else _review(rp, root, row_obj.name if row_obj is not None else None, target, compare, pr)
+    )
     model, effort, choice_reason, effort_source = rubric_mod.resolve(
         rp, provider, row_obj, model, effort, choice_reason, parent_id
     )
@@ -228,6 +303,7 @@ def new(
         root=root,
         escalated_from=escalated_from,
         forked_from=escalate_from if forked_from_session else None,
+        review=review,
     )
     ts = iso(now())
     d: dict[str, Any] = {
@@ -243,6 +319,7 @@ def new(
         "reused": reused_wt is not None,
         "branch": br,
         "base": base_ref,
+        **({"review": review} if review is not None else {}),
         "selection_policy": test_select.stamp(rp.abs_path(root), base_ref, old),  # ADR-0045
         "session_id": sid,
         "nonce": nonce,
@@ -311,13 +388,16 @@ def new(
             "preview_id": identity,
             "feature": feat.id,
             "feature_slug": feat.slug,
+            "label": feat.label,
             "goal": first_line(prompt),
             "repo": rp.name,
+            **({"repo_source": "registered harness, for research that names no repo"} if internal else {}),
             "short": rp.short,
             "worktree": str(wt),
             "reused": reused_wt is not None,
             "branch": br,
             "base": base_ref,
+            **({"review": review} if review is not None else {}),
             "provider": provider,
             "row": d["row"],
             "model": d["model"],
@@ -476,6 +556,7 @@ def _prepare_resume(
         feat = features_mod.resolve(root, str(d["feature"]))
         if not feat.is_open:
             raise AgentError(f"feature {feat.number} is {feat.status}; resume only into open features")
+        refuse_captured(feat)
         maintenance.check(root, feat.number, "resume")
         wt = Path(d["worktree"])
         if budget is not None:

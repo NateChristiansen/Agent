@@ -219,7 +219,9 @@ The review dispatch uses the `review` row (sonnet at vendor default, or gpt-6.1-
 at the owner's `medium` row policy, $3-6), same repo, its own branch
 cut from the artifact's resolved SHA, passed explicitly as `base`. `target=<artifact branch>`
 also defaults a review's checkout base to that branch's pinned tip. Keep the comparison base
-separate from the checkout SHA. Before artifact checks, the reviewer runs `git rev-parse HEAD`
+separate from the checkout SHA: pass it as `compare`, pinned to its commit at launch, and pass
+`pr` only when you were given the PR's identity. Target, checkout SHA, comparison base and PR
+are synced in the handoff frontmatter. Before artifact checks, the reviewer runs `git rev-parse HEAD`
 and confirms it equals the artifact SHA in the order. It gets
 a work order that names: the build work order's precedents list, the live interfaces the
 change depends on, the repo's testing skill, and the lenses the human reviewers
@@ -246,6 +248,20 @@ finished after its last commit, or a `done` review whose `start_sha` equals the 
 push is from a dispatch's worktree). The override is
 `AGENT_PUSH_UNREVIEWED=1 git push ...`, and it writes a `note` to the feature saying the branch
 went out unreviewed.
+
+## Requests
+
+A request (`record_kind: request`) dispatches through the same tool with no task numbers; the
+worker reads its ask as `## Request context`. A captured bug or idea is `proposed` and refuses
+preview, launch and resume until the owner asks to execute it and you set it active. A
+standalone review is one pinned dispatch per changed commit, each with its own verdict, listed
+in the request's review rounds; resume a round only to discuss that same artifact. General
+research omits `repo`: it runs read-only (`writes: []`) in the one registered harness repo with
+that repo's permissions, capabilities and rubric rows, and refuses with what to fix when the
+harness is unregistered or registered twice. A missing capability (Codex network, an MCP profile)
+refuses at preflight as for any dispatch; it is not granted for research. Research text comes back
+in the return; save a standalone artifact to the vault only when the owner asks. Complete the
+request with `request` action `complete` once every dispatch is read, landed, acked or abandoned.
 
 ## Sending review feedback back
 

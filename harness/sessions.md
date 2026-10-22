@@ -19,7 +19,11 @@ to the harness, how two of them share the vault, and how they talk.
   `Request NNN` with its ask and next action at session start. `request` action `new` maps the
   calling manager by default; `capture` leaves the mapping alone; `use` switches it under the same
   rules as `feature_use`. The session-start digest lists open requests under `## Requests`, apart
-  from the open features.
+  from the open features. A mapped request's line says how it dispatches (no task numbers;
+  research may omit `repo`), or, while it is a proposed capture, that nothing dispatches yet.
+  A dispatch's worker session is not the native Codex identity: terminal retention queues a
+  Codex worker by its `codex_thread_id` and a Claude worker by its transcript path, whether or
+  not a manager Stop or a closure follows.
 
 ## Names
 

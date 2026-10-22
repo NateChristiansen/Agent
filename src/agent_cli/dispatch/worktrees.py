@@ -167,6 +167,35 @@ def launch_base(
     return sha.strip()
 
 
+def harness_repo(root: Path, registry: repos_mod.Registry) -> repos_mod.Repo:
+    """The one registered repo whose main checkout is this harness's, where general research runs
+    when the owner names no repo. None or several is refused with what to fix; there is no
+    fallback to another repo."""
+    from ..worktree import is_main_checkout_of, main_checkout
+
+    found: list[repos_mod.Repo] = []
+    for rp in registry.repos:
+        try:
+            main = main_checkout(rp.abs_path(root))
+        except AgentError, ExternalFailure, OSError:
+            continue
+        if is_main_checkout_of(root, main):
+            found.append(rp)
+    if not found:
+        raise AgentError(
+            f"general research runs in the registered harness, and no repo in agent.yaml is this "
+            f"harness checkout ({root}); the owner registers it in agent.yaml (or fixes its path), "
+            "or name the repo the research is about. Nothing was dispatched."
+        )
+    if len(found) > 1:
+        names = ", ".join(rp.name for rp in found)
+        raise AgentError(
+            f"several registered repos are this harness checkout ({names}); pass `repo` to pick one, "
+            "or remove the duplicate from agent.yaml. Nothing was dispatched."
+        )
+    return found[0]
+
+
 def reusable_worktree(
     root: Path,
     feat: features_mod.Feature,

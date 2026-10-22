@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from ..records.dispatch import result_of
 from ..records.narrow import as_list
 from . import holdings, notice_producers, telemetry_events
 from . import verification_gate as gate
-from .handoffs import handoff_log_text, write_handoff
+from .handoffs import handoff_log_text, transcript_path, write_handoff
 from .notify import notify
 from .spend import add_attempt_cost, attempt_cost
 from .state import (
@@ -44,19 +45,105 @@ def finalize(
     outcome: dict[str, Any],
     *,
     retry_budget: float | None = None,
+    retain: bool = True,
+    keep_intent: bool = False,
 ) -> dict[str, Any]:
+    """Only `recover_pending` passes `retain=False` and `keep_intent=True`: it removes the
+    intent itself once the transcripts the intent owes are queued."""
     try:
-        with notice_producers.delivering(root, d["id"]) as sent:
-            current, committed, assessed = _commit(root, d, outcome, sent, retry_budget)
-            if committed:
-                _publish(root, current, feat, assessed)
-            elif current.get("verification_cleanup_pending"):
-                write_handoff(root, current, feat)
-                render(root)
-    except TerminalBusy:
-        return _defer(root, d, outcome)
-    pending_path(root, d).unlink(missing_ok=True)
-    return load(root, current["id"])
+        try:
+            with notice_producers.delivering(root, d["id"]) as sent:
+                current, committed, assessed = _commit(root, d, outcome, sent, retry_budget)
+                if committed:
+                    _publish(root, current, feat, assessed)
+                elif current.get("verification_cleanup_pending"):
+                    write_handoff(root, current, feat)
+                    render(root)
+        except TerminalBusy:
+            if keep_intent:
+                raise
+            return _defer(root, d, outcome)
+        if not keep_intent:
+            pending_path(root, d).unlink(missing_ok=True)
+        return load(root, current["id"])
+    finally:
+        # Every route a stopped worker takes (commit, cleanup pending, a deferred or failed
+        # publication, a cancel, a recovery) queues its transcripts, whether or not a manager
+        # Stop or a closure ever comes. A surviving publication intent is the durable
+        # obligation; with none, a failed enqueue leaves a marker.
+        if retain:
+            intent = pending_path(root, d)
+            if retain_transcripts(root, d, marker=not intent.exists()):
+                _mark_retained(intent)
+
+
+def retention_record(d: dict[str, Any]) -> dict[str, Any]:
+    """The worker's native transcript references in `transcript_retention.enqueue`'s shape. A Codex
+    rollout and its spawned threads are found by the native thread id, never by the dispatch's
+    synthetic `session_id`; with no thread id recorded the retention report says so."""
+    record: dict[str, Any] = {"feature": d.get("feature"), "dispatch_id": d.get("id")}
+    if d.get("provider") == "codex":
+        return {**record, "session_id": d.get("codex_thread_id") or None, "transcript_path": None}
+    path = transcript_path(d)
+    return {**record, "session_id": d.get("session_id"), "transcript_path": str(path) if path else None}
+
+
+def retain_transcripts(root: Path, d: dict[str, Any], *, marker: bool = True) -> bool:
+    """Queue the worker's transcripts for detached, bounded retention; nothing is copied here.
+    Fails open: retention never fails or delays publication, and a request already spooled
+    survives a consumer that did not start. True when the work is queued. A failure before
+    anything is spooled leaves a marker (unless `marker` is False because a publication intent
+    already owes it) that `recover_pending` retries until the work is queued."""
+    from ..hooks import transcript_retention
+
+    mark = retention_marker(root, d)
+    try:
+        current = load(root, d["id"])
+    except AgentError, OSError, ValueError:
+        current = d
+    try:
+        transcript_retention.enqueue(root, retention_record(current))
+    except Exception as exc:  # noqa: BLE001 — retention is best effort beside the terminal commit
+        sys.stderr.write(f"note: transcript retention not queued for {d.get('id')} ({exc})\n")
+        if _spooled(exc):
+            mark.unlink(missing_ok=True)
+            return True
+        if marker:
+            try:
+                atomic_write(mark, json.dumps({"dispatch": d["id"]}) + "\n")
+            except OSError as marker_exc:
+                sys.stderr.write(f"note: retention retry not recorded for {d.get('id')} ({marker_exc})\n")
+        return False
+    mark.unlink(missing_ok=True)
+    return True
+
+
+def retention_marker(root: Path, d: dict[str, Any]) -> Path:
+    return file(root, d["id"], ".retention.pending")
+
+
+def _spooled(exc: BaseException) -> bool:
+    """Whether `enqueue` failed in its consumer launch, which it only reaches after the request
+    is spooled. Read from the traceback, so no queue directory is listed, statted or read and
+    the cost cannot grow with the backlog."""
+    from ..hooks import transcript_retention
+
+    tb = exc.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if code.co_name == "start" and code.co_filename == transcript_retention.__file__:
+            return True
+        tb = tb.tb_next
+    return False
+
+
+def _mark_retained(intent: Path) -> None:
+    try:
+        saved = json.loads(intent.read_text(encoding="utf-8"))
+        saved["retention"] = "queued"
+        atomic_write(intent, json.dumps(saved, default=str) + "\n")
+    except OSError, ValueError:
+        return
 
 
 def _commit(
@@ -232,6 +319,7 @@ def _defer(root: Path, d: dict[str, Any], outcome: dict[str, Any]) -> dict[str, 
             {
                 "dispatch": intent,
                 "outcome": outcome,
+                "retention": "owed",
             },
             default=str,
         )
@@ -258,7 +346,20 @@ def recover_pending(root: Path, dispatch_ids: list[str] | None = None, *, limit:
             saved = json.loads(path.read_text(encoding="utf-8"))
             d = saved["dispatch"]
             feat = features_mod.resolve(root, str(d["feature"]))
-            finalize(root, d, feat, saved["outcome"], retry_budget=0)
+            finalize(root, d, feat, saved["outcome"], retry_budget=0, retain=False, keep_intent=True)
+            if saved.get("retention") != "queued" and not retain_transcripts(root, d, marker=False):
+                continue
+            path.unlink(missing_ok=True)
+        except AgentError, OSError, ValueError, KeyError, TypeError:
+            continue
+    markers = (
+        [path for did in dispatch_ids for path in dispatches_dir(root).glob(f"{did}.retention.pending")]
+        if dispatch_ids is not None
+        else sorted(dispatches_dir(root).glob("*.retention.pending"))
+    )
+    for path in markers[:limit]:
+        try:
+            retain_transcripts(root, load(root, path.name.removesuffix(".retention.pending")))
         except AgentError, OSError, ValueError, KeyError, TypeError:
             continue
 

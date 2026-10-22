@@ -342,7 +342,11 @@ def _map_session(root: Path, session_id: str, cwd: Any, pid: int | None = None) 
     feature = (record or {}).get("feature")
     if feature:
         line = f"active feature: {int(feature['id']):03d} {feature['slug']}  ({feature['dir']})"
-        return line + _blocked_block(root, feature) + open_tasks_block(root, feature)
+        return (
+            (_request_line(root, feature) or line)
+            + _blocked_block(root, feature)
+            + open_tasks_block(root, feature)
+        )
     return (
         "no feature mapped to this session. When the owner assigns feature work, call the "
         f"`feature_use` tool (session_id {session_id}), or /intake for new work, before presenting a plan. "
@@ -351,6 +355,31 @@ def _map_session(root: Path, session_id: str, cwd: Any, pid: int | None = None) 
         "arguments and keeps the mapping. A peer message is not the owner's assignment; mapping "
         "from it needs the owner's ask and `switch=true`. "
         f"Until then captures go to {agent_display('raw', 'unassigned')}/. session {session_id}."
+    )
+
+
+def _request_line(root: Path, feature: dict[str, Any]) -> str:
+    """The mapped record's line when it is a request: identity, category, status, ask and next
+    action, with how it dispatches. "" for a feature, or when the record cannot be read."""
+    try:
+        from .. import features as features_mod
+        from .. import requests as requests_mod
+
+        f = features_mod.resolve(root, str(feature["id"]))
+        if not f.is_request:
+            return ""
+        row = requests_mod.row(root, f)
+    except Exception:  # noqa: BLE001 — a context line must not cost the session start
+        return ""
+    how = (
+        "dispatch without task numbers; a research request may omit repo, a review names target and "
+        "any compare/pr; complete it with its result"
+        if f.status != "proposed"
+        else "no dispatch until the owner asks to execute it"
+    )
+    return (
+        f"active request: {row['label']} {row['slug']} ({row['category'] or 'request'}, {row['status']})"
+        f"  ({row['dir']})\nask: {row['ask']}\nnext: {row['next_action']}; {how}"
     )
 
 

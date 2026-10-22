@@ -388,3 +388,26 @@ def test_typed_tool_and_cli_round_trip(tmp_root: Path, run):
     assert coverage.mcp_wording("`agent request complete 1 --result x`").startswith(
         "the `request` tool with action `complete`"
     )
+
+
+def _startup(run, session_id: str) -> str:
+    r = run(["hook", "session-start"], stdin=json.dumps({"session_id": session_id, "source": "startup"}))
+    assert r.code == 0
+    return json.loads(r.out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_session_start_names_the_mapped_request_and_how_it_dispatches(tmp_root: Path, run):
+    _new(tmp_root)
+    ctx = _startup(run, "s1")
+    assert "active request: Request 001 parser-review (review, active)  (features/001-parser-review)" in ctx
+    assert f"ask: {requests.short(ASK)}" in ctx
+    assert "dispatch without task numbers; a research request may omit repo" in ctx
+    request_ops.request_capture(
+        tmp_root, slug="later", title="Later", ask="An idea.", category="idea", use=True, session_id="s2"
+    )
+    ctx = _startup(run, "s2")
+    assert "active request: Request 002 later (idea, proposed)" in ctx
+    assert "no dispatch until the owner asks to execute it" in ctx
+    run(["feature", "new", "plain", "--title", "Plain"])
+    run(["feature", "use", "3", "--session-id", "s3"])
+    assert "active feature: 003 plain  (features/003-plain)" in _startup(run, "s3")
