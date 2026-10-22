@@ -22,6 +22,7 @@ from dispatch_helpers import (  # noqa: F401 — pytest fixture
     droot,
     envelope,
     one,
+    settle,
     worker_return,
 )
 
@@ -50,7 +51,9 @@ def _lose(path: Path) -> None:
 
 def _two(droot: Path, fake_claude) -> tuple[dict, dict]:
     fake_claude.scenario([one(envelope(), commit="T-42 one"), one(envelope(), commit="T-42 two")])
-    d1, d2 = _new_fast(droot), _new_fast(droot)
+    d1 = _new_fast(droot)
+    settle(droot, d1)
+    d2 = _new_fast(droot)
     assert d1["worktree"] != d2["worktree"]
     return d1, d2
 
@@ -210,7 +213,9 @@ def test_a_link_inside_the_tree_is_unlinked_and_its_external_target_survives(dro
 
 def test_a_shared_path_marks_every_record_from_either_dispatch(droot, fake_claude):
     fake_claude.scenario([one(envelope())])
-    d1, d2 = _new_fast(droot), _new_fast(droot)
+    d1 = _new_fast(droot)
+    settle(droot, d1)
+    d2 = _new_fast(droot)
     assert d1["worktree"] == d2["worktree"]
     result = dispatch.cleanup(droot, dispatch_id=d1["id"])
     assert result["removed"] == [d1["worktree"]]
@@ -400,7 +405,10 @@ def _landable(droot: Path, monkeypatch, fake_claude, count: int = 2) -> list[dic
     from agent_cli import land
 
     fake_claude.scenario([one(envelope(), commit=f"T-42 work {i}") for i in range(count)])
-    ds = [_new_fast(droot) for _ in range(count)]
+    ds = []
+    for _ in range(count):
+        ds.append(_new_fast(droot))
+        settle(droot, ds[-1])
     assert len({d["worktree"] for d in ds}) == count
     for i, d in enumerate(ds[1:], start=1):  # distinct files, so a batch merges cleanly
         wt = Path(d["worktree"])

@@ -4,6 +4,7 @@ crash or pause at a named step (land.py's test seam)."""
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -35,6 +36,71 @@ repos:
       verify_timeout_seconds: 30
     notes: ""
 """
+
+
+#: Branches the template binds to its active feature, so landing them passes the activity gate.
+#: A branch outside this list lands only after `owned`, and an unbound one is refused.
+OWNED = (
+    "feature",
+    "x",
+    "y",
+    "lower",
+    "upper",
+    "beside",
+    "combined",
+    "hidden",
+    "sub",
+    "modes",
+    "link",
+    "retarget",
+    "crlf",
+    "additive",
+    "plain",
+    "state",
+    "copy",
+    "original",
+    "worker",
+    "other",
+    "rename",
+    "runtime-one",
+    "runtime-two",
+    "pair-0",
+    "grow",
+    *(f"b{i}" for i in range(5)),
+)
+
+
+def owned(root: Path, *branches: str, feature: int = 1, status: str = "active") -> None:
+    """The template's feature with `status` (kept out of git) and a manager worktree binding of
+    each branch to `feature`, as `worktree_new(name, feature)` writes it."""
+    from agent_cli import frontmatter, templates, worktree
+
+    plan = root / "features" / "001-land-work" / "plan.md"
+    if not plan.exists():
+        plan.parent.mkdir(parents=True)
+        frontmatter.dump(plan, {"id": 1, "slug": "land-work", "title": "Land work", "repos": ["harness"]}, "")
+        (plan.parent / "log.md").write_text(templates.log_header("001", "land-work"), encoding="utf-8")
+        exclude = root / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(exist_ok=True)
+        with exclude.open("a", encoding="utf-8") as f:
+            f.write("/features/\n")
+    meta, body = frontmatter.load(plan)
+    frontmatter.dump(plan, {**meta, "status": status}, body)
+    path = root / ".agent" / worktree.BINDINGS
+    path.parent.mkdir(exist_ok=True)
+    table = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    for branch in branches:
+        table[branch] = {"feature": feature, "session": None, "at": "2026-10-22T09:00:00+00:00"}
+    path.write_text(json.dumps(table), encoding="utf-8")
+
+
+def settle_landing(root: Path, journal: dict[str, Any]) -> None:
+    """Decide `no-task` on the `landing:` item a landing without a dispatch record raised, so the
+    next landing on the feature may proceed."""
+    from agent_cli import reconcile
+
+    item = {"item": "landing", "disposition": "no-task", "reason": "fixture landing, read"}
+    reconcile.decide(root, "1", f"landing:{journal['id']}", [item])
 
 
 def git(root: Path, *args: str, check: bool = True) -> str:
@@ -75,6 +141,7 @@ def _land_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "feature work")
     git(root, "switch", "-q", "main")
+    owned(root, *OWNED)
     # Where `recorded` keeps records. Under xdist every worker's base temp sits in one session
     # directory, so workers share them.
     base = tmp_path_factory.getbasetemp()

@@ -30,6 +30,7 @@ from .peer_stop import peer_stop
 from .plan_gate import plan_gate
 from .prompt import codex_prompt, manager_prompt
 from .reap import session_reap
+from .record_guard import record_guard
 from .repo_guards import pull_warn, push_guard
 from .session import capture_hook, dispatch_inbox, render_after_plan_edit, session_start
 from .stop import journal_pending, lease_yield, note_hook_denial, thrash_guard
@@ -68,6 +69,7 @@ NAMES = (
     "plan-mode-allow",  # Claude PreToolUse: peer, mapping and plan-review dispatch allowed in plan mode
     "notes-sync",  # Stop: commit and publish the notes repo; UserPromptSubmit: pull and report (see ADR-0034)
     "ask-guard",  # Stop: a reply ending in an unregistered question to the owner is blocked once
+    "record-guard",  # Stop: a manager owing reconciliation items is blocked once per turn and owed set
 )
 
 #: Keep removed hook names as no-op aliases for one release so cached client wiring stays usable.
@@ -208,4 +210,5 @@ HANDLERS = {
     "plan-mode-allow": plan_mode_allow,
     "notes-sync": notes_sync_hook,
     "ask-guard": ask_guard,
+    "record-guard": record_guard,
 }

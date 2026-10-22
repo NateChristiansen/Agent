@@ -22,6 +22,7 @@ from dispatch_helpers import (  # noqa: F401 -- droot is a pytest fixture, used 
     envelope,
     one,
     says,
+    settle,
 )
 
 
@@ -115,10 +116,12 @@ def test_effort_sources_name_their_origin_in_preview_and_record(droot: Path, fak
     passed = _row(droot, row="build", effort="high", choice_reason="explicit selection")
     assert passed["effort_source"] == "passed"
     assert "explicit selection" in passed["choice_reason"]
+    settle(droot, passed)
     _set_alpha_dispatch(droot, effort="low")
     repo = _row(droot, row="build")
     assert repo["effort_source"] == "repo"
     assert "agent.yaml dispatch.effort" in repo["choice_reason"]
+    settle(droot, repo)
     preview = _row(droot, row="build", dry_run=True)
     assert preview["effort_source"] == "repo"
     assert "effort: low (repo)" in dispatch_preview_text(preview)

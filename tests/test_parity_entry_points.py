@@ -16,7 +16,7 @@ from mcp import Client
 from agent_cli import dispatch, land
 from agent_cli.mcp import server as mcp_server
 from dispatch_helpers import _new_fast, droot, envelope, one  # noqa: F401
-from land_helpers import git, harness  # noqa: F401
+from land_helpers import git, harness, settle_landing  # noqa: F401
 
 
 def _no_authority(*roots: Path) -> None:
@@ -73,6 +73,7 @@ def test_consecutive_runtime_changing_landings_need_no_deployment(harness: Path)
     _runtime_change(harness, "runtime-one", "VALUE = 1\n")
     first = land.land(harness, "runtime-one", strategy="ff")
     assert first["state"] == "done"
+    settle_landing(harness, first)
     _runtime_change(harness, "runtime-two", "VALUE = 2\n")
     second = land.land(harness, "runtime-two", strategy="ff")
     assert second["state"] == "done"

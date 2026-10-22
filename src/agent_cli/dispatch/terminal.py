@@ -14,9 +14,10 @@ from typing import Any
 
 from .. import features as features_mod
 from .. import log as log_mod
+from .. import reconcile
 from ..core import AgentError, atomic_write, iso, now
 from ..records.dispatch import result_of
-from ..records.narrow import as_list
+from ..records.narrow import as_dict, as_list
 from . import holdings, notice_producers, telemetry_events
 from . import verification_gate as gate
 from .handoffs import handoff_log_text, transcript_path, write_handoff
@@ -256,6 +257,12 @@ def _prepare(
         terminal_committed=True,
         verification_cleanup_pending=False,
     )
+    current.pop(reconcile.RESULT_HEAD, None)
+    if head := _work_head(current):
+        current[reconcile.RESULT_HEAD] = {"attempt": current["attempt"], "sha": head}
+    current.pop(reconcile.INTENT, None)
+    if intents := source_intents(root, current):
+        current[reconcile.INTENT] = intents
     result = result_of(current)
     current["thread"].append(
         {
@@ -270,6 +277,68 @@ def _prepare(
     return current, True, assessed
 
 
+def source_intents(root: Path, d: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ledger sources this committed attempt raises, saved with the commit so publication or
+    a later heal registers them: its result, plus acceptance of its open tasks when it is done
+    with no diff (a landing raises acceptance for the rest). A probe raises neither."""
+    from .verdicts import has_diff
+
+    if not isinstance(d.get("feature"), int) or d.get("kind") == "probe":
+        return []
+    intents = [s for s in (reconcile.dispatch_source(d),) if s is not None]
+    if d["state"] == "done" and not has_diff(d) and as_list(d.get("tasks")):
+        try:
+            feature = features_mod.resolve(root, str(d["feature"]))
+        except AgentError:
+            return intents
+        if (accept := reconcile.accept_source(d, None, feature=feature)) is not None:
+            intents.append(accept)
+    return intents
+
+
+def _work_head(d: dict[str, Any]) -> str | None:
+    worktree = Path(str(d.get("worktree") or ""))
+    if not d.get("worktree") or not worktree.is_dir():
+        return None
+    try:
+        return gate.worktree_head(worktree)
+    except AgentError:
+        return None
+
+
+def _register(root: Path, current: dict[str, Any], feat: features_mod.Feature) -> None:
+    """Append each source intent the commit saved, then clear the ones appended under the record
+    guard. Whatever fails stays on the record for `reconcile.ledger`'s heal."""
+    published: list[str] = []
+    try:
+        for intent in (dict(as_dict(p)) for p in as_list(current.get(reconcile.INTENT))):
+            target = (
+                feat
+                if intent.get("feature") == feat.id
+                else features_mod.resolve(root, str(intent["feature"]))
+            )
+            reconcile.append_source(target, intent)
+            published.append(_key(intent))
+        if not published:
+            return
+        with terminal_guard(root, current["id"]) as now_on_record:
+            pending = as_list(now_on_record.get(reconcile.INTENT))
+            left = [p for p in pending if _key(p) not in published]
+            if len(left) == len(pending):
+                return
+            if left:
+                now_on_record[reconcile.INTENT] = left
+            else:
+                now_on_record.pop(reconcile.INTENT, None)
+            save(root, now_on_record)
+    except Exception as exc:  # noqa: BLE001 — the intent stays on the record; the ledger's heal retries it
+        sys.stderr.write(f"note: reconcile sources for {current.get('id')} left to heal ({exc})\n")
+
+
+def _key(intent: Any) -> str:
+    return json.dumps(intent, sort_keys=True, default=str)
+
+
 def _publish(root: Path, current: dict[str, Any], feat: features_mod.Feature, assessed: str | None) -> None:
     from ..journal import pending as journal_pending
     from ..usage import job as usage_job
@@ -281,6 +350,7 @@ def _publish(root: Path, current: dict[str, Any], feat: features_mod.Feature, as
     telemetry_events.transition(root, current, phase, state=current["state"])
     write_handoff(root, current, feat)
     log_mod.append(feat, "handoff", handoff_log_text(root, current))
+    _register(root, current, feat)
     release_repo_lease(root, current)
     render(root)
     notify(root, current, current["state"])

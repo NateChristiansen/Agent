@@ -226,6 +226,41 @@ def test_two_generations_at_one_version_fail_closed_then_settle():
     ).owed
 
 
+def test_a_source_records_its_session_only_for_its_current_generation_in_any_order():
+    later = "2026-10-22T10:00:00+00:00"
+    entries = [
+        _source("subagent:ag1", "ga", [], ["result"], session="s-a"),
+        _source("subagent:ag1", "ga", [], ["result"], session="s-a"),  # a union-merge duplicate
+        _source("subagent:ag1", "ga", [], ["result"]),  # written by code that records no session
+        _source("subagent:ag2", "gb", [], ["result"], session="s-a"),
+        _source("subagent:ag2", "gb", [], ["result"], session="s-b"),  # two sessions: none is trusted
+        _source("subagent:ag3", "g1", [], ["result"], session="s-a"),
+        _source("subagent:ag3", "g2", [], ["result"], at=later),  # a newer generation records none
+    ]
+    folds = [reconcile.fold(list(p), []) for p in itertools.permutations(entries)]
+    assert {json.dumps(f.sessions, sort_keys=True) for f in folds} == {'{"subagent:ag1": "s-a"}'}
+    assert len({_snapshot(f) for f in folds}) == 1
+    assert [(i.source, i.G) for i in folds[0].owed] == [
+        ("subagent:ag1", "ga"),
+        ("subagent:ag2", "gb"),
+        ("subagent:ag3", "g2"),
+    ]
+
+
+def test_append_source_keeps_a_recorded_session_and_folds_duplicates(tmp_root: Path, run):
+    run(["feature", "new", "x", "--title", "X"])
+    f = features_mod.resolve(tmp_root, "1")
+    pending = reconcile.subagent_source(1, "ag1", "found it", "s-a")
+    assert reconcile.append_source(f, pending)
+    assert not reconcile.append_source(f, {**pending, "session": "s-b"})
+    assert not reconcile.append_source(f, reconcile.subagent_source(1, "ag1", "found it"))
+    assert reconcile.subagent_source(1, "ag2", None)["G"] == "ag2"
+    assert "session" not in reconcile.subagent_source(1, "ag2", None)
+    led = reconcile.ledger(tmp_root, f)
+    assert led.sessions == {"subagent:ag1": "s-a"} and led.malformed == []
+    assert f.log_path.read_text(encoding="utf-8").count("reconcile source subagent:ag1") == 1
+
+
 def test_decision_heads():
     src = "manual:" + "a" * 32
     base = _source(src, "a" * 32, [], ["x"])

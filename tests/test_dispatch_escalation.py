@@ -25,6 +25,7 @@ from dispatch_helpers import (  # noqa: F401 -- droot is a pytest fixture, used 
     droot,
     envelope,
     one,
+    settle,
 )
 
 EFFORT_CASES = [
@@ -80,6 +81,7 @@ def test_escalation_keeps_explicit_parent_effort(provider: str, model: str, next
 def test_public_preview_and_claude_launch_keep_omitted_parent_effort(droot: Path, fake_claude):
     fake_claude.scenario([one(envelope("blocked")), one(envelope())])
     parent = _new_fast(droot, model="sonnet")
+    settle(droot, parent)
     _set_alpha_dispatch(droot, effort="high")
     op = specs_dispatch.dispatch(
         Ctx(root=droot, profile="manager"),
@@ -104,6 +106,7 @@ def test_public_preview_and_claude_launch_keep_omitted_parent_effort(droot: Path
 def test_escalation_explicit_effort_wins_and_a_cross_provider_one_keeps_the_parents(droot: Path, fake_claude):
     fake_claude.scenario([one(envelope("blocked")), one(envelope())])
     parent = _new_fast(droot, model="sonnet", effort="low")
+    settle(droot, parent)
     preview = _new_fast(
         droot, escalate_from=parent["id"], provider="codex", model="gpt-6-astra", dry_run=True
     )
@@ -121,6 +124,7 @@ def test_codex_fake_launch_keeps_parent_omission(droot: Path, fake_claude, monke
 
     fake_claude.scenario([one(envelope("blocked"))])
     parent = _new_fast(droot)
+    settle(droot, parent)
     old = dispatch.load(droot, parent["id"])
     old.update(provider="codex", model="gpt-6-sol", effort=None)
     dispatch.save(droot, old)
@@ -185,6 +189,7 @@ def test_escalate_from_reuses_the_worktree_bumps_the_tier_and_forks_the_old_sess
     fake_claude.scenario([one(envelope("blocked", summary="stuck"), commit="T-42 partial"), one(envelope())])
     d1 = _new_fast(droot, model="haiku", effort="low", choice_reason="probe")
     assert d1["state"] == "blocked"
+    settle(droot, d1)
     d2 = _new_fast(
         droot,
         prompt="finish the readme line",
@@ -222,7 +227,7 @@ def test_escalate_from_without_a_session_to_fork_still_pastes_the_last_message(d
     nothing to fork. The escalation keeps the pasted prefix it always had. An escalation to
     another repo is refused."""
     fake_claude.scenario([one(envelope("blocked", summary="stuck")), one(envelope())])
-    _new_fast(droot)
+    settle(droot, _new_fast(droot))
     with pytest.raises(AgentError, match="was dispatched to"):
         _new_fast(droot, repo="beta", escalate_from="001-mac-01")
     stale = dispatch.load(droot, "001-mac-01")
@@ -372,6 +377,7 @@ def test_single_dispatch_cleanup_allows_a_running_sibling(droot: Path, fake_clau
 
     fake_claude.scenario([one(envelope(), commit="T-42 landed"), one(envelope())])
     done = _new_fast(droot)
+    settle(droot, done)
     sibling = _new_fast(droot)
     assert done["worktree"] != sibling["worktree"]
     git(["merge", "--ff-only", done["branch"]], droot / "repos/alpha-api")
@@ -412,6 +418,7 @@ def test_single_dispatch_cleanup_allows_a_running_sibling(droot: Path, fake_clau
 def test_single_dispatch_cleanup_cannot_remove_a_shared_running_tree(droot: Path, fake_claude):
     fake_claude.scenario([one(envelope()), one(envelope())])
     done = _new_fast(droot)
+    settle(droot, done)
     sibling = _new_fast(droot)
     assert done["worktree"] == sibling["worktree"]
     sibling["state"] = "running"
@@ -449,6 +456,7 @@ def test_cleanup_dry_run_then_skips_dirty_removes_clean_keeps_branch_refuses_run
 ):
     fake_claude.scenario([one(envelope(), commit="T-42 one", dirty=True), one(envelope())])
     d1 = _new_fast(droot)
+    settle(droot, d1)
     d2 = _new_fast(droot)
     main = droot / "repos/alpha-api"
     before = {i: dispatch.load(droot, i) for i in ("001-mac-01", "001-mac-02")}
@@ -484,7 +492,9 @@ def test_cleanup_dedupes_a_shared_worktree_and_resume_recreates_it(droot: Path, 
     Cleanup must remove it once, not twice. It must not raise on the second record."""
     fake_claude.scenario([one(envelope())])
     d1 = _new_fast(droot)
+    settle(droot, d1)
     d2 = _new_fast(droot)
+    settle(droot, d2)
     assert d2["worktree"] == d1["worktree"]
     r = dispatch.cleanup(droot, feature="1")
     assert r["removed"] == [d1["worktree"]]

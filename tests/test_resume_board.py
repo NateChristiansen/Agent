@@ -21,6 +21,7 @@ from dispatch_helpers import (
     droot,  # noqa: F401  # pyright: ignore[reportUnusedImport] -- a fixture, used as a parameter name
     envelope,
     one,
+    settle,
 )
 
 # A skip, not an import error, so collection succeeds on Windows.
@@ -45,6 +46,7 @@ def test_a_resume_holds_the_board_before_allocation_and_until_saved(
 ):
     fake_claude.scenario([one(envelope())])
     d: dict[str, Any] = new_fast(droot)
+    settle(droot, d)
     real_guard = allocation.alloc_guard
     seen: list[str] = []
 

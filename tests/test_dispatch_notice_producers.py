@@ -21,7 +21,16 @@ from agent_cli.dispatch import (
 )
 from agent_cli.dispatch import reverify as reverify_mod
 from agent_cli.dispatch.state import load, save
-from dispatch_helpers import _new_fast, _set_alpha_dispatch, droot, envelope, one, says, turn  # noqa: F401
+from dispatch_helpers import (  # noqa: F401
+    _new_fast,
+    _set_alpha_dispatch,
+    droot,
+    envelope,
+    one,
+    says,
+    settle,
+    turn,
+)
 from notice_helpers import (  # noqa: F401
     MGR,
     OTHER,
@@ -375,6 +384,7 @@ def test_a_timeout_auto_resume_records_nothing_and_an_explicit_resume_supersedes
     assert d["auto_resumes"][0]["reason"] == "timeout" and d["state"] == "done"
     [stop] = entries(load(wired.root, d["id"]))
     assert stop["envelope"]["attempt"] == 2
+    settle(wired.root, d)
 
     resumed = dispatch.resume(wired.root, dispatch_id=d["id"], answer="once more", watch=True)
     old, new = entries(load(wired.root, d["id"]))

@@ -15,7 +15,7 @@ import pytest
 
 from agent_cli import dispatch, prices
 from agent_cli.dispatch import codex_flood, codex_transport, state
-from dispatch_helpers import _new_fast, droot  # noqa: F401
+from dispatch_helpers import _new_fast, droot, settle  # noqa: F401
 
 evaluate_mod = importlib.import_module("agent_cli.dispatch.evaluate")
 
@@ -186,6 +186,7 @@ def test_flood_retry_is_not_reset_by_manual_resume(droot: Path, monkeypatch: pyt
     rpcs = [FloodRPC(), FloodRPC(), FloodRPC()]
     _codex(monkeypatch, rpcs)
     result = _new_fast(droot, provider="codex", model="gpt-6-sol")
+    settle(droot, result)
     result = dispatch.resume(droot, dispatch_id=result["id"], answer="try again", watch=True)
     assert result["state"] == "blocked" and result["attempt"] == 3
     assert len(result["auto_resumes"]) == 1

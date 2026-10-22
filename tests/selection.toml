@@ -36,11 +36,13 @@ tests = [
 [[bundle]]
 name = "reconciliation-ledger"
 # `log.append` guards the reserved prefix through `reconcile.is_reserved`; the `reconcile` MCP tool
-# serves `ops/reconcile.py`; launch, land and edit gates call `activity_gate`.
+# serves `ops/reconcile.py`; launch, land and edit gates call `activity_gate`; the Stop
+# `record-guard` folds the ledger.
 paths = ["src/agent_cli/reconcile.py", "src/agent_cli/activity_gate.py", "src/agent_cli/ops/reconcile.py"]
 tests = [
-  "tests/test_reconcile.py", "tests/test_activity_gate.py", "tests/test_log.py", "tests/test_mcp_server.py",
-  "tests/test_mcp_contract.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+  "tests/test_reconcile.py", "tests/test_activity_gate.py", "tests/test_record_guard.py",
+  "tests/test_reconcile_sources.py", "tests/test_log.py",
+  "tests/test_mcp_server.py", "tests/test_mcp_contract.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
 ]
 
 [[bundle]]
@@ -50,6 +52,31 @@ tests = [
   "tests/test_suite_budget.py", "tests/test_land.py", "tests/test_spawn_cost.py", "tests/test_docs_refs.py",
   "tests/test_prose_rules.py",
 ]
+
+[[bundle]]
+name = "activity-gate-boundaries"
+# Launch, resume, the supervisor loop and landing call the activity gate; the boundary tests drive
+# them through the dispatch and land helpers.
+paths = [
+  "src/agent_cli/activity_gate.py", "src/agent_cli/dispatch/lifecycle.py", "src/agent_cli/dispatch/supervisor.py",
+  "src/agent_cli/land.py", "tests/dispatch_helpers.py",
+]
+tests = [
+  "tests/test_activity_launch.py", "tests/test_request_dispatch.py", "tests/test_docs_refs.py",
+  "tests/test_prose_rules.py",
+]
+
+[[bundle]]
+name = "reconcile-sources"
+# The terminal commit saves the ledger intents that publication appends; the source tests drive it
+# through the dispatch helpers.
+paths = ["src/agent_cli/dispatch/terminal.py", "tests/dispatch_helpers.py"]
+tests = ["tests/test_reconcile_sources.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py"]
+
+[[bundle]]
+name = "land-helpers"
+paths = ["tests/land_helpers.py"]
+tests = ["tests/test_activity_launch.py", "tests/test_same_tree_replay.py", "tests/test_parity_entry_points.py"]
 
 [[bundle]]
 name = "closed-feature-cleanup"

@@ -29,6 +29,7 @@ from dispatch_helpers import (  # noqa: F401 -- droot is a pytest fixture, used 
     envelope,
     one,
     says,
+    settle,
     turn,
 )
 
@@ -231,6 +232,7 @@ def test_show_and_the_handoff_print_the_denials_from_every_attempt(droot: Path, 
 
     d = _new_fast(droot)
     assert d["state"] == "blocked" and len(d["permission_denials"]) == 2
+    settle(droot, d)
     d = dispatch.resume(droot, dispatch_id="001-mac-01", answer="carry on without pnpm", watch=True)
     assert d["state"] == "done" and d["attempt"] == 2
     assert len(d["permission_denials"]) == 3, "accumulated across both attempts, not replaced"

@@ -238,8 +238,11 @@ def test_a_captured_idea_cannot_preview_launch_or_resume_until_activated(droot: 
 
 def test_an_ordinary_proposed_feature_still_dispatches(droot: Path, fake_claude):
     ops.feature_set(droot, feature="1", status="proposed")
-    preview = dispatch.new(droot, repo="alpha", feature="1", prompt="# Do it", dry_run=True)
+    preview = dispatch.new(droot, repo="alpha", feature="1", prompt="# Do it", dry_run=True, writes=[])
     assert preview["dry_run"] and preview["label"] == "Feature 001" and "repo_source" not in preview
+    with pytest.raises(AgentError, match="is proposed; implementation needs it active") as refused:
+        dispatch.new(droot, repo="alpha", feature="1", prompt="# Do it", dry_run=True)
+    assert "captured" not in str(refused.value)
 
 
 # ---------------------------------------------------------------- general research

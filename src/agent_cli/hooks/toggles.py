@@ -26,6 +26,7 @@ TOGGLEABLE = frozenset(
         "pull-warn",
         "journal-pending",
         "ask-guard",
+        "record-guard",
     }
 )
 #: Hooks that no longer exist. A leftover switch for one is ignored, not a config error: an error

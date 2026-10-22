@@ -8,13 +8,15 @@ generated views in sync with a plan.md edit).
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
 from .. import capture as capture_mod
 from .. import sessions, status
 from ..core import AgentError, agent_dir_name, agent_display, today
-from ..records.narrow import dig
+from ..records.narrow import as_dict, dig
 from . import session_budget as budget
 from .paths import relative
 from .session_blocks import (
@@ -345,6 +347,7 @@ def _map_session(root: Path, session_id: str, cwd: Any, pid: int | None = None) 
         return (
             (_request_line(root, feature) or line)
             + _blocked_block(root, feature)
+            + reconcile_line(root, feature)
             + open_tasks_block(root, feature)
         )
     return (
@@ -408,6 +411,11 @@ def capture_hook(root: Path, payload: dict[str, Any]) -> str:
         capture_mod.capture(root, kind, payload)
     except AgentError:
         pass
+    if kind == "subagent-stop":
+        try:
+            register_subagent(root, payload)
+        except Exception as exc:  # noqa: BLE001 — a hook never raises; failing open is the contract
+            sys.stderr.write(f"note: subagent return not registered for reconcile ({exc})\n")
     if kind == "session-end":
         from ..usage import job as usage_job
 
@@ -424,6 +432,46 @@ def capture_hook(root: Path, payload: dict[str, Any]) -> str:
         except Exception:  # noqa: BLE001, S110 — a hook never raises; failing open is the contract
             pass
     return ""
+
+
+def register_subagent(root: Path, payload: dict[str, Any]) -> bool:
+    """Append a `subagent:` ledger source, recording its session, for a SubagentStop in a mapped
+    manager session. Workers (their return covers their subagents) and unmapped sessions register
+    nothing. Without `last_assistant_message` the generation is the agent id alone. True when an
+    entry was written."""
+    from .. import features as features_mod
+    from .. import reconcile
+
+    session_id = str(payload.get("session_id") or "")
+    agent_id = str(payload.get("agent_id") or "")
+    if not session_id or not agent_id or os.environ.get("AGENT_DISPATCH_ID"):
+        return False
+    record = sessions.get(root, session_id) or {}
+    feature = as_dict(record.get("feature")).get("id")
+    if record.get("dispatch_id") or not isinstance(feature, int):
+        return False
+    message = payload.get("last_assistant_message")
+    source = reconcile.subagent_source(
+        feature, agent_id, message if isinstance(message, str) else None, session_id
+    )
+    return reconcile.append_source(features_mod.resolve(root, str(feature)), source)
+
+
+def reconcile_line(root: Path, feature: dict[str, Any]) -> str:
+    """How many ledger items the mapped feature owes, healing pending intents first, or ""."""
+    try:
+        from .. import reconcile
+
+        led = reconcile.ledger(root, int(feature["id"]))
+    except Exception:  # noqa: BLE001 — a context line must not cost the session start
+        return ""
+    if not led.owed:
+        return ""
+    waiting = f", {len(led.waiting)} waiting" if led.waiting else ""
+    return (
+        f"\nreconcile: {len(led.owed)} item(s) owed{waiting}; list and settle them with the `reconcile` "
+        "tool before more implementation"
+    )
 
 
 # ------------------------------------------------------------------ dispatch-inbox

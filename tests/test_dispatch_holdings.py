@@ -27,6 +27,7 @@ from dispatch_helpers import (  # noqa: F401
     droot,
     envelope,
     one,
+    settle,
 )
 from test_dispatch_alloc import _no_detach
 from test_dispatch_alloc_live import _proc
@@ -89,6 +90,7 @@ def test_a_dead_supervisor_with_a_live_descendant_keeps_them_until_it_stops(droo
     record = dispatch.load(droot, d["id"])
     assert row["state"] == "failed" and record["holdings_held"]["pids"] == [4242]
     assert _held_by(droot, f"dispatch:{d['id']}") and leases.status(leases.get(droot, SLOT0), droot) == "live"
+    settle(droot, d)
     with pytest.raises(AgentError, match="repo-slot:alpha/0 is held by"):
         _new_fast(droot, watch=False)
     with pytest.raises(AgentError, match="keeps its worktree lease and repo slot"):

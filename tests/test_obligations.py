@@ -155,6 +155,20 @@ def test_a_consumed_unlanded_build_returns_to_needs_you_when_its_manager_ends(mg
     assert rows[0]["resume"]["command"] == f"claude --resume {MGR}"
 
 
+def test_a_read_result_whose_ledger_sources_are_unpublished_stays_a_manager_action(mgr: Path):
+    from agent_cli import reconcile
+
+    pending = reconcile.dispatch_source({**load(mgr, DID), "result": {"status": "done"}})
+    assert pending is not None and reconcile.INTENT == "reconcile_pending"
+    worker(mgr, reconcile_pending=[pending])
+    notify(mgr)
+    ops.dispatch_consume(mgr, dispatch_id=DID, session_id=MGR)
+    [item] = owed(mgr)["manager_action"][MGR]
+    assert item["reasons"] == ["reconcile"]
+    worker(mgr, reconcile_pending=[])
+    assert action_ids(mgr, MGR) == []  # once published, the ledger owns the obligation
+
+
 # ------------------------------------------------------------------ who may read
 
 
