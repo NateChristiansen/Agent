@@ -35,11 +35,21 @@ from typing import Any
 
 from . import config_file, verify_run
 from .core import AgentError, agent_path, atomic_write
-from .records.narrow import as_dict, as_dict_or_none, as_float, as_int, str_list
+from .records.narrow import (
+    as_dict,
+    as_dict_or_none,
+    as_float,
+    as_float_or_none,
+    as_int,
+    dict_list,
+    str_list,
+)
 
 SCHEMA = 1
 #: Bumped when what a record certifies changes; older records then stop applying.
-POLICY = 4
+POLICY = 5
+#: Tests the `suite` block lists by spawns and by duration.
+TOP_TESTS = 20
 STORE = agent_path(Path(), "verify")
 #: How long a record request waits for the same key's run, and the poll between tries.
 RECORD_WAIT_S = 7200.0
@@ -286,6 +296,8 @@ def check(
     for name in verify_run.EVIDENCE_FILES:
         if _file_sha(run_dir / name) != hashes.get(name) or hashes.get(name) is None:
             return f"the run evidence ({name}) is missing or does not match the record"
+    if changed := _suite_changed(run_dir, hashes):
+        return f"the run evidence ({changed}) is missing or does not match the record"
     try:
         evidence = Evidence.from_dict(json.loads((run_dir / "terminal.json").read_text(encoding="utf-8")))
         life = json.loads((run_dir / "lifecycle.json").read_text(encoding="utf-8"))
@@ -307,7 +319,21 @@ def check(
     # both runs' evidence, never trusted from the record.
     from . import verify_retry
 
-    return verify_retry.check(root, record, evidence, life, log)
+    why = verify_retry.check(root, record, evidence, life, log)
+    retry = as_dict(record.get("retry"))
+    if why is None and (
+        changed := _suite_changed(run_dir.parent / str(retry.get("run_id")), retry.get("evidence"))
+    ):
+        return f"the retry evidence ({changed}) is missing or changed"
+    return why
+
+
+def _suite_changed(run_dir: Path, hashes: object) -> str | None:
+    """The first hashed suite file in `run_dir` whose bytes differ from its recorded hash."""
+    for name, digest in as_dict(hashes).items():
+        if name.startswith("suite-") and _file_sha(run_dir / name) != digest:
+            return name
+    return None
 
 
 def _failure(
@@ -437,7 +463,9 @@ def _record(root: Path, rev: str, *, reuse: bool, wait_s: float, extra: tuple[st
                         _path(root, tree, found["env_digest"], found["policy_digest"]),
                         json.dumps(found, indent=1),
                     )
-                event(root, sha, tree, "reused", run_id=str(found.get("run_id") or ""))
+                event(
+                    root, sha, tree, "reused", run_id=str(found.get("run_id") or ""), suite=found.get("suite")
+                )
                 return {**found, "reused": True}
         try:
             return {**_run(root, sha, tree, extra), "reused": False}
@@ -484,6 +512,7 @@ def event(
     run_id: str = "",
     failed: list[str] | tuple[str, ...] = (),
     retried: list[str] | tuple[str, ...] = (),
+    suite: object = None,
 ) -> None:
     """Record each certificate outcome: passed, reused, failed, timeout, retry-passed or retry-failed.
     Cap node lists to schema bounds while failed_count keeps the true total. Never raise.
@@ -494,6 +523,7 @@ def event(
     def ids(nodes: list[str] | tuple[str, ...]) -> list[str]:
         return [n[:MAX_LIST_ITEM] for n in list(nodes)[:MAX_LIST]]
 
+    figures = as_dict(suite)
     try:
         telemetry.record(
             main_of(root),
@@ -508,10 +538,135 @@ def event(
                 "failed_nodes": ids(failed),
                 "retry_nodes": ids(retried),
                 "retry_count": len(retried),
+                **{k: as_float_or_none(figures.get(k)) for k in ("wall_s", "cpu_children_s")},
+                **{k: _count(figures.get(k)) for k in ("tests", "spawns")},
             },
         )
     except Exception:  # noqa: BLE001 — telemetry never changes a record's outcome
         return
+
+
+def _count(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _loadavg() -> list[float] | None:
+    try:
+        return [round(x, 2) for x in os.getloadavg()]
+    except AttributeError, OSError:  # Windows has none
+        return None
+
+
+def summary_counts(log: str) -> list[int]:
+    """The tests each pytest summary in `log` counts, in order: passed, failed, errors, skipped,
+    xfailed and xpassed. Warnings, deselected and rerun tests are not tests that ran."""
+    from . import verify_retry
+
+    totals = verify_retry._TOTALS.findall(log)  # pyright: ignore[reportPrivateUsage]
+    return [sum(int(n) for n, _ in verify_retry._RAN.findall(t)) for t in totals]  # pyright: ignore[reportPrivateUsage]
+
+
+def _figures(run_dir: Path, index: int, seconds: float | None) -> dict[str, Any]:
+    """Command `index`'s own suite stats as advisory figures; `stats: missing` when it wrote none,
+    never zeros in their place."""
+    figures: dict[str, Any] = {"wall_s": None if seconds is None else round(seconds, 3)}
+    try:
+        stats = as_dict_or_none(
+            json.loads((run_dir / verify_run.suite_file(index)).read_text(encoding="utf-8"))
+        )
+    except OSError, ValueError:
+        stats = None
+    if stats is None:
+        return {**figures, "stats": "missing"}
+    totals = as_dict(stats.get("totals"))
+    rows = dict_list(stats.get("tests"))
+
+    def top(key: str) -> list[dict[str, Any]]:
+        ranked = sorted(rows, key=lambda r: -as_float(r.get(key)))[:TOP_TESTS]
+        return [{"test": str(r.get("test") or ""), key: r.get(key)} for r in ranked]
+
+    return {
+        **figures,
+        "stats": verify_run.suite_file(index),
+        "spawns": _count(totals.get("spawns")),
+        **{k: as_float_or_none(totals.get(k)) for k in ("test_seconds", "cpu_children_s", "opaque_share")},
+        "top_spawns": top("spawns"),
+        "top_seconds": top("s"),
+    }
+
+
+def _span_tests(run_dir: Path, index: int) -> tuple[int | None, str]:
+    """The tests command `index`'s one pytest summary counts, read only from the part of the log
+    that command wrote, or None and why."""
+    try:
+        begin, end = (int(n) for n in (run_dir / verify_run.suite_file(index, "span")).read_text().split())
+        text = (run_dir / "output.log").read_bytes()[begin:end].decode("utf-8", "replace")
+    except OSError, ValueError:
+        return None, f"command {index} left no readable log span"
+    counts = summary_counts(text)
+    if len(counts) != 1:
+        return None, f"command {index}'s output holds {len(counts)} pytest summaries, not one"
+    return counts[0], ""
+
+
+def suite(
+    run_dir: Path,
+    evidence: Any,
+    names: list[str],
+    configured: int,
+    loadavg: list[float] | None,
+    retry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """What the run's suite cost. `tests` is read from the full pytest command's own span of the
+    log and `spawns` from its own stats; the first `configured` of `names` are the verify commands,
+    the rest a selection rule's extras. Extras and a serial flake retry are kept apart, advisory
+    only. What cannot be read is None, and `missing` says why."""
+    from . import verify_retry
+
+    seconds = {int(c.index): float(c.elapsed_seconds) for c in evidence.commands}
+    full = verify_retry.pytest_index(names[:configured])
+    missing: list[str] = []
+    block: dict[str, Any] = {"command": full, "tests": None, "spawns": None}
+    if full is None or full not in seconds:
+        missing.append("the verify commands hold no single pytest command that ran")
+    else:
+        figures = _figures(run_dir, full, seconds.get(full))
+        block["tests"], why = _span_tests(run_dir, full)
+        if why:
+            missing.append(why)
+        if figures["stats"] == "missing":
+            missing.append(f"command {full} wrote no suite stats")
+        block |= figures
+    block["loadavg"] = loadavg
+    block["extras"] = [
+        {
+            "index": i,
+            "command": names[i],
+            "tests": _span_tests(run_dir, i)[0],
+            **_figures(run_dir, i, seconds.get(i)),
+        }
+        for i in sorted(seconds)
+        if i >= configured
+    ]
+    if retry is not None:
+        block["retry"] = _retry_figures(run_dir.parent / str(retry.get("run_id") or ""))
+    block["missing"] = missing
+    return block
+
+
+def _retry_figures(run_dir: Path) -> dict[str, Any]:
+    from .dispatch.verification_evidence import Evidence
+
+    try:
+        evidence = Evidence.from_dict(json.loads((run_dir / "terminal.json").read_text(encoding="utf-8")))
+        rerun = evidence.commands[-1]
+    except OSError, ValueError, TypeError, IndexError:
+        return {"run_id": run_dir.name, "stats": "missing"}
+    return {
+        "run_id": run_dir.name,
+        "index": rerun.index,
+        **_figures(run_dir, rerun.index, rerun.elapsed_seconds),
+    }
 
 
 def _run(root: Path, sha: str, tree: str, extra: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -535,7 +690,7 @@ def _run(root: Path, sha: str, tree: str, extra: tuple[str, ...] = ()) -> dict[s
     with record_lane(
         root, rp, run_id, wait_limit(rp), settled=lambda: verify_run.settle(main, runs / run_id)
     ):
-        started = _now()
+        started, loadavg = _now(), _loadavg()
         outcome = verify_run.run(main, rp, sha, run_id, runs, extra)
     evidence = outcome["evidence"]
     where = runs / run_id
@@ -580,9 +735,20 @@ def _run(root: Path, sha: str, tree: str, extra: tuple[str, ...] = ()) -> dict[s
                 "timeout" if timed_out else "failed",
             )
         retry = tried.retry
-        event(root, sha, tree, verify_retry.PASSED, run_id=run_id, failed=tried.failed, retried=retried)
+        cost = suite(where, evidence, names, len(rp.verification.commands), loadavg, retry)
+        event(
+            root,
+            sha,
+            tree,
+            verify_retry.PASSED,
+            run_id=run_id,
+            failed=tried.failed,
+            retried=retried,
+            suite=cost,
+        )
     else:
-        event(root, sha, tree, "passed", run_id=run_id)
+        cost = suite(where, evidence, names, len(rp.verification.commands), loadavg)
+        event(root, sha, tree, "passed", run_id=run_id, suite=cost)
     result = {
         "schema": SCHEMA,
         "policy": POLICY,
@@ -603,6 +769,7 @@ def _run(root: Path, sha: str, tree: str, extra: tuple[str, ...] = ()) -> dict[s
             }
             for c in evidence.commands
         ],
+        "suite": cost,
         "config_digest": config,
         **({"extra": list(extra)} if extra else {}),
         # A run that passed only through its one serial retry of approved timing flakes: the

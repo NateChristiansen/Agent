@@ -8,7 +8,8 @@ global config and with each configured filter driver blanked, and a tree whose a
 `filter` is refused, so no configurable program runs during certification. The checkout gets the
 tracked example config the way CI does, and is its own `AGENT_ROOT`: the owner's registry and
 local state are never inputs to a record. `git status` before and after must both be empty. The
-runner's evidence directory is copied into the record store before the checkout goes away.
+runner's evidence directory is copied into the record store before the checkout goes away, with
+each command's own suite stats (`suite_file`), which the runner names per command.
 """
 
 from __future__ import annotations
@@ -159,10 +160,16 @@ def run(
             launch_base=sha,
             run_id=run_id,
         )
-        temp = holder / "pytest"
+        temp, stats = holder / "pytest", holder / "suite"
         temp.mkdir()
+        stats.mkdir()
         prepared = dataclasses.replace(
-            prepared, environment={**prepared.environment, "PYTEST_DEBUG_TEMPROOT": str(temp)}
+            prepared,
+            environment={
+                **prepared.environment,
+                "PYTEST_DEBUG_TEMPROOT": str(temp),
+                verification.SUITE_STATS_DIR: str(stats),
+            },
         )
         launched = prepared.binding
         # Written before launch, so a crash at any later point leaves the run recoverable and its
@@ -181,6 +188,12 @@ def run(
                 shutil.copyfile(source / name, target / name)
                 with contextlib.suppress(OSError):  # the mtime is best effort; the bytes are the evidence
                     shutil.copystat(source / name, target / name)
+        suite: list[str] = []
+        for index in range(len(config.commands)):
+            for kind in ("json", "span"):
+                if (stats / f"{index}.{kind}").is_file():
+                    shutil.copyfile(stats / f"{index}.{kind}", target / suite_file(index, kind))
+                    suite.append(suite_file(index, kind))
         evidence = status.evidence
         return {
             "state": evidence.state if evidence is not None else "missing",
@@ -189,7 +202,7 @@ def run(
             "evidence": evidence,
             "hashes": {
                 name: hashlib.sha256((target / name).read_bytes()).hexdigest()
-                for name in EVIDENCE_FILES
+                for name in (*EVIDENCE_FILES, *suite)
                 if (target / name).is_file()
             },
         }
@@ -197,6 +210,11 @@ def run(
         if launched is None or confirmed:
             _remove(git, main, checkout, holder)
             (runs / run_id / PENDING).unlink(missing_ok=True)
+
+
+def suite_file(index: int, kind: str = "json") -> str:
+    """Command `index`'s copied stats (`json`) or output log byte range (`span`)."""
+    return f"suite-{index}.{kind}"
 
 
 def _remove(git: Git, main: Path, checkout: Path, holder: Path) -> None:

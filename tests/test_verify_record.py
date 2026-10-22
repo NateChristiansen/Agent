@@ -441,6 +441,116 @@ def test_a_copied_run_log_keeps_the_run_own_time(harness: Path, monkeypatch: pyt
     assert copied.stat().st_mtime == then
 
 
+# A stand-in pytest: prints the summary it is given and, unless told `-`, writes the suite stats
+# the runner names for this command.
+FAKE_PYTEST = """#!/bin/sh
+if [ -n "$AGENT_SUITE_STATS" ] && [ "$2" != - ]; then
+  sed "s/SPAWNS/$2/" tools/stats.json > "$AGENT_SUITE_STATS"
+fi
+echo "$1"
+"""
+STATS = {
+    "totals": {
+        "tests": 2,
+        "spawns": "SPAWNS",
+        "test_seconds": 1.5,
+        "cpu_children_s": 2.5,
+        "opaque_share": 0.1,
+    },
+    "workers": {},
+    "tests": [
+        {"test": "tests/test_a.py::test_few", "spawns": 1, "s": 0.9},
+        {"test": "tests/test_a.py::test_many", "spawns": 30, "s": 0.1},
+    ],
+}
+
+
+def _fake_pytest(root: Path, summary: str, spawns: str) -> str:
+    if not (root / "tools" / "pytest").is_file():
+        (root / "tools").mkdir(exist_ok=True)
+        (root / "tools" / "pytest").write_text(FAKE_PYTEST)
+        (root / "tools" / "stats.json").write_text(json.dumps(STATS).replace('"SPAWNS"', "SPAWNS"))
+        _git(root, "add", "tools")
+        _git(root, "commit", "-q", "-m", "a stand-in pytest")
+    return f"sh tools/pytest '{summary}' {spawns}"
+
+
+@pytest.fixture
+def events(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    from agent_cli import telemetry
+
+    seen: list[dict] = []
+    monkeypatch.setattr(telemetry, "record", lambda root, kind, **kw: seen.append({"kind": kind, **kw}))
+    return seen
+
+
+def test_a_new_record_carries_its_suite_cost_and_its_event_the_figures(harness: Path, events: list[dict]):
+    _registry(harness, "echo lint ok", _fake_pytest(harness, "3 passed, 2 warnings in 0.01s", "40"))
+    made = verify_record.record(harness, "HEAD")
+    suite = made["suite"]
+    assert (suite["command"], suite["tests"], suite["spawns"], suite["missing"]) == (1, 3, 40, [])
+    assert (suite["test_seconds"], suite["cpu_children_s"], suite["opaque_share"]) == (1.5, 2.5, 0.1)
+    assert suite["wall_s"] == made["commands"][1]["seconds"] and suite["extras"] == []
+    assert [t["test"] for t in suite["top_spawns"]] == [
+        "tests/test_a.py::test_many",
+        "tests/test_a.py::test_few",
+    ]
+    assert [t["test"] for t in suite["top_seconds"]] == [
+        "tests/test_a.py::test_few",
+        "tests/test_a.py::test_many",
+    ]
+    assert sys.platform == "win32" or len(suite["loadavg"]) == 3
+    run_dir = verify_record.store(harness) / "runs" / made["run_id"]
+    stats = run_dir / "suite-1.json"
+    assert made["evidence"]["suite-1.json"] == verify_record._file_sha(stats)
+    assert "suite-0.json" not in made["evidence"]  # the lint command wrote none
+    (data,) = [e["data"] for e in events if e["kind"] == "verify.record"]
+    assert (data["tests"], data["spawns"], data["cpu_children_s"]) == (3, 40, 2.5)
+    assert data["wall_s"] == suite["wall_s"]
+    stats.write_text(stats.read_text().replace("40", "4"))
+    assert "suite-1.json" in verify_record.lookup(harness, "HEAD")[1]
+
+
+def test_missing_suite_stats_are_named_not_zeroed(harness: Path):
+    _registry(harness, "echo lint ok", _fake_pytest(harness, "3 passed in 0.01s", "-"))
+    suite = verify_record.record(harness, "HEAD")["suite"]
+    assert (suite["tests"], suite["spawns"], suite["stats"]) == (3, None, "missing")
+    assert suite["missing"] == ["command 1 wrote no suite stats"]
+
+
+def test_an_extra_is_kept_apart_and_a_reuse_still_reports_the_full_run(harness: Path, events: list[dict]):
+    """The extra's summary is the log's last and its stats would have overwritten the full run's."""
+    _registry(harness, "echo lint ok", _fake_pytest(harness, "3 passed in 0.01s", "40"))
+    extra = (_fake_pytest(harness, "12 passed in 0.01s", "5"),)
+    made = verify_record.record(harness, "HEAD", extra=extra)
+    again = verify_record.record(harness, "HEAD", extra=extra)
+    assert again["reused"] is True and again["run_id"] == made["run_id"]
+    for suite in (made["suite"], again["suite"]):
+        assert (suite["tests"], suite["spawns"]) == (3, 40)
+        (added,) = suite["extras"]
+        assert (added["index"], added["tests"], added["spawns"], added["stats"]) == (2, 12, 5, "suite-2.json")
+    reused = [e["data"] for e in events if e.get("outcome") == "reused"]
+    assert [(d["tests"], d["spawns"]) for d in reused] == [(3, 40)]
+
+
+def test_a_full_command_without_a_summary_never_borrows_an_extra_one(harness: Path):
+    """`-qq` prints no summary; the extra's, the only one in the log, is not the full suite's."""
+    _registry(harness, "echo lint ok", _fake_pytest(harness, "", "40"))
+    made = verify_record.record(harness, "HEAD", extra=("echo 1 passed in 0.01s",))
+    suite = made["suite"]
+    assert (suite["tests"], suite["spawns"]) == (None, 40)
+    assert suite["missing"] == ["command 1's output holds 0 pytest summaries, not one"]
+    assert suite["extras"][0]["tests"] == 1
+
+
+def test_a_summary_counts_failed_and_error_tests_but_not_warnings():
+    log = (
+        "== 1 failed, 5 passed, 2 skipped, 1 xfailed, 1 xpassed, 2 errors, 3 warnings in 3.21s ==\n"
+        "12 passed, 1 deselected in 0.5s\n"
+    )
+    assert verify_record.summary_counts(log) == [12, 12]
+
+
 def test_a_file_system_that_rejects_the_mtime_still_gets_the_evidence_bytes(
     harness: Path, monkeypatch: pytest.MonkeyPatch
 ):

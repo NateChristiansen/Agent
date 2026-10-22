@@ -8,6 +8,7 @@ credentials or secrets read from disk can still be printed by an authorized comm
 
 from __future__ import annotations
 
+import contextlib
 import os
 import secrets
 import subprocess
@@ -25,6 +26,10 @@ from .verification_status import RunStatus, load_status
 from .verification_store import ERROR_MESSAGE_LIMIT, Store
 
 LOG_LIMIT = 65536
+#: A directory in the run's environment gives each command its own suite stats file,
+#: `<dir>/<command index>.json`, named by `AGENT_SUITE_STATS` (`tests/suite_cost.py`), and
+#: `<dir>/<command index>.span`, the byte range of the output log the command wrote.
+SUITE_STATS_DIR = "AGENT_SUITE_STATS_DIR"
 #: Cap on one tree observation, all of its Git queries together, inside the run's own deadline.
 OBSERVE_SECONDS = 30
 
@@ -344,7 +349,10 @@ def _command(
             },
         )
         shell = {"shell": request["shell"]} if "shell" in request else {}
-        procs.send(child, {"command": command, "env": request["environment"], **shell})
+        env = request["environment"]
+        if stats := env.get(SUITE_STATS_DIR):
+            env = {**env, "AGENT_SUITE_STATS": str(Path(stats) / f"{index}.json")}
+        procs.send(child, {"command": command, "env": env, **shell})
         assert watchdog.stdout is not None
         while not procs.readable(watchdog.stdout, procs.POLL):
             if time.monotonic() >= deadline or _cancelled(store) or procs.parent_gone():
@@ -462,9 +470,13 @@ def guardian_main() -> None:
                         state = "cancelled" if _cancelled(store) else "interrupted"
                         life["reason"] = "cancelled" if state == "cancelled" else "parent_interrupted"
                         break
+                    begin = log.tell()
                     result = _command(
                         store, life, request, index, command.command, command.timeout_seconds, deadline, log
                     )
+                    if stats := request["environment"].get(SUITE_STATS_DIR):
+                        with contextlib.suppress(OSError):
+                            (Path(stats) / f"{index}.span").write_text(f"{begin} {log.tell()}\n")
                     results.append(result)
                     store.evidence(
                         Evidence(

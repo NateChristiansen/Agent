@@ -172,13 +172,30 @@ def _log(root: Path, run_id: str) -> str:
     return (_store(root) / "runs" / run_id / "output.log").read_text()
 
 
+# Stands in for the suite-cost plugin: each pytest session's stats name how many tests it ran.
+STATS_CONFTEST = """import json, os
+
+def pytest_sessionfinish(session):
+    out = os.environ.get("AGENT_SUITE_STATS")
+    if out and not hasattr(session.config, "workerinput"):
+        with open(out, "w") as fh:
+            json.dump({"totals": {"spawns": 100 + session.testscollected}, "tests": []}, fh)
+"""
+
+
 def test_an_approved_flake_is_retried_once_serially_and_linked(harness: Path, runs: list[str]):
     """The retry runs exactly the failed id whatever the configured targets (`pytest tests`), and
-    without `PYTEST_ADDOPTS`, which would make it parallel again and clash with `-p no:xdist`."""
+    without `PYTEST_ADDOPTS`, which would make it parallel again and clash with `-p no:xdist`.
+    The record counts the failed node once, from the full run, never adding its retry."""
     _registry(harness, {"PYTEST_ADDOPTS": "-n 8"}, pytest=PYTEST + " tests")
+    (harness / "tests" / "conftest.py").write_text(STATS_CONFTEST)
     _quarantine(harness, _entry(NODE))
     record = verify_record.record(harness, "HEAD")
     retry = record["retry"]
+    suite = record["suite"]
+    assert (suite["tests"], suite["spawns"], suite["missing"]) == (3, 103, [])
+    assert (suite["retry"]["run_id"], suite["retry"]["index"]) == (retry["run_id"], 2)
+    assert suite["retry"]["spawns"] == 101 and "suite-2.json" in retry["evidence"]
     # one original run under the project's own -n 8, plus exactly one serial retry of one node
     assert runs[0] == "full" and len(runs) == 2
     assert runs[1] == (
@@ -202,6 +219,11 @@ def test_an_approved_flake_is_retried_once_serially_and_linked(harness: Path, ru
     assert found is not None, why
     assert land.record_kind(found) == "retry-passed"
     # a reader re-derives the retry: tampered retry evidence fails closed
+    stats = _store(harness) / "runs" / retry["run_id"] / "suite-2.json"
+    kept_stats = stats.read_text()
+    stats.write_text("{}")
+    assert "retry evidence (suite-2.json)" in verify_record.lookup(harness, "HEAD")[1]
+    stats.write_text(kept_stats)
     log = _store(harness) / "runs" / retry["run_id"] / "output.log"
     log.write_text(log.read_text() + "1 failed\n")
     assert "retry evidence (output.log)" in verify_record.lookup(harness, "HEAD")[1]
