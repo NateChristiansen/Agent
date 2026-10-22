@@ -40,7 +40,8 @@ name = "reconciliation-ledger"
 # `record-guard` folds the ledger.
 paths = ["src/agent_cli/reconcile.py", "src/agent_cli/activity_gate.py", "src/agent_cli/ops/reconcile.py"]
 tests = [
-  "tests/test_reconcile.py", "tests/test_activity_gate.py", "tests/test_record_guard.py", "tests/test_log.py",
+  "tests/test_reconcile.py", "tests/test_activity_gate.py", "tests/test_record_guard.py",
+  "tests/test_reconcile_sources.py", "tests/test_log.py",
   "tests/test_mcp_server.py", "tests/test_mcp_contract.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
 ]
 
@@ -53,6 +54,13 @@ paths = [
   "src/agent_cli/land.py", "tests/dispatch_helpers.py",
 ]
 tests = ["tests/test_activity_launch.py"]
+
+[[bundle]]
+name = "reconcile-sources"
+# The terminal commit saves the ledger intents that publication appends; the source tests drive it
+# through the dispatch helpers.
+paths = ["src/agent_cli/dispatch/terminal.py", "tests/dispatch_helpers.py"]
+tests = ["tests/test_reconcile_sources.py"]
 
 [[bundle]]
 name = "land-helpers"
