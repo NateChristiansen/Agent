@@ -11,34 +11,45 @@ policy, never inside the transaction and never from `reconcile`: `retry_cleanup`
 the land flock after a landing and before an allocation. A held candidate stays on the journal with
 its reasons, and the obligation stays pending until every candidate is removed, gone or owned by a
 later landing, with no age limit.
+
+The `reconcile` obligation registers the landing's acceptance sources in the feature ledger: the
+sources are saved on the journal first, then appended once each. Journals prepared without the
+obligation register nothing.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from . import land_journal as jn
 from .core import AgentError
+from .reconcile import INTENT, OBLIGATION
 from .records.narrow import as_dict, as_list
 
 PENDING = "pending"
 CLEANUP = "cleanup"
+RECONCILE = OBLIGATION
+# The `reconcile` obligation before its sources are saved on the journal. Only this module moves
+# it on, so the ledger's heal, which settles a `pending` obligation from the saved sources, never
+# settles a landing whose sources were not yet worked out.
+RECORDING = "recording"
 SETTLED = ("removed", "gone", "superseded")
 RETRY_LIMIT = 8
 
 
 def initial() -> dict[str, str]:
     """The obligations a prepared journal starts with."""
-    return {"milestone": PENDING, "notices": PENDING, CLEANUP: PENDING}
+    return {"milestone": PENDING, "notices": PENDING, CLEANUP: PENDING, RECONCILE: RECORDING}
 
 
 def outstanding(journal: dict[str, Any]) -> bool:
     """A successful landing that still owes its metadata. Aborted and legacy journals never do;
     cleanup is `cleanup_owed`, which recovery's metadata pass does not replay."""
     obligations = {k: v for k, v in as_dict(journal.get("obligations")).items() if k != CLEANUP}
-    return journal.get("state") == "done" and PENDING in obligations.values()
+    return journal.get("state") == "done" and bool({PENDING, RECORDING} & set(obligations.values()))
 
 
 def cleanup_owed(journal: dict[str, Any]) -> bool:
@@ -74,6 +85,11 @@ def reconcile(root: Path, main: Path, journal: dict[str, Any]) -> dict[str, Any]
             obligations["notices"] = "done"
     except Exception:  # noqa: BLE001, S110 — whatever is still pending is retried by recovery
         pass
+    try:
+        if obligations.get(RECONCILE) in (RECORDING, PENDING) and _sources(root, main, journal, obligations):
+            obligations[RECONCILE] = "done"
+    except Exception:  # noqa: BLE001, S110 — the saved sources stay pending for recovery or the heal
+        pass
     if obligations != journal.get("obligations"):
         journal["obligations"] = obligations
         try:
@@ -81,6 +97,64 @@ def reconcile(root: Path, main: Path, journal: dict[str, Any]) -> dict[str, Any]
         except OSError:
             pass
     return obligations
+
+
+def _sources(root: Path, main: Path, journal: dict[str, Any], obligations: dict[str, Any]) -> bool:
+    """Work out the landing's ledger sources and save them on the journal before appending any
+    (`recording` becomes `pending`), then append each once. True when every one is in its
+    feature's log; a crash after the save leaves the ledger's heal to finish them."""
+    from . import features as features_mod
+    from . import reconcile as reconcile_mod
+
+    if obligations[RECONCILE] == RECORDING:
+        journal[INTENT] = landing_intents(root, journal)
+        obligations[RECONCILE] = PENDING
+        jn.write(main, {**journal, "obligations": dict(obligations)})
+    complete = True
+    for intent in (dict(as_dict(p)) for p in as_list(journal.get(INTENT))):
+        try:
+            reconcile_mod.append_source(features_mod.resolve(root, str(intent["feature"])), intent)
+        except AgentError, OSError, KeyError:
+            complete = False
+    return complete
+
+
+def landing_intents(root: Path, journal: dict[str, Any]) -> list[dict[str, Any]]:
+    """One `accept:` source per landed dispatch with open listed tasks, and one `landing:` source
+    per feature owning a member branch that has no dispatch record. An unbound branch raises none."""
+    from . import features as features_mod
+    from . import reconcile as reconcile_mod
+    from . import verify_record
+    from .activity_gate import bound_feature
+    from .dispatch import state as dispatch_state
+
+    ident = str(journal["id"])
+    branches = [b for b in _branches(journal) if b]
+    harness = verify_record.harness_repo(root).name
+    records = [
+        d for d in dispatch_state.load_all(root) if d.get("branch") in branches and d.get("repo") == harness
+    ]
+    out: list[dict[str, Any]] = []
+    for branch in branches:
+        landed = [
+            d
+            for d in records
+            if d.get("branch") == branch and not newer_mark(root, as_dict(d.get("integration")), journal)
+        ]
+        if not landed:
+            feature = bound_feature(root, branch)
+            if feature is not None:
+                out.append(reconcile_mod.landing_source(ident, feature))
+            continue
+        for d in landed:
+            try:
+                feature = features_mod.resolve(root, str(d["feature"]))
+            except AgentError, KeyError:
+                continue  # its feature no longer resolves: nothing to accept against
+            if (accept := reconcile_mod.accept_source(d, ident, feature=feature)) is not None:
+                out.append(accept)
+    unique = {json.dumps(s, sort_keys=True): s for s in out}
+    return list(unique.values())
 
 
 def newer_mark(root: Path, held: dict[str, Any], journal: dict[str, Any]) -> bool:

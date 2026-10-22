@@ -22,7 +22,7 @@ from agent_cli.ops import peer_wake
 
 BRANCH = "agent/001-x-mac-01"
 DAY_TS = "2026-10-09T01:00:00-06:00"
-SETTLED = {"milestone": "recorded", "notices": "done"}
+SETTLED = {"milestone": "recorded", "notices": "done", "reconcile": "done"}
 
 
 @pytest.fixture
@@ -51,6 +51,7 @@ def landed(tmp_root: Path, notes_remote: Path, run, monkeypatch: pytest.MonkeyPa
             "branch": BRANCH,
             "state": "done",
             "feature": 1,
+            "attempt": 1,
             "tasks": [1],
             "launched_by_session": "mgr-a",
         },
@@ -228,6 +229,130 @@ def test_aborted_and_legacy_journals_owe_nothing(tmp_root: Path, landed):
         assert not followups.outstanding(journal)
     assert _landings(tmp_root) == []
     assert _rows(tmp_root) == []
+
+
+# ---------------------------------------------------------------- reconcile sources
+
+
+@pytest.fixture
+def manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The landing and its heal run as a manager: a worker's inherited dispatch id would hide failures."""
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+
+
+def _source_rows(root: Path) -> list[str]:
+    from agent_cli import features, log, reconcile
+
+    parsed = [reconcile.parse_entry(e) for e in log.parse(features.resolve(root, "1").log_path)]
+    return [r.data["source"] for r in parsed if isinstance(r, reconcile.Rec) and r.verb == "source"]
+
+
+def _owed(root: Path) -> list[tuple[str, str]]:
+    from agent_cli import reconcile
+
+    return sorted((i.source, i.item) for i in reconcile.ledger(root, "1").owed)
+
+
+ACCEPT = [("accept:001-mac-01", "task#1")]
+
+
+def test_a_landing_registers_acceptance_of_its_open_tasks_once(tmp_root: Path, landed, manager):
+    from agent_cli import reconcile
+
+    journal = _journal()
+    jn.write(tmp_root, journal)
+    assert followups.reconcile(tmp_root, tmp_root, journal)["reconcile"] == "done"
+    saved = jn.read(tmp_root, journal["id"])
+    assert [p["source"] for p in saved[reconcile.INTENT]] == ["accept:001-mac-01"]
+    assert saved[reconcile.INTENT][0]["G"].endswith("@" + journal["id"])
+    assert _owed(tmp_root) == ACCEPT
+    land_recover.recover(tmp_root, journal["id"])
+    assert _source_rows(tmp_root) == ["accept:001-mac-01"]
+    ops.task_done(tmp_root, task="1", feature="1")
+    assert _owed(tmp_root) == []
+
+
+def test_sources_are_saved_on_the_journal_before_any_append_and_the_heal_finishes_them(
+    tmp_root: Path, landed, manager, monkeypatch: pytest.MonkeyPatch
+):
+    from agent_cli import reconcile
+
+    seen: list[object] = []
+
+    def crash(feature, pending):
+        on_disk = jn.read(tmp_root, journal["id"])
+        seen.append((on_disk["obligations"]["reconcile"], [p["source"] for p in on_disk[reconcile.INTENT]]))
+        raise OSError("killed before the append")
+
+    journal = _journal()
+    jn.write(tmp_root, journal)
+    with monkeypatch.context() as patched:
+        patched.setattr(reconcile, "append_source", crash)
+        assert followups.reconcile(tmp_root, tmp_root, journal)["reconcile"] == "pending"
+    assert seen == [("pending", ["accept:001-mac-01"])]
+    assert _source_rows(tmp_root) == []
+    assert _owed(tmp_root) == ACCEPT  # the ledger's heal appends from the journal and settles it
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "done"
+    land_recover.recover(tmp_root, journal["id"])
+    assert _source_rows(tmp_root) == ["accept:001-mac-01"]
+
+
+def test_a_crash_after_the_append_before_done_recovers_without_a_second_entry(
+    tmp_root: Path, landed, manager, monkeypatch: pytest.MonkeyPatch
+):
+    journal = _journal()
+    jn.write(tmp_root, journal)
+    real = jn.write
+
+    def lost(main, j):
+        if j.get("obligations", {}).get("reconcile") == "done":
+            raise OSError("killed before done was saved")
+        real(main, j)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(jn, "write", lost)
+        followups.reconcile(tmp_root, tmp_root, journal)
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "pending"
+    assert _source_rows(tmp_root) == ["accept:001-mac-01"]
+    land_recover.recover(tmp_root, journal["id"])
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "done"
+    assert _source_rows(tmp_root) == ["accept:001-mac-01"]
+
+
+def test_a_stop_before_the_sources_are_saved_is_left_to_land_recovery_not_the_heal(
+    tmp_root: Path, landed, manager
+):
+    journal = _journal()
+    jn.write(tmp_root, journal)  # done on disk, nothing reconciled: the obligation is still recording
+    assert _owed(tmp_root) == []  # the heal never settles a landing whose sources were not worked out
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "recording"
+    land_recover.recover(tmp_root, journal["id"])
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "done"
+    assert _owed(tmp_root) == ACCEPT
+
+
+def test_a_member_without_a_dispatch_registers_a_landing_source_for_its_bound_feature(
+    tmp_root: Path, landed, manager, monkeypatch: pytest.MonkeyPatch
+):
+    bound = {"agent/manager-bound": 1}
+    monkeypatch.setattr("agent_cli.activity_gate.bound_feature", lambda root, branch: bound.get(branch))
+    journal = _journal(branch="agent/manager-bound")
+    jn.write(tmp_root, journal)
+    followups.reconcile(tmp_root, tmp_root, journal)
+    assert _owed(tmp_root) == [(f"landing:{journal['id']}", "landing")]
+    unbound = _journal("20261009T060000-ffffff", branch="agent/nobody")
+    jn.write(tmp_root, unbound)
+    assert followups.reconcile(tmp_root, tmp_root, unbound)["reconcile"] == "done"
+    assert _source_rows(tmp_root) == [f"landing:{journal['id']}"]
+
+
+def test_legacy_journals_register_no_sources(tmp_root: Path, landed, manager):
+    obligations = {k: v for k, v in followups.initial().items() if k != "reconcile"}
+    journal = _journal(obligations=obligations)
+    jn.write(tmp_root, journal)
+    land_recover.recover(tmp_root, journal["id"])
+    assert "reconcile" not in jn.read(tmp_root, journal["id"])["obligations"]
+    assert _owed(tmp_root) == [] and _source_rows(tmp_root) == []
 
 
 # ----------------------------------------------------------------
