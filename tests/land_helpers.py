@@ -128,7 +128,7 @@ def certified(monkeypatch: pytest.MonkeyPatch) -> None:
     from agent_cli import land
 
     monkeypatch.setattr(
-        land, "_certificate", lambda root, cand: {"run_id": "certified-in-test", "reused": True}
+        land, "_certificate", lambda root, cand, **_: {"run_id": "certified-in-test", "reused": True}
     )
 
 

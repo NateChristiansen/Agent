@@ -33,6 +33,12 @@ def add_parser(sub: Subparsers) -> None:
         help="fetch main from the pinned harness.sync_url, then fast-forward the harness's own main "
         "to it (ADR-0041); refuses when main has commits it lacks",
     )
+    ry.add_argument(
+        "--budget-raise",
+        metavar="REASON",
+        help="with --harness: the reason of the [[raise]] entry the pushed main adds to tests/budget.toml "
+        "(the owner's call)",
+    )
 
 
 def repos_list(root: Path, args: argparse.Namespace, out: Output) -> int:
@@ -56,6 +62,7 @@ def repos_sync(root: Path, args: argparse.Namespace, out: Output) -> int:
             fetch=args.fetch,
             pull=args.pull,
             harness=args.harness,
+            budget_raise=args.budget_raise,
         )
     )
 

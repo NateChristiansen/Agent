@@ -369,11 +369,14 @@ def land(
     op: str | None = None,
     extra: list[str] | None = None,
     origins: list[str] | None = None,
+    budget_raise: str | None = None,
 ) -> dict[str, Any]:
     """Land `branch` on local main. Returns the finished journal with the record it relied on.
     `op` names the landing operation whose stages `land_journal.op_update` records. `extra` lands
     a bounded batch (`batch_candidate`): one certificate for the exact combined tree, one journal.
-    `origins` names pre-copy source tips, fetched locally and carried in the landed trailers."""
+    `origins` names pre-copy source tips, fetched locally and carried in the landed trailers.
+    `budget_raise` is the reason of the owner's `[[raise]]` entry the candidate adds to the suite
+    budget."""
     # Certificate locks support Windows as well as POSIX. Detached operation uses the shared
     # terminal flock.
     from .harness_role import consumer
@@ -389,7 +392,19 @@ def land(
     try:
         with jn.git_dir_scope():
             journal = _land(
-                root, main, git, branch, strategy, message, wait_s, op, extra, asked, trail, origins
+                root,
+                main,
+                git,
+                branch,
+                strategy,
+                message,
+                wait_s,
+                op,
+                extra,
+                asked,
+                trail,
+                origins,
+                budget_raise,
             )
     except BaseException as exc:
         _op_event(main, trail, asked, "failed", why=str(exc))
@@ -420,11 +435,33 @@ def _op_event(main: Path, trail: dict[str, Any], asked: float, outcome: str, why
         return
 
 
-def _certificate(root: Path, cand: str) -> dict[str, Any]:
-    """The full pass record for the candidate's tree (see ADR-0062): an existing one, or a new run."""
-    from . import verify_record
+def _certificate(
+    root: Path, cand: str, *, git: obs.Git, old: str, budget_raise: str | None
+) -> dict[str, Any]:
+    """The full pass record for the candidate's tree (see ADR-0062): an existing one, or a new run.
+    The record must also keep within main's suite budget (suite_budget.py)."""
+    from . import suite_budget, verify_record
 
-    return verify_record.record(root, cand)
+    record = verify_record.record(root, cand)
+    problems = suite_budget.check(record, _budget_text(git, old), _budget_text(git, cand), budget_raise)
+    if problems:
+        raise AgentError(
+            f"the suite budget refuses this landing: {'; '.join(problems)}. Only the owner raises the "
+            f"budget: they add a [[raise]] entry to {suite_budget.PATH} and land with budget_raise "
+            "set to its reason"
+        )
+    return record
+
+
+def _budget_text(git: obs.Git, rev: str) -> str | None:
+    from .suite_budget import PATH
+
+    entry = obs.tree_entries(git, rev).get(PATH)
+    if entry is None:
+        return None
+    if entry.mode not in ("100644", "100755"):
+        raise AgentError(f"{PATH} at {rev[:12]} is not a regular file")
+    return git.blob(entry.oid).decode("utf-8", "replace")
 
 
 def record_kind(record: dict[str, Any]) -> str:
@@ -446,6 +483,7 @@ def _land(
     asked: float,
     trail: dict[str, Any],
     origins: list[str] | None,
+    budget_raise: str | None,
 ) -> dict[str, Any]:
     from . import land_recover, land_warning, verify_record
     from .tidy import ResolutionContext
@@ -478,7 +516,7 @@ def _land(
             cand = landed_tips(git, cand, ident, members, sources)
         trail.update(strategy=chosen, cand=cand)
         try:
-            record = _certificate(root, cand)
+            record = _certificate(root, cand, git=git, old=old, budget_raise=budget_raise)
         except verify_record.RecordFailed as exc:
             trail["record_kind"] = "failed"
             if len(members) == 1:
@@ -514,6 +552,7 @@ def _land(
             "ts": jn.now(),
             **({"members": [{"branch": b, "tip": t} for b, t in members]} if len(members) > 1 else {}),
             **({"origins": [{"branch": b, "tip": t} for b, t in sources]} if sources else {}),
+            **({"budget_raise": budget_raise} if budget_raise else {}),
             # Record follow-up intent, worktree cleanup included, before marking done so recovery
             # can complete it after a crash.
             "obligations": followups.initial(),

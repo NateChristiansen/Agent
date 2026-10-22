@@ -30,8 +30,17 @@ def repos_sync(
     fetch: bool = False,
     pull: bool = False,
     harness: bool = False,
+    budget_raise: str | None = None,
 ) -> Op:
-    return ops.repos_sync(ctx.root, name=name, no_clone=no_clone, fetch=fetch, pull=pull, harness=harness)
+    return ops.repos_sync(
+        ctx.root,
+        name=name,
+        no_clone=no_clone,
+        fetch=fetch,
+        pull=pull,
+        harness=harness,
+        budget_raise=budget_raise,
+    )
 
 
 def session_get(ctx: Ctx, session_id: str | None = None) -> Op:
@@ -154,7 +163,10 @@ REPO_TOOLS: dict[str, ToolSpec] = {
         "week's code as current truth. harness=True instead fetches main from the URL pinned as "
         "harness.sync_url in agent.local.yaml and fast-forwards the harness's own main to it, "
         "refusing if main has commits it lacks: the way a machine that lands through another "
-        "reaches the pushed tip (ADR-0041). git pull on main is always refused.",
+        "reaches the pushed tip (ADR-0041). It refuses a tip over the suite budget or one that "
+        "loosens the budget file; budget_raise=<reason>, the reason of the [[raise]] entry the tip "
+        "adds, lets it sync, only when the owner has approved the raise. "
+        "git pull on main is always refused.",
     ),
     "session_get": ToolSpec(
         session_get,

@@ -34,6 +34,11 @@ def add_parser(sub: Subparsers) -> None:
         metavar="BRANCH",
         help="land another branch in the same batch: one certified tree, all or nothing (up to 4 in all)",
     )
+    lp.add_argument(
+        "--budget-raise",
+        metavar="REASON",
+        help="the reason of the [[raise]] entry the branch adds to tests/budget.toml (the owner's call)",
+    )
     which = lp.add_mutually_exclusive_group()
     which.add_argument("--recover", metavar="ID", help="finish or undo an interrupted landing")
     which.add_argument("--abort", metavar="ID", help="put a stalled landing's files back (the owner's call)")
@@ -60,6 +65,7 @@ def land(root: Path, args: argparse.Namespace, out: Output) -> int:
             op=args.op,
             extra=args.extra,
             origins=args.origins,
+            budget_raise=args.budget_raise,
         )
     )
 

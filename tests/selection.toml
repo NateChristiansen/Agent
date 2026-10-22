@@ -44,6 +44,14 @@ tests = [
 ]
 
 [[bundle]]
+name = "suite-budget"
+paths = ["src/agent_cli/suite_budget.py"]
+tests = [
+  "tests/test_suite_budget.py", "tests/test_land.py", "tests/test_spawn_cost.py", "tests/test_docs_refs.py",
+  "tests/test_prose_rules.py",
+]
+
+[[bundle]]
 name = "closed-feature-cleanup"
 paths = ["src/agent_cli/tidy.py", "src/agent_cli/cli/tidy.py"]
 tests = [

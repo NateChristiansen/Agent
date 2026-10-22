@@ -410,7 +410,7 @@ def _landable(droot: Path, monkeypatch, fake_claude, count: int = 2) -> list[dic
     monkeypatch.setattr("agent_cli.land.main_of", lambda root: droot / MAIN)
     monkeypatch.setattr("agent_cli.verify_record.harness_repo", lambda root: SimpleNamespace(name=name))
     monkeypatch.setattr(
-        land, "_certificate", lambda root, cand: {"run_id": "certified-in-test", "reused": True}
+        land, "_certificate", lambda root, cand, **_: {"run_id": "certified-in-test", "reused": True}
     )
     return ds
 
@@ -531,7 +531,7 @@ def test_failed_aborted_previewed_and_legacy_landings_queue_no_cleanup(droot, fa
     calls: list[dict] = []
     monkeypatch.setattr(worktrees, "cleanup", lambda root, **kw: calls.append(kw) or {})
 
-    def refused(root, cand):
+    def refused(root, cand, **_):
         raise AgentError("the record failed")
 
     monkeypatch.setattr(land, "_certificate", refused)

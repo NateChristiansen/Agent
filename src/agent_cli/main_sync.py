@@ -18,8 +18,8 @@ before the fetch:
    FETCH_HEAD, no prune and no maintenance. The user's config stays, because credential helpers
    live there; a URL rewrite (`insteadOf`) that changes the pinned URL refuses the sync. If main,
    or any ref outside `refs/agent/sync/`, changed across the fetch, the sync refuses.
-3. **Checks.** No unfinished landing; main an ancestor of the fetched sha; main checked out in
-   at most one place.
+3. **Checks.** No unfinished landing; main an ancestor of the fetched sha; the fetched tree within
+   local main's suite budget; main checked out in at most one place.
 4. **A checked move.** In the checkout that has main: HEAD must be main and the tracked tree
    clean, then `merge --ff-only <sha>`. With no such checkout: a compare-and-swap `update-ref`,
    with the checkouts looked at again just before and just after it. Git has no lock that keeps
@@ -214,9 +214,10 @@ def _index_is(at: Path, commit: str) -> bool:
     return _git(at, "diff-index", "--cached", "--quiet", commit, "--", ok=(0, 1))[0] == 0
 
 
-def fast_forward(root: Path) -> dict[str, Any]:
+def fast_forward(root: Path, budget_raise: str | None = None) -> dict[str, Any]:
     """Fetch the pinned URL's main and fast-forward local main to it; refuse when main has
-    commits it lacks. Returns the old and new tips and what was done."""
+    commits it lacks. `budget_raise` is the reason of the owner's `[[raise]]` entry the tip adds to
+    the suite budget. Returns the old and new tips and what was done."""
     from .worktree import main_checkout
 
     main = main_checkout(root)
@@ -238,6 +239,7 @@ def fast_forward(root: Path) -> dict[str, Any]:
                 "fast-forward; main was not moved. Push them from the machine that lands, or land them here."
             )
         behind = _git(main, "rev-list", "--count", f"{old}..{new}")[1]
+        _within_budget(root, main, old, new, budget_raise)
         holders = _holders(main)
         if len(holders) > 1:
             raise AgentError(
@@ -251,6 +253,39 @@ def fast_forward(root: Path) -> dict[str, Any]:
             _merge(holder, new)
         _verify(main, holder, new)
         return {**out, "action": f"fast-forwarded {behind} commit(s)"}
+
+
+def _budget_text(main: Path, rev: str) -> str | None:
+    from .suite_budget import PATH
+
+    code, kind = _git(main, "cat-file", "-t", f"{rev}:{PATH}", ok=(0, 1, 128))
+    if code:
+        return None
+    if kind != "blob":
+        raise AgentError(f"{PATH} at {rev[:12]} is not a file; main was not moved")
+    return _git(main, "cat-file", "blob", f"{rev}:{PATH}")[1]
+
+
+def _within_budget(root: Path, main: Path, old: str, new: str, budget_raise: str | None) -> None:
+    """The pushed tip keeps within local main's suite budget, by land's own check
+    (suite_budget.py), held to its full pass record when this machine has one. Records are per
+    machine and a tip landed elsewhere usually has none here, so without one only the budget files
+    are compared."""
+    from . import suite_budget, verify_record
+
+    main_text = _budget_text(main, old)
+    if main_text is None:
+        return
+    try:
+        record = verify_record.lookup(root, new)[0]
+    except AgentError:
+        record = None
+    if problems := suite_budget.check(record, main_text, _budget_text(main, new), budget_raise):
+        raise AgentError(
+            f"the pushed main {new[:12]} breaks the suite budget: {'; '.join(problems)}. Main was not "
+            f"moved. Only the owner raises the budget: once they approve the [[raise]] entry the tip "
+            f'adds to {suite_budget.PATH}, rerun the sync with budget_raise="<its reason>"'
+        )
 
 
 def _swap(main: Path, old: str, new: str) -> None:

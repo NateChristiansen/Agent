@@ -91,14 +91,17 @@ def repos_sync(
     fetch: bool = False,
     pull: bool = False,
     harness: bool = False,
+    budget_raise: str | None = None,
 ) -> Op:
+    if budget_raise is not None and not harness:
+        raise AgentError("budget_raise applies only to harness=true")
     if harness:
         # The harness checkout itself, not a registered repo.
         if name or no_clone or fetch or pull:
             raise AgentError("harness=true syncs the harness's own main; it takes no other option")
         from .. import main_sync
 
-        done = main_sync.fast_forward(root)
+        done = main_sync.fast_forward(root, budget_raise)
         return Op(done, f"harness main: {done['action']} ({done['old'][:12]} -> {done['new'][:12]})")
     registry = repos_mod.load_registry(root)
     targets = [registry.require(name)] if name else registry.repos

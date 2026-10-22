@@ -98,8 +98,8 @@ def test_a_dirty_main_checkout_is_refused_and_left_as_it_was(harness: Path, dirt
 def test_main_moving_before_the_lock_refuses_and_a_second_try_lands(harness: Path, monkeypatch, certified):
     real = land._certificate
 
-    def certify_then_move(root, cand):
-        out = real(root, cand)
+    def certify_then_move(root, cand, **kw):
+        out = real(root, cand, **kw)
         (harness / "b.txt").write_text("b2\n")
         git(harness, "commit", "-qam", "someone else's commit")
         return out
@@ -283,7 +283,7 @@ def test_landing_refreshes_stale_adr_index_before_certifying(harness: Path, stra
     tip = git(harness, "rev-parse", "feature")
     git(harness, "switch", "-q", "main")
 
-    def certify(root, cand):
+    def certify(root, cand, **_):
         """What would be certified is the refreshed index; the verifier run itself is not under test."""
         assert "Revised" in git(harness, "show", f"{cand}:adrs/README.md")
         assert "Original" not in git(harness, "show", f"{cand}:adrs/README.md")

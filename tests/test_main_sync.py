@@ -381,3 +381,49 @@ def test_a_checkout_attaching_after_the_swap_is_consistent(harness: Path, monkey
     monkeypatch.setattr(main_sync, "_swap", then_attach)
     assert main_sync.fast_forward(harness)["action"].startswith("fast-forwarded")
     assert (harness / "a.txt").read_text() == "landed on the other machine\n"
+
+
+BUDGET = "[suite]\ntests_max = 100\nspawns_max = 1000\nheadroom_pct = 10\n"
+APPROVED = '\n[[raise]]\ndate = 2026-10-22\nfrom = 100\nto = 101\nreason = "growth"\napproved_by = "owner"\n'
+
+
+def _push_budget(root: Path, text: str) -> str:
+    other = root.parent / "landing-machine"
+    (other / "tests").mkdir(exist_ok=True)
+    (other / "tests" / "budget.toml").write_text(text)
+    _git(other, "add", "tests/budget.toml")
+    _git(other, "commit", "-q", "-m", "budget")
+    _git(other, "push", "-q", str(root.parent / "pinned.git"), "HEAD:main")
+    return _pushed(root)
+
+
+def test_a_pushed_tip_that_loosens_the_budget_or_exceeds_it_needs_the_owner_s_budget_raise(
+    harness: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A tip pushed past `agent land` (older harness code, a direct push) still meets main's
+    budget, and a `[[raise]]` entry the tip writes itself is not the owner's approval."""
+    from agent_cli import verify_record
+
+    figures: dict[str, Any] | None = {"suite": {"tests": 101, "spawns": 1000, "missing": []}}
+    monkeypatch.setattr(verify_record, "lookup", lambda root, rev, **kw: (figures, ""))
+    _push_budget(harness, BUDGET)
+    main_sync.fast_forward(harness)  # no budget on main yet: adding one is not a loosening
+    old = _tip(harness)
+    raised = _push_budget(harness, BUDGET.replace("tests_max = 100", "tests_max = 101") + APPROVED)
+    with pytest.raises(
+        AgentError, match=r"tests_max raised from 100 to 101.*rerun the sync with budget_raise"
+    ):
+        main_sync.fast_forward(harness)
+    with pytest.raises(AgentError, match="budget_raise 'other' matches no"):
+        ops.repos_sync(harness, harness=True, budget_raise="other")
+    assert _tip(harness) == old
+    ops.repos_sync(harness, harness=True, budget_raise="growth")
+    assert _tip(harness) == raised
+
+    figures = {"suite": {"tests": 102, "spawns": 1000, "missing": []}}
+    _push_budget(harness, BUDGET.replace("tests_max = 100", "tests_max = 101") + APPROVED + "\n")
+    with pytest.raises(AgentError, match="suite.tests 102 exceeds tests_max 101 by 1"):
+        main_sync.fast_forward(harness, "growth")  # already on main, so not this tip's raise
+    assert _tip(harness) == raised
+    figures = None  # landed elsewhere: no record here, so only the budget files are compared
+    assert main_sync.fast_forward(harness)["action"].startswith("fast-forwarded")

@@ -1094,6 +1094,19 @@
        ]
       }
      },
+     "budget_raise": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
      "create": {
       "required": false,
       "schema": {
@@ -1816,6 +1829,19 @@
    },
    "repos_sync": {
     "params": {
+     "budget_raise": {
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
      "fetch": {
       "required": false,
       "schema": {
