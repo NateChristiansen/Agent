@@ -13,7 +13,7 @@ from typing import Any
 from .. import features as features_mod
 from .. import frontmatter
 from ..core import agent_display, atomic_write, write_if_changed
-from ..records.dispatch import GitFacts, WorkerReturn, git_of, result_of, thread_of
+from ..records.dispatch import GitFacts, WorkerReturn, git_of, result_of, review_of, thread_of
 from ..records.narrow import as_float, as_list, dict_list
 from ..vault.dashboard import view_block
 from .conventions import violation_at
@@ -73,6 +73,7 @@ def render_handoff(root: Path, d: dict[str, Any], feature: features_mod.Feature)
         "started": d.get("started"),
         "finished": d.get("finished"),
         "tasks": list(d.get("tasks") or []),
+        **review_fields(d),
         "verification_status": verification_summary(d)["status"],
         # ADR-0036 provenance: the label and install that wrote this, and when, for doctor's
         # duplicate-label check. A legacy record has none and its handoff keeps its old shape.
@@ -124,6 +125,25 @@ def render_handoff(root: Path, d: dict[str, Any], feature: features_mod.Feature)
         lines.append(str(entry.get("text") or "").strip("\n"))
         lines.append("")
     return printable(frontmatter.join(meta, "\n".join(lines).rstrip("\n") + "\n"))
+
+
+_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def review_fields(d: dict[str, Any]) -> dict[str, Any]:
+    """A review's provenance in the synced handoff, so a request's round view reads it without
+    this machine's runtime state. The checkout is the commit the worker started on, before its
+    launch the pinned base; the comparison base stays separate. Empty for other dispatches."""
+    review = review_of(d)
+    if review is None:
+        return {}
+    base = str(d.get("base") or "")
+    return {
+        "review_target": review.get("target"),
+        "review_checkout": d.get("start_sha") or (base if _SHA.fullmatch(base) else None),
+        "review_compare": review.get("compare_base"),
+        "review_pr": review.get("pr"),
+    }
 
 
 ASK_CHARS = 160
@@ -381,6 +401,12 @@ def dispatch_log_text(d: dict[str, Any], budget_reason: str | None, approval: st
         f"effort {d.get('effort') or 'default'}; "
         f"tasks {tasks}; notify {'+'.join(d.get('notify') or []) or 'none'}; approval: {approval}"
     )
+    if review := review_of(d):
+        line += "".join(
+            f"; {label} {review[key]}"
+            for key, label in (("target", "review target"), ("compare_base", "compare"), ("pr", "PR"))
+            if review.get(key)
+        )
     if d.get("choice_reason"):
         line += f"; why: {d['choice_reason']}"
     return line

@@ -107,6 +107,8 @@ def dispatch(
     head: str | None = None,
     delete_branches: bool = False,
     plan_hashes: dict[str, str] | None = None,
+    compare: str | None = None,
+    pr: str | None = None,
 ) -> Op:
     """One tool over `ops.dispatch_*` (plan 2.2). `action` picks the operation. The rest of
     the parameters are the union of what every action needs, and are optional except the ones
@@ -120,7 +122,7 @@ def dispatch(
         feat = feature or "current"
         return ops.dispatch_new(
             ctx.root,
-            repo=dispatch_require(repo, "repo", action),
+            repo=repo,
             prompt=dispatch_require(prompt, "prompt", action),
             feature=feat,
             tasks=tasks,
@@ -144,6 +146,8 @@ def dispatch(
             escalate_from=escalate_from,
             session_id=ctx.session_id(session_id, required=True),
             writes=writes,
+            compare=compare,
+            pr=pr,
         )
     if action == "list":
         return ops.dispatch_list(ctx.root, feature=feature, include_all=include_all)
@@ -295,7 +299,9 @@ DISPATCH_TOOLS: dict[str, ToolSpec] = {
         "Ids read `NNN-<tag>-SS` (e.g. 001-mac-01), or legacy `NNN-SS`. "
         "`new` (repo, prompt; feature defaults to current; a manager session id, so pass `session_id` from "
         "the session-start block when the server cannot see it) sends a self-contained work order into its "
-        "own git worktree. The tag comes from `machine:` in agent.local.yaml, else the enrolled device "
+        "own git worktree. A request needs no task numbers. A research request may omit `repo`: it runs "
+        "read-only in the one registered harness repo, and refuses when none or several are registered. "
+        "A captured (proposed) request refuses preview, launch and resume until it is set active. The tag comes from `machine:` in agent.local.yaml, else the enrolled device "
         "name, and `new` refuses without one (ADR-0036). Preview with dry_run=True; show the order and "
         "its work_order_url in inline code before asking to launch. Every launch question includes "
         "that link. Launch with the same fields and the returned preview_id after their yes; each "
@@ -323,11 +329,14 @@ DISPATCH_TOOLS: dict[str, ToolSpec] = {
         "branch_template, ending `-<tag>-SS`) and `base` the ref it starts from (default "
         "`origin/<default_branch>`; a dispatch into this harness starts from locally landed main, pinned to "
         "its SHA). For row=review, `target` names the artifact branch or commit and supplies a pinned "
-        "checkout base when `base` is omitted; an explicit `base` wins. "
+        "checkout base when `base` is omitted; an explicit `base` wins. A review also takes `compare` (the "
+        "commit it is judged against, pinned to its SHA, kept apart from the checkout) and `pr` (a PR "
+        "identity you were given; never infer one); both go into the synced handoff. A new commit to "
+        "review is a new dispatch; resume only to discuss the same artifact. "
         "escalate_from=<id> reuses that dispatch's repo/feature/branch/worktree (so no `branch` "
         "or `base`), steps up one model rung, keeps the parent's recorded effort, including omission, unless "
-        "`effort` is passed, and prefixes the work order with the old dispatch's last instruction; `repo` "
-        "must still name its repo. "
+        "`effort` is passed, and prefixes the work order with the old dispatch's last instruction; an "
+        "omitted `repo` is the parent's. "
         "`resume` (dispatch_id, answer; budget_usd/budget_reason to raise the budget; timeout_minutes to "
         "lengthen the clock, else kept from launch; `writes` to narrow, never widen) rechecks the current "
         "verification configuration first. Recorded assessment is not a fresh rerun; legacy done records "

@@ -12,8 +12,8 @@ Reports distinguish preserved, partial, missing and unavailable evidence and lin
 native descendants. The archive is local; a backfill of captured references is not
 a census of all conversations. Unknown native identities cannot be reconstructed.
 
-Codex dispatch completion must call this API separately: its isolated worker hooks
-do not run manager capture. That terminal integration is supplied by its caller.
+Codex worker hooks do not run manager capture, and a killed Claude worker sends no
+Stop, so `dispatch.terminal.finalize` enqueues every stopped worker itself.
 """
 
 from __future__ import annotations

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from ..records.dispatch import result_of
 from ..records.narrow import as_list
 from . import holdings, notice_producers, telemetry_events
 from . import verification_gate as gate
-from .handoffs import handoff_log_text, write_handoff
+from .handoffs import handoff_log_text, transcript_path, write_handoff
 from .notify import notify
 from .spend import add_attempt_cost, attempt_cost
 from .state import (
@@ -46,17 +47,50 @@ def finalize(
     retry_budget: float | None = None,
 ) -> dict[str, Any]:
     try:
-        with notice_producers.delivering(root, d["id"]) as sent:
-            current, committed, assessed = _commit(root, d, outcome, sent, retry_budget)
-            if committed:
-                _publish(root, current, feat, assessed)
-            elif current.get("verification_cleanup_pending"):
-                write_handoff(root, current, feat)
-                render(root)
-    except TerminalBusy:
-        return _defer(root, d, outcome)
-    pending_path(root, d).unlink(missing_ok=True)
-    return load(root, current["id"])
+        try:
+            with notice_producers.delivering(root, d["id"]) as sent:
+                current, committed, assessed = _commit(root, d, outcome, sent, retry_budget)
+                if committed:
+                    _publish(root, current, feat, assessed)
+                elif current.get("verification_cleanup_pending"):
+                    write_handoff(root, current, feat)
+                    render(root)
+        except TerminalBusy:
+            return _defer(root, d, outcome)
+        pending_path(root, d).unlink(missing_ok=True)
+        return load(root, current["id"])
+    finally:
+        # Every route a stopped worker takes (commit, cleanup pending, a deferred or failed
+        # publication, a cancel, a recovery) queues its transcripts, whether or not a manager
+        # Stop or a closure ever comes.
+        retain_transcripts(root, d)
+
+
+def retention_record(d: dict[str, Any]) -> dict[str, Any]:
+    """The worker's native transcript references in `transcript_retention.enqueue`'s shape. A Codex
+    rollout and its spawned threads are found by the native thread id, never by the dispatch's
+    synthetic `session_id`; with no thread id recorded the retention report says so."""
+    record: dict[str, Any] = {"feature": d.get("feature"), "dispatch_id": d.get("id")}
+    if d.get("provider") == "codex":
+        return {**record, "session_id": d.get("codex_thread_id") or None, "transcript_path": None}
+    path = transcript_path(d)
+    return {**record, "session_id": d.get("session_id"), "transcript_path": str(path) if path else None}
+
+
+def retain_transcripts(root: Path, d: dict[str, Any]) -> None:
+    """Queue the worker's transcripts for detached, bounded retention; nothing is copied here.
+    Fails open: retention never fails or delays publication, and a request already spooled
+    survives a consumer that did not start."""
+    from ..hooks import transcript_retention
+
+    try:
+        current = load(root, d["id"])
+    except AgentError, OSError, ValueError:
+        current = d
+    try:
+        transcript_retention.enqueue(root, retention_record(current))
+    except Exception as exc:  # noqa: BLE001 — retention is best effort beside the terminal commit
+        sys.stderr.write(f"note: transcript retention not queued for {d.get('id')} ({exc})\n")
 
 
 def _commit(
