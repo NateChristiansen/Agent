@@ -304,7 +304,7 @@ def test_dispatch_tool_validates_required_params_per_action(droot: Path, fake_cl
 
     ctx = Ctx(root=droot, profile="manager")
     cases = [
-        ({"action": "new"}, "repo"),
+        ({"action": "new"}, "prompt"),
         ({"action": "show"}, "dispatch_id"),
         ({"action": "resume", "dispatch_id": "x"}, "answer"),
         ({"action": "cancel"}, "dispatch_id"),
