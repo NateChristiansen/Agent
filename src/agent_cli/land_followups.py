@@ -21,7 +21,7 @@ age. Journals prepared without the obligation register nothing.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -119,8 +119,9 @@ def _sources(root: Path, journal: dict[str, Any]) -> bool:
 
 
 def landing_intents(root: Path, journal: dict[str, Any]) -> list[dict[str, Any]]:
-    """One `accept:` source per landed dispatch with open listed tasks, and one `landing:` source
-    per feature owning a member branch that has no dispatch record. An unbound branch raises none."""
+    """One `accept:` source per finished dispatch (`_represented`) with open listed tasks, and one
+    `landing:` source per feature owning a member branch that has no dispatch record. An unbound
+    branch raises none, and neither does a branch whose records are all unfinished."""
     from . import features as features_mod
     from . import reconcile as reconcile_mod
     from . import verify_record
@@ -146,6 +147,8 @@ def landing_intents(root: Path, journal: dict[str, Any]) -> list[dict[str, Any]]
                 out.append(reconcile_mod.landing_source(ident, feature))
             continue
         for d in landed:
+            if not _represented(d, journal):
+                continue
             try:
                 feature = features_mod.resolve(root, str(d["feature"]))
             except AgentError, KeyError:
@@ -154,6 +157,36 @@ def landing_intents(root: Path, journal: dict[str, Any]) -> list[dict[str, Any]]
                 out.append(accept)
     unique = {json.dumps(s, sort_keys=True): s for s in out}
     return list(unique.values())
+
+
+def _represented(d: dict[str, Any], journal: dict[str, Any]) -> bool:
+    """Whether the dispatch's finished result is part of what this landing brings: a raising
+    terminal state that settled before the landing began and is newer than any earlier landing's
+    mark. Queued or running continuations, questions and cancelled ones have no result to accept."""
+    from .reconcile import RAISING_STATES
+
+    if d.get("kind") == "probe" or d.get("state") not in RAISING_STATES:
+        return False
+    finished = _moment(d.get("finished"))
+    try:
+        began = datetime.strptime(str(journal["id"])[:15], "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
+    except KeyError, ValueError:
+        began = None
+    if finished is not None and began is not None and finished > began:
+        return False
+    mark = as_dict(d.get("integration"))
+    if mark.get("journal") and mark.get("journal") != journal["id"]:
+        marked = _moment(mark.get("ts"))
+        return finished is None or marked is None or finished > marked
+    return True
+
+
+def _moment(value: object) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
 
 
 def newer_mark(root: Path, held: dict[str, Any], journal: dict[str, Any]) -> bool:

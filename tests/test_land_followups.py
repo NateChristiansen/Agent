@@ -354,6 +354,44 @@ def test_a_member_without_a_dispatch_registers_a_landing_source_for_its_bound_fe
     assert _source_rows(tmp_root) == [f"landing:{journal['id']}"]
 
 
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ({"state": "running"}, []),
+        ({"finished": "2026-10-09T01:00:05+00:00"}, []),
+        ({"finished": "2026-10-09T00:59:00+00:00"}, ["accept:001-mac-01"]),
+        (
+            {
+                "finished": "2026-10-08T00:00:00+00:00",
+                "integration": {"journal": "20261001T000000-bbbbbb", "ts": "2026-10-08T01:00:00+00:00"},
+            },
+            [],
+        ),
+        (
+            {
+                "finished": "2026-10-09T00:30:00+00:00",
+                "integration": {"journal": "20261001T000000-bbbbbb", "ts": "2026-10-08T01:00:00+00:00"},
+            },
+            ["accept:001-mac-01"],
+        ),
+    ],
+)
+def test_only_a_result_finished_before_the_landing_and_since_any_earlier_one_is_accepted(
+    tmp_root: Path, landed, change: dict, expected: list[str]
+):
+    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), **change})
+    journal = _journal("20261009T010000-aaaaaa")
+    assert [i["source"] for i in followups.landing_intents(tmp_root, journal)] == expected
+
+
+def test_a_branch_whose_only_record_is_unfinished_raises_no_landing_source(
+    tmp_root: Path, landed, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("agent_cli.activity_gate.bound_feature", lambda root, branch: 1)
+    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), "state": "queued"})
+    assert followups.landing_intents(tmp_root, _journal()) == []
+
+
 def test_legacy_journals_register_no_sources(tmp_root: Path, landed, manager):
     journal = _journal()
     jn.write(tmp_root, journal)

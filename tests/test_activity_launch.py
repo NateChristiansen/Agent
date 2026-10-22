@@ -304,6 +304,21 @@ def test_work_started_on_the_branch_while_the_certificate_runs_is_not_accepted(
     assert owed == [("accept:001-mac-01", "task#1")]
 
 
+@pytest.mark.parametrize("pending", ["queued", "running", "question", "cancelled"])
+def test_unfinished_work_already_on_the_branch_is_not_accepted_by_the_landing(
+    harness: Path, certified, pending: str
+):
+    f = features.resolve(harness, "1")
+    f.body = "## Tasks\n\n- [ ] build\n- [ ] build more\n"
+    f.save()
+    landed = {"repo": "Harness", "short": "harness", "branch": "feature", "feature": 1, "attempt": 1}
+    state.save(harness, {**landed, "id": "001-mac-01", "state": "done", "tasks": [1]})
+    state.save(harness, {**landed, "id": "001-mac-02", "state": pending, "tasks": [2]})
+    land.land(harness, "feature", strategy="ff")
+    owed = sorted((i.source, i.item) for i in reconcile.ledger(harness, "1").owed)
+    assert owed == [("accept:001-mac-01", "task#1")]
+
+
 @pytest.mark.parametrize("days", [1, 14])
 def test_a_stop_after_done_registers_only_the_landed_work_at_any_age(
     harness: Path, certified, monkeypatch: pytest.MonkeyPatch, days: int
