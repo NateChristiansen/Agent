@@ -95,12 +95,53 @@ def test_a_new_item_blocks_once_in_the_same_turn(tmp_root: Path):
     assert _stop(tmp_root) == ""
 
 
-def test_markers_are_bounded_on_the_record(tmp_root: Path):
-    for n in range(record_guard.KEEP + 3):
+def test_markers_are_bounded_and_a_full_list_stops_blocking(tmp_root: Path):
+    _prompt(tmp_root)
+    for n in range(record_guard.KEEP):
         _owe(tmp_root, f"item {n}")
         assert _blocked(_stop(tmp_root))
+    _owe(tmp_root, "one more")
+    assert _stop(tmp_root) == ""
     markers = (sessions.get(tmp_root, SID) or {})[record_guard.STATE]["markers"]
     assert len(markers) == record_guard.KEEP
+
+
+def test_revisiting_a_spent_set_after_many_others_in_one_turn_passes(tmp_root: Path, monkeypatch):
+    monkeypatch.setattr(record_guard, "KEEP", 3)
+    _owe(tmp_root, "a")
+    _prompt(tmp_root)
+    assert _blocked(_stop(tmp_root))
+    others = [_owe(tmp_root, f"other {n}") for n in range(5)]
+    for _ in others:
+        _stop(tmp_root)
+    for src in others:
+        reconcile.decide(
+            tmp_root,
+            1,
+            src,
+            [{"item": "other " + str(others.index(src)), "disposition": "no-task", "reason": "x"}],
+        )
+    assert _stop(tmp_root) == ""
+
+
+@pytest.mark.parametrize("ask_guard_on", [True, False])
+def test_a_new_generation_of_the_same_source_and_items_blocks_again(
+    tmp_root: Path, monkeypatch, ask_guard_on: bool
+):
+    if not ask_guard_on:
+        monkeypatch.setattr(toggles, "settings", lambda _root: {"ask-guard": False})
+    _prompt(tmp_root)
+    first = _dispatch(tmp_root, launcher=SID)
+    assert _blocked(_stop(tmp_root))
+    row = {"item": "result", "disposition": "no-task", "reason": "ok"}
+    reconcile.decide(tmp_root, 1, f"dispatch:{first}", [row])
+    assert _stop(tmp_root) == ""
+    state.save(tmp_root, {**(state.load(tmp_root, first) or {}), "attempt": 2})
+    pending = reconcile.dispatch_source(state.load(tmp_root, first))
+    assert pending is not None
+    reconcile.append_source(_feature(tmp_root), pending)
+    assert _blocked(_stop(tmp_root))
+    assert _stop(tmp_root) == ""
 
 
 def test_an_earlier_members_block_spends_nothing(tmp_root: Path):

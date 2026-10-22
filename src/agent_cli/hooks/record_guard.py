@@ -30,7 +30,7 @@ from . import toggles
 from .ask_guard import STATE as ASK_STATE
 
 STATE = "record_guard"
-KEEP = 8  # markers kept on the record
+KEEP = 64  # markers kept on the record; a full list stops blocking
 SHOWN = 5
 LOCK_S = 2.0
 
@@ -76,8 +76,8 @@ def _owner(
     return verdicts.responsible(d, live)
 
 
-def _owed(root: Path, session_id: str, record: dict[str, Any], feature: int) -> tuple[str, list[str]]:
-    """This session's owed items, as `source item` lines, and the feature's label."""
+def _owed(root: Path, session_id: str, record: dict[str, Any], feature: int) -> tuple[str, list[Any]]:
+    """This session's owed ledger items and the feature's label."""
     from .. import features as features_mod
     from .. import reconcile
     from ..dispatch import verdicts
@@ -90,22 +90,27 @@ def _owed(root: Path, session_id: str, record: dict[str, Any], feature: int) -> 
     live = verdicts.live_managers(root)
     live.setdefault(session_id, record)  # the session stopping is live, whatever the listing says
     owners: dict[str, str | None] = {}
-    mine: list[str] = []
+    mine: list[Any] = []
     for item in owed:
         if item.source not in owners:
             recorded = _recorded(root, item.source, folded.sessions)
             owners[item.source] = _owner(item.source, feature, live, root, recorded)
         if owners[item.source] == session_id:
-            mine.append(f"{item.source} {item.item}" + (f" ({item.reason})" if item.reason else ""))
+            mine.append(item)
     return f.label, mine
 
 
-def _digest(feature: int, owed: list[str]) -> str:
-    text = json.dumps([feature, sorted(owed)])
+def _line(item: Any) -> str:
+    return f"{item.source} {item.item}" + (f" ({item.reason})" if item.reason else "")
+
+
+def _digest(feature: int, owed: list[Any]) -> str:
+    text = json.dumps([feature, sorted([i.source, i.G, i.item] for i in owed)])
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _reason(label: str, owed: list[str]) -> str:
+def _reason(label: str, items: list[Any]) -> str:
+    owed = [_line(i) for i in items]
     shown = "; ".join(owed[:SHOWN])
     more = f" and {len(owed) - SHOWN} more" if len(owed) > SHOWN else ""
     return (
@@ -141,11 +146,13 @@ def record_guard(root: Path, payload: dict[str, Any]) -> str:
         markers = [as_str(m) for m in as_list(state.get("markers")) if as_str(m)]
         turn = as_int(as_dict(current.get(ASK_STATE)).get("turn")) or 0
         marker = f"{turn}:{digest}"
+        if by_turn:
+            markers = [m for m in markers if m.startswith(f"{turn}:")]  # an advanced turn never returns
         spent = marker in markers if by_turn else any(m.endswith(f":{digest}") for m in markers)
-        if spent:
+        if spent or len(markers) >= KEEP:  # a full list passes: evicting a spent marker would rearm it
             return current
         fired.append(True)
-        state["markers"] = [*(m for m in markers if m != marker), marker][-KEEP:]
+        state["markers"] = [*markers, marker]
         return {**current, STATE: state}
 
     sessions.update_record(root, session_id, change, LOCK_S)
