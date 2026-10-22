@@ -45,6 +45,21 @@ tests = [
 ]
 
 [[bundle]]
+name = "activity-gate-boundaries"
+# Launch, resume, the supervisor loop and landing call the activity gate; the boundary tests drive
+# them through the dispatch and land helpers.
+paths = [
+  "src/agent_cli/activity_gate.py", "src/agent_cli/dispatch/lifecycle.py", "src/agent_cli/dispatch/supervisor.py",
+  "src/agent_cli/land.py", "tests/dispatch_helpers.py",
+]
+tests = ["tests/test_activity_launch.py"]
+
+[[bundle]]
+name = "land-helpers"
+paths = ["tests/land_helpers.py"]
+tests = ["tests/test_activity_launch.py", "tests/test_same_tree_replay.py", "tests/test_parity_entry_points.py"]
+
+[[bundle]]
 name = "closed-feature-cleanup"
 paths = ["src/agent_cli/tidy.py", "src/agent_cli/cli/tidy.py"]
 tests = [
