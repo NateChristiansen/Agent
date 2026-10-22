@@ -6,7 +6,6 @@ The record commit is durable; external effects are not a crash-safe exactly-once
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import time
@@ -102,12 +101,11 @@ def retain_transcripts(root: Path, d: dict[str, Any], *, marker: bool = True) ->
         current = load(root, d["id"])
     except AgentError, OSError, ValueError:
         current = d
-    started = time.time_ns() - 2_000_000_000  # coarse file timestamps
     try:
         transcript_retention.enqueue(root, retention_record(current))
     except Exception as exc:  # noqa: BLE001 — retention is best effort beside the terminal commit
         sys.stderr.write(f"note: transcript retention not queued for {d.get('id')} ({exc})\n")
-        if _spooled(root, d["id"], started):
+        if _spooled(exc):
             mark.unlink(missing_ok=True)
             return True
         if marker:
@@ -124,27 +122,19 @@ def retention_marker(root: Path, d: dict[str, Any]) -> Path:
     return file(root, d["id"], ".retention.pending")
 
 
-SPOOL_PROBE_READS = 4
-
-
-def _spooled(root: Path, dispatch_id: str, since_ns: int) -> bool:
-    """Whether this attempt's enqueue reached the spool before failing. Looks only at the few
-    newest entries written since it began, so the cost does not grow with the queue."""
+def _spooled(exc: BaseException) -> bool:
+    """Whether `enqueue` failed in its consumer launch, which it only reaches after the request
+    is spooled. Read from the traceback, so no queue directory is listed, statted or read and
+    the cost cannot grow with the backlog."""
     from ..hooks import transcript_retention
 
-    try:
-        with os.scandir(root / transcript_retention.BASE / "pending") as entries:
-            fresh = sorted(
-                (e for e in entries if e.name.endswith(".json") and e.stat().st_mtime_ns >= since_ns),
-                key=lambda e: e.stat().st_mtime_ns,
-                reverse=True,
-            )
-        return any(
-            transcript_retention.load(Path(e.path)).get("dispatch_id") == dispatch_id
-            for e in fresh[:SPOOL_PROBE_READS]
-        )
-    except OSError, ValueError, AttributeError:
-        return False
+    tb = exc.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if code.co_name == "start" and code.co_filename == transcript_retention.__file__:
+            return True
+        tb = tb.tb_next
+    return False
 
 
 def _mark_retained(intent: Path) -> None:

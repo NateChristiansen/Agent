@@ -294,26 +294,63 @@ def test_a_deferral_whose_spool_failed_is_requeued_by_recovery_until_it_lands(wi
     assert len(list(spool.glob("*.json"))) == 1
 
 
-@pytest.mark.parametrize("backlog", [8, 128])
-def test_a_failed_enqueue_reads_no_more_of_the_queue_for_a_longer_backlog(wired, monkeypatch, backlog):
+def queue_touches(monkeypatch, spool: Path) -> list[str]:
+    """Record every read, listing or stat that reaches into the retention queue directory."""
     from agent_cli.hooks import transcript_retention as retention
 
+    touched: list[str] = []
+
+    def watch(kind, target, real):
+        def inner(*args, **kwargs):
+            if str(spool) in str(target(args)):
+                touched.append(kind)
+            return real(*args, **kwargs)
+
+        return inner
+
+    monkeypatch.setattr(os, "scandir", watch("scandir", lambda a: a[0] if a else "", os.scandir))
+    monkeypatch.setattr(os, "listdir", watch("listdir", lambda a: a[0] if a else "", os.listdir))
+    monkeypatch.setattr(os, "stat", watch("stat", lambda a: a[0] if a else "", os.stat))
+    monkeypatch.setattr(Path, "glob", watch("glob", lambda a: a[0], Path.glob))
+    monkeypatch.setattr(Path, "iterdir", watch("iterdir", lambda a: a[0], Path.iterdir))
+    monkeypatch.setattr(Path, "stat", watch("pathstat", lambda a: a[0], Path.stat))
+    monkeypatch.setattr(retention, "load", watch("load", lambda a: a[0], retention.load))
+    return touched
+
+
+@pytest.mark.parametrize("backlog", [8, 128])
+@pytest.mark.parametrize("launch_fails", [False, True])
+def test_a_failed_enqueue_touches_the_queue_the_same_for_any_unrelated_backlog(
+    wired, monkeypatch, launch_fails, backlog
+):
+    from agent_cli.hooks import transcript_retention as retention
+    from agent_cli.usage import job
+
+    monkeypatch.delenv("AGENT_NOW", raising=False)
+    monkeypatch.delenv("AGENT_NO_USAGE", raising=False)
     spool = wired.root / retention.BASE / "pending"
     spool.mkdir(parents=True, exist_ok=True)
-    for n in range(backlog):
-        retention.save(spool / f"other-{n}.json", {"dispatch_id": f"other-{n}"})
-    reads: list[str] = []
-    real_load = retention.load
-    monkeypatch.setattr(retention, "load", lambda path, *a: reads.append(str(path)) or real_load(path, *a))
+    real_save = retention.save
 
-    def unavailable(root, record):
-        raise OSError("spool unwritable")
+    def failing_spool(path, data):
+        if path.parent == spool and not launch_fails:
+            raise OSError("spool unwritable")
+        real_save(path, data)
 
-    monkeypatch.setattr(retention, "enqueue", unavailable)
+    def no_consumer(cmd, root):
+        raise OSError("cannot launch")
+
+    monkeypatch.setattr(retention, "save", failing_spool)
+    monkeypatch.setattr(job, "spawn", no_consumer)
     d, _feat, _outcome = verified_outcome(wired, monkeypatch)
-    assert terminal.retain_transcripts(wired.root, d) is False
-    assert len(reads) <= terminal.SPOOL_PROBE_READS
-    assert terminal.retention_marker(wired.root, d).exists()
+    for n in range(backlog):
+        real_save(spool / f"other-{n}.json", {"dispatch_id": f"other-{n}"})
+    touched = queue_touches(monkeypatch, spool)
+    queued = terminal.retain_transcripts(wired.root, d)
+    assert queued is launch_fails  # a spooled request survives a consumer that did not start
+    assert terminal.retention_marker(wired.root, d).exists() is (not launch_fails)
+    assert not {"scandir", "listdir", "glob", "iterdir", "load"} & set(touched)
+    assert len(touched) <= 4  # the same fixed bound at 8 and at 128 unrelated jobs
 
 
 def load_(path: Path) -> dict:
