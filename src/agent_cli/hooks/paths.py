@@ -364,7 +364,7 @@ def activity_guard(root: Path, payload: dict[str, Any], raw: str) -> str:
     """Status-only manager edit check. This hook is not a sandbox for arbitrary writers."""
     try:
         from .. import activity_gate
-        from .notes_paths import notes_logical
+        from .notes_paths import _expand_pwd, notes_logical  # pyright: ignore[reportPrivateUsage]
         from .worktree_guard import _gitdir_of, manager_worktree  # pyright: ignore[reportPrivateUsage]
 
         session_id = str(payload.get("session_id") or "") or None
@@ -376,6 +376,7 @@ def activity_guard(root: Path, payload: dict[str, Any], raw: str) -> str:
             or payload.get("agent_type")
         ):
             return ""
+        raw = _expand_pwd(root, raw)
         target = (root / raw).resolve()
         written = manager_worktree(root, str(target))
         branch = None
@@ -439,10 +440,14 @@ def _write_targets(toks: list[str]) -> list[str]:
     targets: list[str] = []
     if bases[0] in ("cp", "mv", "ln") and len(toks) > 1:
         targets.append(toks[-1])
-    if bases[0] in ("rm", "truncate", "dd", "install", "touch") or (
-        bases[0] in ("sed", "perl") and any(IN_PLACE_FLAG_RE.match(t) for t in toks)
-    ):
-        targets.extend(t for t in toks[1:] if not t.startswith("-"))
+    in_place = any(IN_PLACE_FLAG_RE.match(t) for t in toks)
+    for i, base in enumerate(bases):
+        if base in ("rm", "truncate", "dd", "install", "touch") or (base in ("sed", "perl") and in_place):
+            for tok in toks[i + 1 :]:
+                if tok in ("|", "&", ";"):
+                    break
+                if not tok.startswith("-"):
+                    targets.append(tok)
     for i, tok in enumerate(toks):
         if tok in (">", ">>", ">|") and i + 1 < len(toks):
             targets.append(toks[i + 1])

@@ -194,6 +194,43 @@ def test_supported_shell_targets_and_reads(tmp_root, edit_owner, group):
         assert out == "", (command, out)
 
 
+@pytest.mark.parametrize("group", ["pre-bash", "codex-pre-bash"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat /tmp/input | dd of=src/x.py",
+        "env touch src/x.py",
+        "env sed -i x src/x.py",
+        'cp /tmp/input "$PWD/src/x.py"',
+        'echo text > "${PWD}/tests/x.py"',
+    ],
+)
+def test_shell_writer_spellings_share_the_generated_file_checker(tmp_root, edit_owner, group, command):
+    payload = {"session_id": "unmapped", "tool_name": "Bash", "tool_input": {"command": command}}
+    out, _ = hooks.run(tmp_root, group, json.dumps(payload))
+    assert '"permissionDecision": "deny"' in out and "no feature owns" in out
+    mapped = features.resolve(tmp_root, "2")
+    mapped.meta["status"] = "proposed"
+    mapped.save()
+    out, _ = hooks.run(tmp_root, group, json.dumps({**payload, "session_id": "manager"}))
+    assert '"permissionDecision": "deny"' in out and "is proposed" in out
+    mapped.meta["status"] = "active"
+    mapped.save()
+    out, _ = hooks.run(tmp_root, group, json.dumps({**payload, "session_id": "manager"}))
+    assert out == ""
+
+
+def test_pwd_expansion_resolves_to_the_harness_root(tmp_root, edit_owner):
+    payload = {
+        "session_id": "unmapped",
+        "tool_name": "Bash",
+        "tool_input": {"command": 'echo text > "$PWD/.agent/scratch/draft"'},
+    }
+    assert hooks.run(tmp_root, "pre-bash", json.dumps(payload))[0] == ""
+    payload["tool_input"]["command"] = "env cat src/x.py"
+    assert hooks.run(tmp_root, "pre-bash", json.dumps(payload))[0] == ""
+
+
 @pytest.mark.parametrize("adapter", ["Edit", "apply_patch"])
 def test_worker_subagent_exemptions_and_activity_failure(tmp_root, edit_owner, adapter, monkeypatch, capsys):
     from agent_cli import activity_gate, sessions
