@@ -442,9 +442,10 @@ def test_parallel_writers_keep_every_field(tmp_root: Path):
     assert (record["name"], record["pid"]) == ("mgr-001-a", 7) and record["started_at"]
 
 
-def test_lock_deadline_bounds_waits_in_its_scope_only(tmp_root: Path):
-    """One deadline spans every session-lock wait in the scope; a tighter caller timeout keeps its
-    own error, a spent scope writes nothing, and the scope ends with the block."""
+def test_lock_budget_bounds_waits_in_its_scope_only(tmp_root: Path):
+    """One budget spans every session-lock wait in the scope; a tighter caller timeout keeps its
+    own error, a spent budget still takes a free lock without waiting, and the scope ends with the
+    block."""
     import threading
     import time
 
@@ -462,21 +463,24 @@ def test_lock_deadline_bounds_waits_in_its_scope_only(tmp_root: Path):
     holder.start()
     assert taken.wait(5)
     try:
-        with sessions.lock_deadline(0.3):
+        with sessions.lock_budget(0.3) as budget:
             began = time.monotonic()
             with pytest.raises(AgentError) as tight:
                 sessions.set_field(tmp_root, "s", "a", 1, timeout=0.05)
-            assert type(tight.value) is AgentError
+            assert type(tight.value) is AgentError and not budget.cut
             with pytest.raises(sessions.LockDeadline):
                 sessions.set_field(tmp_root, "s", "b", 1)
-            with sessions.lock_deadline(5), pytest.raises(sessions.LockDeadline):
-                sessions.set_field(tmp_root, "s", "c", 1)  # a nested scope keeps the earlier deadline
+            assert budget.cut and budget.left == 0
+            with sessions.lock_budget(5) as inner, pytest.raises(sessions.LockDeadline):
+                assert inner is budget  # a nested scope shares the outer budget
+                sessions.set_field(tmp_root, "s", "c", 1)
             assert time.monotonic() - began < 1
-        assert sessions._LOCK_DEADLINE.get() is None
+            release.set()
+            holder.join()
+            sessions.set_field(tmp_root, "s", "d", 1)  # spent, but the lock is free
+        assert sessions._LOCK_BUDGET.get() is None
     finally:
         release.set()
         holder.join()
-    with sessions.lock_deadline(0), pytest.raises(sessions.LockDeadline):
-        sessions.set_field(tmp_root, "s", "d", 1)  # free, but spent
     sessions.set_field(tmp_root, "s", "e", 1)
-    assert set(sessions.get(tmp_root, "s") or {}) == {"session_id", "e"}
+    assert set(sessions.get(tmp_root, "s") or {}) == {"session_id", "d", "e"}

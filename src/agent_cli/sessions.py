@@ -195,50 +195,64 @@ def set_record(
 
 
 class LockDeadline(AgentError):
-    """A session-lock wait ended by the `lock_deadline` scope rather than the caller's `timeout`."""
+    """A session-lock wait ended by the `lock_budget` scope rather than the caller's `timeout`."""
 
 
-_LOCK_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
-    "session_lock_deadline", default=None
+class LockBudget:
+    """Seconds a scope may still spend waiting on session locks, and whether a wait ran out."""
+
+    def __init__(self, seconds: float) -> None:
+        self.left = seconds
+        self.cut = False
+
+
+_LOCK_BUDGET: contextvars.ContextVar[LockBudget | None] = contextvars.ContextVar(
+    "session_lock_budget", default=None
 )
 
 
 @contextlib.contextmanager
-def lock_deadline(seconds: float) -> Generator[None]:
-    """Bound every session-lock wait in this thread, inside the block, by one shared monotonic
-    deadline `seconds` from now. A nested scope keeps the earlier deadline."""
-    outer = _LOCK_DEADLINE.get()
-    deadline = time.monotonic() + seconds
-    token = _LOCK_DEADLINE.set(deadline if outer is None else min(outer, deadline))
+def lock_budget(seconds: float) -> Generator[LockBudget]:
+    """Bound the total time this thread waits on session locks inside the block. Only waiting
+    spends it: a free lock is always taken, so slow work between writes cannot cost a write. A
+    nested scope shares the outer budget."""
+    outer = _LOCK_BUDGET.get()
+    if outer is not None:
+        yield outer
+        return
+    budget = LockBudget(seconds)
+    token = _LOCK_BUDGET.set(budget)
     try:
-        yield
+        yield budget
     finally:
-        _LOCK_DEADLINE.reset(token)
+        _LOCK_BUDGET.reset(token)
 
 
 @contextlib.contextmanager
 def _locked(root: Path, session_id: str, timeout: float | None = None) -> Generator[None]:
     """Hold `<sid>.lock` for an entire session read-modify-write so concurrent hooks cannot overwrite
     each other's fields. Writes take milliseconds. Callers with their own deadline pass `timeout`;
-    inside `lock_deadline` the wait is also bounded by what is left of that scope.
+    inside `lock_budget` the wait is also bounded by what is left of that budget, and a spent
+    budget still makes one non-blocking attempt.
     """
     parts = agent_parts("sessions", f"{session_id}.lock")
-    deadline = _LOCK_DEADLINE.get()
-    if deadline is None:
+    budget = _LOCK_BUDGET.get()
+    if budget is None:
         with _file_locked(root, parts, timeout):
             yield
         return
-    left = deadline - time.monotonic()
-    if left <= 0:
-        raise LockDeadline(BUSY)
-    explicit = timeout is not None and timeout <= left
+    explicit = timeout is not None and timeout <= budget.left
+    began = time.monotonic()
     with contextlib.ExitStack() as stack:
         try:
-            stack.enter_context(_file_locked(root, parts, timeout if explicit else left))
-        except AgentError:
-            if explicit:
+            stack.enter_context(_file_locked(root, parts, timeout if explicit else budget.left))
+        except AgentError as exc:
+            if explicit or str(exc) != BUSY:
                 raise
+            budget.cut = True
             raise LockDeadline(BUSY) from None
+        finally:
+            budget.left = max(0.0, budget.left - (time.monotonic() - began))
         yield
 
 

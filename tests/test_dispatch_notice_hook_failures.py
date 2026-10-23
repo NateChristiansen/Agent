@@ -196,7 +196,7 @@ def test_a_held_session_lock_ends_prompt_activity_and_nothing_writes_later(
     out = prompt(mgr, "owner's prompt", hook)  # uncontended, after the scope ended
     assert HEADING in json.loads(out)["hookSpecificOutput"]["additionalContext"]
     assert (sessions.get(mgr, MGR) or {})["activity"]["state"] == "working"
-    assert sessions._LOCK_DEADLINE.get() is None
+    assert sessions._LOCK_BUDGET.get() is None
 
 
 def test_a_held_session_lock_defers_codex_resume_preparation(mgr: Path, monkeypatch):
@@ -258,6 +258,46 @@ def test_a_codex_resume_cut_short_after_the_pid_moves_is_finished_by_the_next_pr
 
 def owner_prompt() -> dict:
     return {"session_id": MGR, "hook_event_name": "UserPromptSubmit", "prompt": "owner's prompt"}
+
+
+@pytest.mark.parametrize("hook", ["manager-prompt", "codex-prompt"])
+def test_a_slow_successful_tab_claim_still_records_it_on_a_free_lock(
+    mgr: Path, monkeypatch, capsys, hook: str
+):
+    """Only waiting on a session lock spends the budget. A claim slower than the whole budget,
+    on a clock advanced past it rather than slept through, must still land its bookkeeping."""
+    import types
+
+    from agent_cli import obsidian_tabs
+
+    real = time.monotonic
+    skew = [0.0]
+    monkeypatch.setattr(
+        sessions, "time", types.SimpleNamespace(monotonic=lambda: real() + skew[0], sleep=time.sleep)
+    )
+
+    def slow_claim(name: str, label: str, **kwargs) -> bool:
+        skew[0] += 10.0
+        return True
+
+    monkeypatch.setattr(obsidian_tabs, "claim_active", slow_claim)
+    if hook == "codex-prompt":  # a resumed thread, whose marker must clear once the claim lands
+        sessions.set_field(mgr, MGR, "provider", "codex")
+        sessions.set_field(mgr, MGR, "pid", 11111)
+        sessions.set_field(mgr, MGR, "tab_display_name", "mgr-one · cx 0001")
+        monkeypatch.setattr(sessions, "resolve_pid", lambda: 22222)
+        monkeypatch.setattr(sessions, "resolve_identity", lambda: (22222, True))
+        monkeypatch.setattr("agent_cli.codex_tab_link.marker_for", lambda s: "codex:launch-1")
+    else:
+        monkeypatch.setenv("AGENT_RIBBON_LAUNCH", "claude:launch-1")
+    out = prompt(mgr, "owner's prompt", hook)
+    assert "failed" not in capsys.readouterr().err
+    record = sessions.get(mgr, MGR) or {}
+    assert record["tab_display_name"] and record["tab_label"]
+    assert record["activity"]["state"] == "working"
+    if hook == "codex-prompt":
+        assert "source: resume" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "codex_resume_pending" not in record
 
 
 def test_a_failed_acknowledgment_does_not_let_the_spent_wake_swallow_the_next_send(mgr: Path):

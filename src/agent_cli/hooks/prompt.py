@@ -17,7 +17,7 @@ from ..records.narrow import as_dict
 from .activity import activity, codex_activity
 from .session import dispatch_inbox, session_start
 
-LOCK_DEADLINE_S = 2.0
+LOCK_BUDGET_S = 2.0
 """What one prompt hook may spend in total waiting on session locks, the inbox's own one-second
 deadline included, so a held lock cannot hold the owner's prompt past the host's budget."""
 
@@ -30,7 +30,7 @@ def _failed(exc: Exception) -> None:
 
 
 def prompt(root: Path, payload: dict[str, Any], activity_hook: Callable[[Path, dict[str, Any]], str]) -> str:
-    with sessions.lock_deadline(LOCK_DEADLINE_S):
+    with sessions.lock_budget(LOCK_BUDGET_S):
         inbox = dispatch_inbox(root, payload)
         if inbox:
             try:
@@ -53,11 +53,11 @@ def manager_prompt(root: Path, payload: dict[str, Any]) -> str:
 
 
 def codex_prompt(root: Path, payload: dict[str, Any]) -> str:
-    with sessions.lock_deadline(LOCK_DEADLINE_S):
-        return _codex_prompt(root, payload)
+    with sessions.lock_budget(LOCK_BUDGET_S) as budget:
+        return _codex_prompt(root, payload, budget)
 
 
-def _codex_prompt(root: Path, payload: dict[str, Any]) -> str:
+def _codex_prompt(root: Path, payload: dict[str, Any], budget: sessions.LockBudget) -> str:
     # Codex 0.155/0.156 omits SessionStart on `codex resume`. The old record still has the
     # previous process and tab, so ordinary relabels target a closed tab even after a prompt.
     # The first prompt in the new process is the earliest reliable hook boundary.
@@ -99,14 +99,13 @@ def _codex_prompt(root: Path, payload: dict[str, Any]) -> str:
         pass
     except sessions.LockDeadline as exc:
         _failed(exc)
-    try:
-        # The deadline only moves forward, so this write succeeding means no earlier write in the
-        # resume was cut short by it.
-        sessions.update_record(
-            root, sid, lambda current: {k: v for k, v in current.items() if k != RESUME_PENDING_FIELD}
-        )
-    except sessions.LockDeadline as exc:
-        _failed(exc)
+    if not budget.cut:  # a write the budget cut short leaves the resume for the next prompt
+        try:
+            sessions.update_record(
+                root, sid, lambda current: {k: v for k, v in current.items() if k != RESUME_PENDING_FIELD}
+            )
+        except sessions.LockDeadline as exc:
+            _failed(exc)
     if not startup:
         return result
     if result:
