@@ -8,8 +8,24 @@ is the harness root is skipped. Its `worktrees_dir`, where workers run, is still
 import json
 from pathlib import Path
 
+import pytest
+
 from agent_cli import hooks
 from hooks_test_helpers import _decision, _reason, bash, edit
+
+
+@pytest.fixture
+def active_manager(tmp_root: Path, run, monkeypatch: pytest.MonkeyPatch, notes_remote: Path) -> None:
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    assert run(["feature", "new", "edit-owner", "--title", "Edit owner"]).code == 0
+    for session in ("manager", "codex-1"):
+        assert run(["feature", "use", "1", "--session-id", session]).code == 0
+
+
+def _manager(stdin: str) -> str:
+    payload = json.loads(stdin)
+    payload["session_id"] = "manager"
+    return json.dumps(payload)
 
 
 def _patch(*sections: str) -> str:
@@ -34,12 +50,12 @@ def _register(root: Path, path: str, worktrees_dir: str | None = None) -> None:
     reg.write_text(reg.read_text() + entry)
 
 
-def test_the_harness_registered_at_its_own_root_is_not_product_code(tmp_root: Path, run):
+def test_the_harness_registered_at_its_own_root_is_not_product_code(tmp_root: Path, run, active_manager):
     _register(tmp_root, ".", "../Agent-worktrees/_dispatch/agent")
     for path in ("src/agent_cli/features.py", str(tmp_root / "tests" / "test_x.py")):
-        r = run(["hook", "protect-generated"], stdin=edit("Edit", path))
+        r = run(["hook", "protect-generated"], stdin=_manager(edit("Edit", path)))
         assert r.out == "", path
-    r = run(["hook", "protect-generated"], stdin=bash(f"cp a.py {tmp_root}/src/agent_cli/b.py"))
+    r = run(["hook", "protect-generated"], stdin=_manager(bash(f"cp a.py {tmp_root}/src/agent_cli/b.py")))
     assert r.out == ""
 
     worker = tmp_root.parent / "Agent-worktrees" / "_dispatch" / "agent" / "022-x-01" / "src" / "a.py"
@@ -49,7 +65,7 @@ def test_the_harness_registered_at_its_own_root_is_not_product_code(tmp_root: Pa
     assert _decision(r) == "deny"
 
 
-def test_codex_apply_patch_gets_the_same_exception(tmp_root: Path):
+def test_codex_apply_patch_gets_the_same_exception(tmp_root: Path, active_manager):
     """Codex apply_patch reaches `under_registered_repo` through `patch_path_guard`. The
     generated-file refusal still runs for a root file."""
     _register(tmp_root, ".", "../Agent-worktrees/_dispatch/agent")
@@ -76,9 +92,10 @@ def test_a_repo_at_the_roots_parent_or_a_subfolder_is_still_refused(tmp_root: Pa
     assert _decision(r) == "deny" and "manager" in _reason(r)
 
 
-def test_a_repo_in_a_subfolder_of_the_root_is_still_refused(tmp_root: Path, run):
+def test_a_repo_in_a_subfolder_of_the_root_is_still_refused(tmp_root: Path, run, active_manager):
     _register(tmp_root, "vendor/product")
-    r = run(["hook", "protect-generated"], stdin=edit("Edit", str(tmp_root / "vendor" / "product" / "a.py")))
+    product = str(tmp_root / "vendor" / "product" / "a.py")
+    r = run(["hook", "protect-generated"], stdin=_manager(edit("Edit", product)))
     assert _decision(r) == "deny" and "manager" in _reason(r)
-    r = run(["hook", "protect-generated"], stdin=edit("Edit", "src/agent_cli/features.py"))
+    r = run(["hook", "protect-generated"], stdin=_manager(edit("Edit", "src/agent_cli/features.py")))
     assert r.out == ""
