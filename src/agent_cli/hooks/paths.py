@@ -430,10 +430,12 @@ def check_command(root: Path, cmd: str, *, payload: dict[str, Any] | None = None
     return ""
 
 
-def _shell_words(cmd: str) -> list[tuple[str, bool]]:
+def _shell_words(cmd: str, *, operators: bool = True) -> list[tuple[str, bool]]:
     """`cmd` as (text, is_operator) pairs, quotes and escapes removed from words. Only an
-    unquoted, unescaped run of `|&;<>`, or a newline, is an operator, so `rg '|' x` and
-    `printf \\|` stay data. A leading fd number joins its redirection (`2>`)."""
+    unquoted, unescaped run of `|&;<>`, a `(` or `)`, or a newline is an operator, so
+    `rg '|' x` and `printf \\|` stay data. A leading fd number joins its redirection (`2>`).
+    A `#` that starts a word comments out the rest of the line. With operators=False every
+    non-blank character is word text, as in `env -S`."""
     text = drop_heredoc_bodies(cmd)
     out: list[tuple[str, bool]] = []
     word: list[str] = []
@@ -441,7 +443,25 @@ def _shell_words(cmd: str) -> list[tuple[str, bool]]:
     i, n = 0, len(text)
     while i < n:
         c = text[i]
-        if c == "\\" and i + 1 < n:
+        if c == "#" and not started:
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+        elif not operators and c in "|&;<>()":
+            word.append(c)
+            started = True
+            i += 1
+        elif not operators and c == "\n":
+            if started:
+                out.append(("".join(word), False))
+            word, started, quoted = [], False, False
+            i += 1
+        elif c in "()":
+            if started:
+                out.append(("".join(word), False))
+            out.append((c, True))
+            word, started, quoted = [], False, False
+            i += 1
+        elif c == "\\" and i + 1 < n:
             if text[i + 1] != "\n":
                 word.append(text[i + 1])
                 started = quoted = True
@@ -496,30 +516,108 @@ COMMAND_PREFIXES: dict[str, dict[str, frozenset[str]]] = {
     "time": {"value": frozenset({"-f", "-o", "--format", "--output"})},
     "nice": {"value": frozenset({"-n", "--adjustment"})},
     "nohup": {},
+    "caffeinate": {"value": frozenset({"-t", "-w"})},
     "env": {
-        "value": frozenset({"-u", "--unset"}),
+        "value": frozenset({"-P", "-u", "--unset"}),
         "chdir": frozenset({"-C", "--chdir"}),
         "split": frozenset({"-S", "--split-string"}),
     },
     "timeout": {"value": frozenset({"-k", "-s", "--kill-after", "--signal"})},
     "stdbuf": {"value": frozenset({"-e", "-i", "-o", "--error", "--input", "--output"})},
     "xargs": {
-        "value": frozenset(
-            {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args"}
-            | {"--max-chars", "--max-lines", "--max-procs", "--process-slot-var"}
-        )
+        "value": frozenset({"-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-R", "-s", "-S", "--arg-file"})
+        | frozenset({"--delimiter", "--max-args", "--max-chars", "--max-lines", "--max-procs"})
+        | frozenset({"--process-slot-var"})
     },
     "sudo": {
         "value": frozenset({"-C", "-g", "-p", "-r", "-t", "-T", "-U", "-u", "--close-from", "--group"})
         | frozenset({"--other-user", "--prompt", "--role", "--type", "--command-timeout", "--user"}),
         "chdir": frozenset({"-D", "--chdir"}),
-        "query": frozenset({"-K", "-k", "-l", "-V", "-v", "--list", "--validate", "--remove-timestamp"})
-        | frozenset({"--reset-timestamp"}),
+        "query": frozenset({"-K", "-l", "-V", "-v", "--list", "--validate", "--remove-timestamp"}),
     },
 }
 #: Positional words a prefix takes before the command: `timeout 5 cmd`.
 PREFIX_OPERANDS = {"timeout": 1}
-RAW_WRITERS = frozenset({"rm", "truncate", "install", "touch", "tee"})
+#: Prefixes whose grammar takes `NAME=value` words before the command.
+ASSIGNING_PREFIXES = frozenset({"env", "sudo", "time"})
+RAW_WRITERS = frozenset({"rm", "truncate", "install", "touch", "tee", "sed", "perl"})
+#: A writer's options that take a value, which is never a write target: `touch -r ref` reads
+#: `ref`. `attached` options take only the rest of their own word (`perl -i.bak`).
+WRITER_OPTIONS: dict[str, dict[str, frozenset[str]]] = {
+    "touch": {"value": frozenset({"-A", "-d", "-r", "-t", "--date", "--reference", "--time"})},
+    "truncate": {"value": frozenset({"-r", "-s", "--reference", "--size"})},
+    "install": {
+        "value": frozenset({"-B", "-D", "-f", "-g", "-h", "-l", "-m", "-N", "-o", "-S", "-t", "-T"})
+        | frozenset({"--group", "--mode", "--owner", "--suffix", "--target-directory"})
+    },
+    "sed": {"value": frozenset({"-e", "-f", "--expression", "--file"}), "attached": frozenset({"-i"})},
+    "perl": {
+        "value": frozenset({"-e", "-E", "-I", "-M", "-m"}),
+        "attached": frozenset({"-0", "-C", "-i", "-l", "-x"}),
+    },
+}
+
+
+def _split_options(
+    args: list[str], spec: dict[str, frozenset[str]]
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """A writer's (option, value) pairs and its operands. A short cluster's value letter takes
+    the rest of its word, or the next word; `--` ends the options."""
+    takes, attached = spec.get("value", frozenset()), spec.get("attached", frozenset())
+    options: list[tuple[str, str]] = []
+    operands: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg == "--":
+            operands.extend(args[i:])
+            break
+        if not arg.startswith("-") or arg == "-":
+            operands.append(arg)
+            continue
+        if arg.startswith("--"):
+            name, eq, value = arg.partition("=")
+            if name in takes and not eq:
+                value, i = (args[i] if i < len(args) else ""), i + 1
+            options.append((name, value))
+            continue
+        for j in range(1, len(arg)):
+            flag = "-" + arg[j]
+            if flag in takes or flag in attached:
+                value = arg[j + 1 :]
+                if not value and flag in takes:
+                    value, i = (args[i] if i < len(args) else ""), i + 1
+                options.append((flag, value))
+                break
+            options.append((flag, ""))
+    return options, operands
+
+
+def _writer_operands(head: str, rest: list[str]) -> list[str]:
+    """The files a raw writer writes; scripts, sources and option values are reads."""
+    if head == "dd":
+        return [w.split("=", 1)[1] for w in rest if w.startswith("of=")]
+    if head in ("sed", "perl"):
+        if not any(IN_PLACE_FLAG_RE.match(t) for t in rest):
+            return []
+    if head == "sed":
+        # BSD sed takes the in-place suffix as its own word: `sed -i '' s/a/b/ f`, `-i .bak`.
+        rest = [
+            w
+            for k, w in enumerate(rest)
+            if not (k and rest[k - 1] in ("-i", "-I") and (w == "" or (w.startswith(".") and "/" not in w)))
+        ]
+    options, operands = _split_options(rest, WRITER_OPTIONS.get(head, {}))
+    names = {name for name, _ in options}
+    if head in ("sed", "perl") and not names & {"-e", "-E", "-f", "--expression", "--file"}:
+        return operands[1:]
+    if head == "install":
+        if names & {"-d", "--directory"}:
+            return operands
+        directory = [value for name, value in options if name in ("-t", "--target-directory")]
+        return directory[-1:] or operands[-1:]
+    return operands
 
 
 def _from_cwd(cwd: str, path: str) -> str:
@@ -536,6 +634,8 @@ def _command_targets(words: list[str]) -> list[str]:
     """Write operands of one simple command whose command, after leading assignments and
     `COMMAND_PREFIXES`, is a raw writer. A writer's name anywhere else (`rg touch src/`) is data."""
     i, cwd = 0, ""
+    while i < len(words) and words[i] == "!":
+        i += 1
     while i < len(words) and ENV_ASSIGNMENT_RE.match(words[i]):
         i += 1
     while i < len(words) and (head := os.path.basename(words[i])) in COMMAND_PREFIXES:
@@ -548,7 +648,9 @@ def _command_targets(words: list[str]) -> list[str]:
             if word == "--":
                 i += 1
                 break
-            if head == "env" and (word == "-" or ENV_ASSIGNMENT_RE.match(word)):
+            if (head == "env" and word == "-") or (
+                head in ASSIGNING_PREFIXES and ENV_ASSIGNMENT_RE.match(word)
+            ):
                 i += 1
                 continue
             if not word.startswith("-") or word == "-":
@@ -571,18 +673,32 @@ def _command_targets(words: list[str]) -> list[str]:
             if name in chdir:
                 cwd = _from_cwd(cwd, value)
             elif name in split:
-                words = [*words[:i], *(text for text, _ in _shell_words(value)), *words[i:]]
+                words = [*words[:i], *_split_string(value), *words[i:]]
+        while head in ASSIGNING_PREFIXES and i < len(words) and ENV_ASSIGNMENT_RE.match(words[i]):
+            i += 1
         i += PREFIX_OPERANDS.get(head, 0)
     if i >= len(words):
         return []
     head, rest = os.path.basename(words[i]), words[i + 1 :]
-    if head == "dd":
-        found = [w.split("=", 1)[1] for w in rest if w.startswith("of=")]
-    elif head in RAW_WRITERS or (head in ("sed", "perl") and any(IN_PLACE_FLAG_RE.match(t) for t in rest)):
-        found = [w for w in rest if not w.startswith("-")]
-    else:
+    if head != "dd" and head not in RAW_WRITERS:
         return []
-    return [_from_cwd(cwd, t) for t in found]
+    return [_from_cwd(cwd, t) for t in _writer_operands(head, rest)]
+
+
+def _split_string(value: str) -> list[str]:
+    """The words `env -S` makes of `value`: `\\c` outside single quotes ends the string, and a
+    `#` starting a word comments out the rest."""
+    single, k = False, 0
+    while k < len(value):
+        if value[k] == "'":
+            single = not single
+        elif value[k] == "\\" and not single:
+            if value[k + 1 : k + 2] == "c":
+                value = value[:k]
+                break
+            k += 1
+        k += 1
+    return [text for text, _ in _shell_words(value, operators=False)]
 
 
 def _write_targets(cmd: str) -> list[str]:
