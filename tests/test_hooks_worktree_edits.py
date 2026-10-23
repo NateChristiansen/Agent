@@ -222,6 +222,9 @@ def test_supported_shell_targets_and_reads(tmp_root, edit_owner, group):
         "! touch src/x.py",
         "( touch src/x.py )",
         "caffeinate -t 5 touch src/x.py",
+        "env sed -i '' -E s/a/b/ src/x.py",
+        "install -d -D src/newdir",
+        "install -Dt src/dir /tmp/input",
     ],
 )
 def test_shell_writer_spellings_share_the_generated_file_checker(tmp_root, edit_owner, group, command):
@@ -270,10 +273,12 @@ def test_reads_naming_a_writer_as_an_argument_are_never_gated(tmp_root, edit_own
 
 
 def test_exempt_targets_resolve_from_the_command_directory(tmp_root, edit_owner):
-    mapped = features.resolve(tmp_root, "2")
-    mapped.meta["status"] = "proposed"
-    mapped.save()
+    for n in ("1", "2"):
+        owner = features.resolve(tmp_root, n)
+        owner.meta["status"] = "proposed"
+        owner.save()
     for command in (
+        f"env -C '{edit_owner}' sed -i '' -E s/a/b/ /tmp/review-out",
         'echo text > "$PWD/.agent/scratch/draft"',
         "env cat src/x.py",
         "env -C /tmp touch src",

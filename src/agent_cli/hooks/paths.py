@@ -542,12 +542,15 @@ PREFIX_OPERANDS = {"timeout": 1}
 ASSIGNING_PREFIXES = frozenset({"env", "sudo", "time"})
 RAW_WRITERS = frozenset({"rm", "truncate", "install", "touch", "tee", "sed", "perl"})
 #: A writer's options that take a value, which is never a write target: `touch -r ref` reads
-#: `ref`. `attached` options take only the rest of their own word (`perl -i.bak`).
+#: `ref`. `attached` options take only the rest of their own word (`perl -pibak`); a dotted
+#: suffix such as `-i.bak` fails IN_PLACE_FLAG_RE, so that spelling is not detected at all.
+#: install options that take a value in only one of GNU and BSD (`-D`, `-S`, `-T`, `-h`) are
+#: read as flags: the destination is positional, so a misread adds an operand but never drops it.
 WRITER_OPTIONS: dict[str, dict[str, frozenset[str]]] = {
     "touch": {"value": frozenset({"-A", "-d", "-r", "-t", "--date", "--reference", "--time"})},
     "truncate": {"value": frozenset({"-r", "-s", "--reference", "--size"})},
     "install": {
-        "value": frozenset({"-B", "-D", "-f", "-g", "-h", "-l", "-m", "-N", "-o", "-S", "-t", "-T"})
+        "value": frozenset({"-B", "-f", "-g", "-l", "-m", "-N", "-o", "-t"})
         | frozenset({"--group", "--mode", "--owner", "--suffix", "--target-directory"})
     },
     "sed": {"value": frozenset({"-e", "-f", "--expression", "--file"}), "attached": frozenset({"-i"})},
@@ -610,7 +613,8 @@ def _writer_operands(head: str, rest: list[str]) -> list[str]:
         ]
     options, operands = _split_options(rest, WRITER_OPTIONS.get(head, {}))
     names = {name for name, _ in options}
-    if head in ("sed", "perl") and not names & {"-e", "-E", "-f", "--expression", "--file"}:
+    script_options = {"-e", "-E"} if head == "perl" else {"-e", "-f", "--expression", "--file"}
+    if head in ("sed", "perl") and not names & script_options:
         return operands[1:]
     if head == "install":
         if names & {"-d", "--directory"}:
