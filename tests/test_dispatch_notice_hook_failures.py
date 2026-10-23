@@ -180,13 +180,15 @@ def test_a_held_session_lock_ends_prompt_activity_and_nothing_writes_later(
     payload = json.dumps({"session_id": MGR, "hook_event_name": "UserPromptSubmit", "prompt": text})
     path = sessions._path(mgr, MGR)
     with held_elsewhere(sessions._locked(mgr, MGR)):
+        threads = set(threading.enumerate())
         (out, _), elapsed = timed(lambda: hooks.run(mgr, hook, payload))
+        assert set(threading.enumerate()) == threads  # nothing left behind to write later
         held = path.read_bytes()
     assert elapsed < HOST_BUDGET_S - 1
     assert "decision" not in out
     assert "note: prompt activity failed" in capsys.readouterr().err
-    time.sleep(0.2)
-    assert path.read_bytes() == held  # no write was left waiting on the lock
+    with sessions._locked(mgr, MGR):  # the holder has released and joined; the lock is free
+        assert path.read_bytes() == held
     record = sessions.get(mgr, MGR) or {}
     assert record["activity"]["state"] == "idle" and record["owner_question_pending"] is True
     assert consumed(mgr, nid) is None
