@@ -25,6 +25,7 @@ from dispatch_helpers import (
     droot,  # noqa: F401  # pyright: ignore[reportUnusedImport] -- a fixture, used as a parameter name
     envelope,
     one,
+    settle,
 )
 
 MAIN = "repos/alpha-api"
@@ -41,6 +42,7 @@ def test_a_review_does_not_take_an_unlanded_builders_worktree(droot: Path, fake_
     fake_claude.scenario([one(envelope()), one(envelope())])
     build: dict[str, Any] = new_fast(droot)
     _commit(Path(build["worktree"]), "built.txt")
+    settle(droot, build)
     review: dict[str, Any] = new_fast(droot)
     assert review["worktree"] != build["worktree"] and review["reused"] is False
     head = str(git(["rev-parse", "--abbrev-ref", "HEAD"], Path(build["worktree"]))).strip()
@@ -51,6 +53,7 @@ def test_a_dispatch_onto_the_builders_branch_continues_in_its_worktree(droot: Pa
     fake_claude.scenario([one(envelope()), one(envelope())])
     build: dict[str, Any] = new_fast(droot)
     _commit(Path(build["worktree"]), "built.txt")
+    settle(droot, build)
     fix: dict[str, Any] = new_fast(droot, branch=build["branch"])
     assert fix["worktree"] == build["worktree"] and fix["reused"] is True
 
@@ -60,6 +63,7 @@ def test_a_landed_artifact_frees_its_worktree(droot: Path, fake_claude: Any):
     build: dict[str, Any] = new_fast(droot)
     _commit(Path(build["worktree"]), "built.txt")
     git(["merge", "-q", "--ff-only", build["branch"]], droot / MAIN)
+    settle(droot, build)
     nxt: dict[str, Any] = new_fast(droot)
     assert nxt["worktree"] == build["worktree"] and nxt["reused"] is True
 
@@ -74,6 +78,7 @@ def test_a_builder_resumed_after_landing_owns_its_new_work(droot: Path, fake_cla
     record = {**build, "integration": {"state": "landed"}}
     repo = repos_mod.Repo(name="alpha-api", short="alpha", path=MAIN, remote="x")
     assert worktrees.artifact_open(droot, repo, record) is True
+    settle(droot, build)
     nxt: dict[str, Any] = new_fast(droot)
     assert nxt["worktree"] != build["worktree"]
 

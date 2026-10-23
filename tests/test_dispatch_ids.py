@@ -16,7 +16,7 @@ from agent_cli import dispatch, features, repos
 from agent_cli.core import AgentError
 from agent_cli.dispatch import ids
 from conftest import git
-from dispatch_helpers import _new_fast, droot, envelope, one  # noqa: F401 — droot is a pytest fixture
+from dispatch_helpers import _new_fast, droot, envelope, one, settle  # noqa: F401 — droot is a pytest fixture
 
 pytestmark = pytest.mark.usefixtures("notes_remote")
 
@@ -195,6 +195,7 @@ def test_explicit_branch_and_escalation_keep_their_branch(droot: Path, fake_clau
     fake_claude.scenario([one(envelope()), one(envelope()), one(envelope())])
     first = _new_fast(droot, branch="shared/review-target")
     assert first["branch"] == "shared/review-target"
+    settle(droot, first)
     escalated = _new_fast(droot, escalate_from=first["id"])
     assert escalated["id"] == "001-mac-02"
     assert escalated["branch"] == "shared/review-target"

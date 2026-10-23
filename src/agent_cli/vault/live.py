@@ -156,9 +156,10 @@ def _resume_action(root: Path, items: list[dict[str, Any]]) -> dict[str, Any]:
 
 def dispatch_obligation(d: dict[str, Any]) -> tuple[str, tuple[str, ...]] | None:
     """Classify one dispatch as an owner question/block or manager work (unread verdict, unresolved
-    branch or incomplete cleanup). Orphaned manager work goes to the owner. obligations suppresses
+    branch, incomplete cleanup or unpublished ledger sources). Orphaned manager work goes to the owner. obligations suppresses
     closed features using feature state; dispatch.state.save watches relevant record changes.
     """
+    from .. import reconcile as reconcile_mod
     from ..dispatch import verdicts
     from ..dispatch.state import CLOSED_STATES, is_actioned, is_probe
 
@@ -176,6 +177,8 @@ def dispatch_obligation(d: dict[str, Any]) -> tuple[str, tuple[str, ...]] | None
             ("cleanup", cleanup),
             ("unread", not verdicts.is_read(d)),
             ("unresolved-branch", verdicts.unresolved_branch(d)),
+            # a ledger read (the `reconcile` tool, a launch or land gate) heals these
+            ("reconcile", bool(as_list(d.get(reconcile_mod.INTENT)))),
         )
         if owed
     )

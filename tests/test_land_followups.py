@@ -8,6 +8,7 @@ prepared land journal and settled after `done`, by the landing or by recovery, m
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,8 @@ import pytest
 
 from agent_cli import land_followups as followups
 from agent_cli import land_journal as jn
-from agent_cli import land_recover, ops, peers, sessions, status
+from agent_cli import land_recover, ops, peers, reconcile, sessions, status
+from agent_cli.core import AgentError
 from agent_cli.dispatch import state
 from agent_cli.journal import pending
 from agent_cli.ops import peer_wake
@@ -43,6 +45,9 @@ def landed(tmp_root: Path, notes_remote: Path, run, monkeypatch: pytest.MonkeyPa
     ops.task_add(tmp_root, text="build the thing", feature="1")
     ops.task_add(tmp_root, text="accept it natively", feature="1")
     sessions.set_record(tmp_root, "mgr-a", name="mgr-a", pid=os.getpid())
+    _git(tmp_root, "init", "-q", "-b", BRANCH, "--template=")
+    _git(tmp_root, "commit", "-q", "--allow-empty", "-m", "the work")
+    head = _git(tmp_root, "rev-parse", "HEAD")
     state.save(
         tmp_root,
         {
@@ -51,11 +56,22 @@ def landed(tmp_root: Path, notes_remote: Path, run, monkeypatch: pytest.MonkeyPa
             "branch": BRANCH,
             "state": "done",
             "feature": 1,
+            "attempt": 1,
             "tasks": [1],
             "launched_by_session": "mgr-a",
+            "git": {"commits": [{"sha": head, "subject": "the work"}], "files": []},
+            reconcile.RESULT_HEAD: {"attempt": 1, "sha": head},
         },
     )
     return outcomes
+
+
+def _git(root: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=root, capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
 
 
 def _journal(ident: str = "20261009T010000-aaaaaa", **extra: object) -> dict:
@@ -69,6 +85,14 @@ def _journal(ident: str = "20261009T010000-aaaaaa", **extra: object) -> dict:
         "obligations": followups.initial(),
         **extra,
     }
+
+
+def _prepared(root: Path, ident: str = "20261009T010000-aaaaaa", **extra: object) -> dict:
+    """A done journal that landed the branch's head, carrying the ledger sources its landing saved
+    before it was first written."""
+    journal = _journal(ident, **{"tip": _git(root, "rev-parse", BRANCH), **extra})
+    followups.record_sources(journal, followups.landing_intents(root, journal))
+    return journal
 
 
 def _rows(root: Path) -> list[dict]:
@@ -219,8 +243,8 @@ def test_a_batch_landing_gives_one_milestone(tmp_root: Path, landed):
     assert len(_landings(tmp_root)) == 1
 
 
-def test_aborted_and_legacy_journals_owe_nothing(tmp_root: Path, landed):
-    aborted = _journal("20261009T040000-dddddd", state="aborted")
+def test_aborted_and_legacy_journals_owe_nothing(tmp_root: Path, landed, manager):
+    aborted = _prepared(tmp_root, "20261009T040000-dddddd", state="aborted")  # its sources saved
     legacy = {k: v for k, v in _journal("20261009T050000-eeeeee").items() if k != "obligations"}
     for journal in (aborted, legacy):
         jn.write(tmp_root, journal)
@@ -228,6 +252,152 @@ def test_aborted_and_legacy_journals_owe_nothing(tmp_root: Path, landed):
         assert not followups.outstanding(journal)
     assert _landings(tmp_root) == []
     assert _rows(tmp_root) == []
+    assert _owed(tmp_root) == [] and _source_rows(tmp_root) == []
+
+
+# ---------------------------------------------------------------- reconcile sources
+
+
+@pytest.fixture
+def manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The landing and its heal run as a manager: a worker's inherited dispatch id would hide failures."""
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+
+
+def _source_rows(root: Path) -> list[str]:
+    from agent_cli import features, log, reconcile
+
+    parsed = [reconcile.parse_entry(e) for e in log.parse(features.resolve(root, "1").log_path)]
+    return [r.data["source"] for r in parsed if isinstance(r, reconcile.Rec) and r.verb == "source"]
+
+
+def _owed(root: Path) -> list[tuple[str, str]]:
+    from agent_cli import reconcile
+
+    return sorted((i.source, i.item) for i in reconcile.ledger(root, "1").owed)
+
+
+ACCEPT = [("accept:001-mac-01", "task#1")]
+
+
+def test_a_landing_registers_acceptance_of_its_open_tasks_once(tmp_root: Path, landed, manager):
+    from agent_cli import reconcile
+
+    journal = _prepared(tmp_root)
+    jn.write(tmp_root, journal)
+    assert followups.reconcile(tmp_root, tmp_root, journal)["reconcile"] == "done"
+    saved = jn.read(tmp_root, journal["id"])
+    assert [p["source"] for p in saved[reconcile.INTENT]] == ["accept:001-mac-01"]
+    assert saved[reconcile.INTENT][0]["G"].endswith("@" + journal["id"])
+    assert _owed(tmp_root) == ACCEPT
+    land_recover.recover(tmp_root, journal["id"])
+    assert _source_rows(tmp_root) == ["accept:001-mac-01"]
+    ops.task_done(tmp_root, task="1", feature="1")
+    assert _owed(tmp_root) == []
+
+
+def test_sources_are_saved_on_the_journal_before_any_append_and_the_heal_finishes_them(
+    tmp_root: Path, landed, manager, monkeypatch: pytest.MonkeyPatch
+):
+    from agent_cli import reconcile
+
+    seen: list[object] = []
+
+    def crash(feature, pending):
+        on_disk = jn.read(tmp_root, journal["id"])
+        seen.append((on_disk["obligations"]["reconcile"], [p["source"] for p in on_disk[reconcile.INTENT]]))
+        raise OSError("killed before the append")
+
+    journal = _prepared(tmp_root)
+    jn.write(tmp_root, journal)
+    with monkeypatch.context() as patched:
+        patched.setattr(reconcile, "append_source", crash)
+        assert followups.reconcile(tmp_root, tmp_root, journal)["reconcile"] == "pending"
+    assert seen == [("pending", ["accept:001-mac-01"])]
+    assert _source_rows(tmp_root) == []
+    assert _owed(tmp_root) == ACCEPT  # the ledger's heal appends from the journal and settles it
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "done"
+    land_recover.recover(tmp_root, journal["id"])
+    assert _source_rows(tmp_root) == ["accept:001-mac-01"]
+
+
+def test_a_crash_after_the_append_before_done_recovers_without_a_second_entry(
+    tmp_root: Path, landed, manager, monkeypatch: pytest.MonkeyPatch
+):
+    journal = _prepared(tmp_root)
+    jn.write(tmp_root, journal)
+    real = jn.write
+
+    def lost(main, j):
+        if j.get("obligations", {}).get("reconcile") == "done":
+            raise OSError("killed before done was saved")
+        real(main, j)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(jn, "write", lost)
+        followups.reconcile(tmp_root, tmp_root, journal)
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "pending"
+    assert _source_rows(tmp_root) == ["accept:001-mac-01"]
+    land_recover.recover(tmp_root, journal["id"])
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "done"
+    assert _source_rows(tmp_root) == ["accept:001-mac-01"]
+
+
+def test_a_stop_right_after_done_is_finished_by_the_heal_past_recoverys_window(
+    tmp_root: Path, landed, manager
+):
+    journal = _prepared(tmp_root, ts="2026-09-01T01:00:00-06:00")
+    jn.write(tmp_root, journal)  # done on disk, nothing reconciled
+    land_recover.recover_all(tmp_root, tmp_root)  # older than its window: recovery leaves it
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "pending"
+    assert _owed(tmp_root) == ACCEPT
+    assert jn.read(tmp_root, journal["id"])["obligations"]["reconcile"] == "done"
+    assert _owed(tmp_root) == ACCEPT and _source_rows(tmp_root) == ["accept:001-mac-01"]
+
+
+def test_a_member_without_a_dispatch_registers_a_landing_source_for_its_bound_feature(
+    tmp_root: Path, landed, manager, monkeypatch: pytest.MonkeyPatch
+):
+    bound = {"agent/manager-bound": 1}
+    monkeypatch.setattr("agent_cli.activity_gate.bound_feature", lambda root, branch: bound.get(branch))
+    journal = _prepared(tmp_root, branch="agent/manager-bound")
+    jn.write(tmp_root, journal)
+    followups.reconcile(tmp_root, tmp_root, journal)
+    assert _owed(tmp_root) == [(f"landing:{journal['id']}", "landing")]
+    unbound = _prepared(tmp_root, "20261009T060000-ffffff", branch="agent/nobody")
+    jn.write(tmp_root, unbound)
+    assert followups.reconcile(tmp_root, tmp_root, unbound)["reconcile"] == "done"
+    assert _source_rows(tmp_root) == [f"landing:{journal['id']}"]
+
+
+def test_membership_is_by_the_landed_tip_and_an_unanswerable_git_lands_nothing(tmp_root: Path, landed):
+    tip = _git(tmp_root, "rev-parse", BRANCH)
+    # Finish and integration times say nothing; only the tip does.
+    stamped = {"finished": "2026-10-09T02:00:00+00:00", "integration": {"journal": "20261001T000000-bbbbbb"}}
+    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), **stamped})
+    sources = [i["source"] for i in followups.landing_intents(tmp_root, _journal(tip=tip))]
+    assert sources == ["accept:001-mac-01"]
+    pruned = {reconcile.RESULT_HEAD: {"attempt": 1, "sha": "b" * 40}}  # a commit Git no longer has
+    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), **pruned})
+    assert followups.landing_intents(tmp_root, _journal(tip=tip)) == []
+    with pytest.raises(AgentError, match="git cannot tell"):
+        followups.landing_intents(tmp_root, _journal(tip="c" * 40))
+
+
+def test_a_branch_whose_only_record_is_unfinished_raises_no_landing_source(
+    tmp_root: Path, landed, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("agent_cli.activity_gate.bound_feature", lambda root, branch: 1)
+    state.save(tmp_root, {**state.load(tmp_root, "001-mac-01"), "state": "queued"})
+    assert followups.landing_intents(tmp_root, _journal()) == []
+
+
+def test_legacy_journals_register_no_sources(tmp_root: Path, landed, manager):
+    journal = _journal()
+    jn.write(tmp_root, journal)
+    land_recover.recover(tmp_root, journal["id"])
+    assert "reconcile" not in jn.read(tmp_root, journal["id"])["obligations"]
+    assert _owed(tmp_root) == [] and _source_rows(tmp_root) == []
 
 
 # ----------------------------------------------------------------

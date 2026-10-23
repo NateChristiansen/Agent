@@ -17,7 +17,7 @@ from agent_cli import dispatch, leases, links, procs
 from agent_cli.core import AgentError
 from agent_cli.dispatch import allocation, holdings, lifecycle, state
 from agent_cli.dispatch import verification_gate as gate
-from dispatch_helpers import _new_fast, _set_alpha_dispatch, droot, envelope, one  # noqa: F401
+from dispatch_helpers import _new_fast, _set_alpha_dispatch, droot, envelope, one, settle  # noqa: F401
 from test_dispatch_alloc import _no_detach
 from test_dispatch_alloc_live import _proc
 
@@ -36,6 +36,13 @@ def _foreign(root: Path, area: str) -> None:
 
 def _trusted(monkeypatch: pytest.MonkeyPatch, *rows: procs.Proc) -> None:
     monkeypatch.setattr(procs, "snapshot", lambda: [_proc(os.getpid()), *rows])
+
+
+def _settled(root: Path) -> dict:
+    """A finished dispatch whose result the manager has read, so it may be resumed."""
+    d = _new_fast(root)
+    settle(root, d)
+    return d
 
 
 def test_area_grammar_takes_a_slot_number():
@@ -120,6 +127,7 @@ def test_the_stored_slot_is_kept_across_terminal_refusal_resume_and_recovery(
     monkeypatch.setattr(leases, "take", spy)
     done = dispatch.resume(droot, dispatch_id=d["id"], answer="go", watch=True)
     assert done["state"] == "done" and done["slot"] == 1 and set(taken) == {SLOT1}
+    settle(droot, done)
     _no_detach(monkeypatch)
     queued = _new_fast(droot, watch=False)
     assert queued["slot"] == 0
@@ -152,6 +160,7 @@ def test_an_alias_names_the_same_worktree_lease(droot: Path, tmp_path):
 def test_reuse_and_resume_cannot_both_take_one_worktree(droot: Path, fake_claude, monkeypatch):
     fake_claude.scenario([one(envelope())])
     first = _new_fast(droot)
+    settle(droot, first)
     _no_detach(monkeypatch)
     _set_alpha_dispatch(droot, max_concurrent=2)
     second = _new_fast(droot, watch=False)
@@ -246,7 +255,7 @@ def test_a_legacy_record_resumes_into_a_fresh_slot(
     droot: Path, fake_claude, monkeypatch, generation, state_name
 ):
     fake_claude.scenario([one(envelope())])
-    d = _legacy(droot, _new_fast(droot), state_name, generation)
+    d = _legacy(droot, _settled(droot), state_name, generation)
     _trusted(monkeypatch)
     _no_detach(monkeypatch)
     saves: list[dict] = []
@@ -263,7 +272,7 @@ def test_a_legacy_record_with_a_possible_live_process_refuses(droot: Path, fake_
     """An untrusted inventory, then a trusted one naming a descendant: the refusal changes
     nothing, so one legacy record serves both."""
     fake_claude.scenario([one(envelope())])
-    d = _legacy(droot, _new_fast(droot), "done", "k1")
+    d = _legacy(droot, _settled(droot), "done", "k1")
     before = dispatch.file(droot, d["id"], ".json").read_bytes()
     for inventory in ("untrusted", "descendant"):
         if inventory == "descendant":
@@ -291,7 +300,7 @@ def _windows(monkeypatch: pytest.MonkeyPatch, *rows: procs.Proc) -> None:
 
 def _slot_given_back(root: Path, fake_claude) -> dict:
     fake_claude.scenario([one(envelope())])
-    d = _new_fast(root)
+    d = _settled(root)
     assert d["slot_schema"] == 1 and d["slot"] == 0
     assert holdings.release_slot(root, d["id"], d["attempt"])
     record = dispatch.load(root, d["id"])
@@ -386,7 +395,7 @@ def test_a_confirmed_cleanup_does_not_excuse_a_suspect_or_missing_inventory(
 
 def test_a_failed_save_rolls_back_only_what_resume_took(droot: Path, fake_claude, monkeypatch):
     fake_claude.scenario([one(envelope())])
-    d = _legacy(droot, _new_fast(droot), "done", "k1")
+    d = _legacy(droot, _settled(droot), "done", "k1")
     _trusted(monkeypatch)
     leases.take_marked(droot, "worktree:alpha/unrelated", session_id="someone", pid=os.getpid())
 
@@ -402,7 +411,7 @@ def test_a_failed_save_rolls_back_only_what_resume_took(droot: Path, fake_claude
 
 def test_a_malformed_record_refuses_by_name(droot: Path, fake_claude):
     fake_claude.scenario([one(envelope())])
-    d = _new_fast(droot)
+    d = _settled(droot)
     for slot in (None, 5, "0", -1):
         with gate.record_guard(droot, d["id"]) as current:
             current["slot"] = slot
@@ -428,7 +437,7 @@ def test_a_malformed_done_record_recovers_through_collect_abandon_and_new(
     droot: Path, fake_claude, monkeypatch
 ):
     fake_claude.scenario([one(envelope())])
-    d = _new_fast(droot)
+    d = _settled(droot)
     with gate.record_guard(droot, d["id"]) as current:
         current["slot"] = "lost"
         state.save(droot, current)

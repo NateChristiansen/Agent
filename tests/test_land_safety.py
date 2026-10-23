@@ -13,7 +13,16 @@ from agent_cli import land, land_recover
 from agent_cli import land_journal as jn
 from agent_cli import land_observe as obs
 from agent_cli.core import AgentError
-from land_helpers import certified, child, fingerprint, git, harness, only_journal, recorded  # noqa: F401
+from land_helpers import (  # noqa: F401
+    certified,
+    child,
+    fingerprint,
+    git,
+    harness,
+    only_journal,
+    recorded,
+    settle_landing,
+)
 
 
 def _attributes(root: Path, text: str) -> None:
@@ -189,7 +198,7 @@ def test_a_symlink_retarget_and_a_type_change_land(harness: Path, certified: Non
         (root / "link").symlink_to("a.txt")
 
     _branch(harness, "link", link)
-    land.land(harness, "link", strategy="ff")
+    settle_landing(harness, land.land(harness, "link", strategy="ff"))
 
     def retarget(root: Path) -> None:
         (root / "link").unlink()

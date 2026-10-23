@@ -13,7 +13,7 @@ from agent_cli import dispatch, leases, repos
 from agent_cli.core import AgentError
 from agent_cli.dispatch import lifecycle, orders, supervisor
 from agent_cli.dispatch.preflight import verification_preflight
-from dispatch_helpers import _new, _set_alpha_dispatch, droot, envelope, one  # noqa: F401
+from dispatch_helpers import _new, _set_alpha_dispatch, droot, envelope, one, settle  # noqa: F401
 
 
 def unconfigure(root: Path) -> None:
@@ -146,6 +146,7 @@ def test_explicit_exemption_launches_and_resumes_without_configuration(droot: Pa
     fake_claude.scenario([one(envelope()), one(envelope())])
     d = _new(droot, no_checks=True)
     assert d["state"] == "done" and d["verification_result"]["status"] == "exempt"
+    settle(droot, d)
     result = dispatch.resume(droot, dispatch_id=d["id"], answer="review once more", watch=True)
     assert result["state"] == "done" and result["verification_result"]["status"] == "exempt"
     assert len(fake_claude.calls()) == 2
@@ -187,6 +188,7 @@ def test_removed_config_refuses_resume_without_record_or_lease_changes(droot: Pa
 def test_missing_config_escalation_is_not_exempt(droot: Path, fake_claude, monkeypatch):
     fake_claude.scenario([one(envelope())])
     old = _new(droot)
+    settle(droot, old)
     unconfigure(droot)
     before = snapshot(droot)
     forbid_launch_mutations(monkeypatch)

@@ -15,7 +15,7 @@ import pytest
 
 from agent_cli import dispatch, procs
 from agent_cli.dispatch import allocation, holdings
-from dispatch_helpers import _new_fast, droot  # noqa: F401
+from dispatch_helpers import _new_fast, droot, settle  # noqa: F401
 from test_dispatch_alloc_live import REAL_SNAPSHOT
 from test_dispatch_holdings import _edit, _held_by, _orphaned_attempt
 
@@ -44,6 +44,7 @@ def test_p4_crashed_supervisor_holdings_are_freed_by_collect_with_the_real_inven
     assert row["state"] == "failed"
     assert "holdings_held" not in dispatch.load(droot, d["id"])
     assert _held_by(droot, f"dispatch:{d['id']}") == []
+    settle(droot, d)
     assert _new_fast(droot, watch=False)["slot"] == 0
 
 

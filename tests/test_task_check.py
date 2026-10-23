@@ -204,7 +204,7 @@ def _feature_with_alpha(tmp_root: Path, run) -> None:
 @pytest.mark.usefixtures("notes_remote")
 def test_the_first_dispatch_of_a_session_carries_the_check(tmp_root: Path, run, fake_claude):
     from agent_cli import dispatch as dispatch_mod
-    from dispatch_helpers import envelope, one
+    from dispatch_helpers import envelope, one, settle
 
     _feature_with_alpha(tmp_root, run)
     # C2 binds launch choices too: preview the same exemption used at launch below.
@@ -225,9 +225,10 @@ def test_the_first_dispatch_of_a_session_carries_the_check(tmp_root: Path, run, 
     assert r.json["task_check"]["open"] == 1
     assert "\n  task check 001 x: 1 open" in run([*preview, "s1"]).out
     fake_claude.scenario([one(envelope())])
-    dispatch_mod.new(
+    first = dispatch_mod.new(
         tmp_root, repo="alpha", feature="1", prompt="x", watch=True, no_checks=True, session_id="s1"
     )
+    settle(tmp_root, first)
     r = run(["--json", *preview, "s1"])
     assert r.json["task_check"] is None
     assert "task check" not in run([*preview, "s1"]).out

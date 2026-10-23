@@ -33,6 +33,7 @@ from dispatch_helpers import (  # noqa: F401 -- droot is a pytest fixture
     envelope,
     one,
     says,
+    settle,
     turn,
 )
 
@@ -342,6 +343,7 @@ def test_timeout_auto_resume_and_manager_resume_are_labelled_apart(
     fake_claude.scenario([{"turns": [turn(says("still thinking"))]}, one(envelope(summary="second"))])
     d = _new_fast(troot)
     assert d["auto_resumes"][0]["reason"] == "timeout" and d["state"] == "done"
+    settle(troot, d)
     d = dispatch.resume(troot, dispatch_id=d["id"], answer="once more", watch=True)
 
     launches = _events(troot, "dispatch.launch", d["id"])
@@ -472,6 +474,7 @@ def test_failing_sink_changes_no_outcome_or_record(
 
     sink.unlink()
     monkeypatch.setattr(recorder_mod, "_process", None)
+    settle(troot, broken)
     working = _new(troot)
     assert _events(troot, "dispatch.terminal", working["id"])
     for field in OUTCOME_FIELDS:

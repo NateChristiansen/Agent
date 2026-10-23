@@ -8,13 +8,13 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
 
+from .. import activity_gate, launcher, maintenance, prices, reconcile, sessions, worker_mcp
 from .. import features as features_mod
-from .. import launcher, maintenance, prices, sessions, worker_mcp
 from .. import log as log_mod
 from .. import repos as repos_mod
 from ..core import AgentError, atomic_write, iso, now
 from ..records.dispatch import ReviewProvenance, review_of
-from ..records.narrow import as_dict, as_str
+from ..records.narrow import as_dict, as_list, as_str
 from ..repos_validate import check_timeout_minutes, resolve_timeout
 from . import (
     allocation,
@@ -84,6 +84,17 @@ def refuse_captured(feat: features_mod.Feature) -> None:
             "capture does not authorize execution. When the owner asks to execute it, set it active "
             "(feature_set status=active), then dispatch. Nothing was changed."
         )
+
+
+def _require_resume(root: Path, d: dict[str, Any], writes: list[str] | None) -> None:
+    """The activity gate for a resume, with the write scope it would run under (`writes` narrows)."""
+    activity_gate.require_launch(
+        root,
+        str(d["feature"]),
+        kind=d.get("kind"),
+        writes=d.get("writes") if writes is None else writes,
+        tasks=[n for n in as_list(d.get("tasks")) if isinstance(n, int)],
+    )
 
 
 def _launch_repo(
@@ -240,6 +251,13 @@ def new(
             raise AgentError(f"task #{t.index} is already {t.state}: {t.text}")
         if t.index not in [x.index for x in task_objs]:
             task_objs.append(t)
+    activity_gate.require_launch(
+        root,
+        feat,
+        kind=str((old or {}).get("kind") or kind),
+        writes=writes,
+        tasks=[t.index for t in task_objs],
+    )
     applied_timeout, timeout_source = resolve_timeout(rp, passed_timeout)
     default_budget, budget_usd, budget_source = rubric_mod.launch_budget(rp, row_obj, budget, budget_reason)
     parent_id = escalate_from if old is not None and effort is None else None
@@ -531,6 +549,8 @@ def _prepare_resume(
     d = load(root, dispatch_id)
     rp = repos_mod.load_registry(root).require(d["repo"])
     check_verification_preflight(verification_preflight(rp, no_checks=d.get("no_checks", False)))
+    # Heal the ledger before the record guard: appending a pending source rewrites its record.
+    reconcile.ledger(root, str(d["feature"]))
     # The board lock first, as a new launch takes it (one lock order).
     with (
         write_scope.board_lock(root),
@@ -564,6 +584,7 @@ def _prepare_resume(
             raise AgentError(f"feature {feat.number} is {feat.status}; resume only into open features")
         refuse_captured(feat)
         maintenance.check(root, feat.number, "resume")
+        _require_resume(root, d, writes)
         wt = Path(d["worktree"])
         if budget is not None:
             d["budget_usd"] = rubric_mod.resolve_budget(budget, budget_reason, float(d["budget_default_usd"]))

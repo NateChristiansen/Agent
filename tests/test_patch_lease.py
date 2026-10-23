@@ -48,9 +48,13 @@ def test_patch_parses_updates_adds_deletes_and_move_targets(tmp_root: Path):
     ]
 
 
-def test_apply_patch_is_denied_when_another_live_manager_holds_the_path(tmp_root: Path, monkeypatch):
+def test_apply_patch_is_denied_when_another_live_manager_holds_the_path(
+    tmp_root: Path, monkeypatch, run, notes_remote
+):
     monkeypatch.setattr(core, "is_alive", lambda pid: True)
     sessions.set_record(tmp_root, "mine", name="mgr-032-codex")
+    run(["feature", "new", "edit-owner", "--title", "Edit owner"])
+    run(["feature", "use", "1", "--session-id", "mine"])
     held = "vault:src/agent_cli/hooks"
     leases.take(tmp_root, held, session_id="peer", pid=os.getpid())
     patch = _patch("mine", "*** Update File: src/agent_cli/hooks/activity.py\n@@\n-old\n+new")

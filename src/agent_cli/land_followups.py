@@ -11,20 +11,28 @@ policy, never inside the transaction and never from `reconcile`: `retry_cleanup`
 the land flock after a landing and before an allocation. A held candidate stays on the journal with
 its reasons, and the obligation stays pending until every candidate is removed, gone or owned by a
 later landing, with no age limit.
+
+The `reconcile` obligation registers the landing's acceptance sources in the feature ledger. The
+landing works them out from its pinned member tips before its certificate and saves them on the
+journal it first writes, or lands nothing; recovery and the ledger's heal only replay those saved sources, once each and at any
+age. Journals prepared without the obligation register nothing.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from . import land_journal as jn
 from .core import AgentError
+from .reconcile import INTENT, OBLIGATION
 from .records.narrow import as_dict, as_list
 
 PENDING = "pending"
 CLEANUP = "cleanup"
+RECONCILE = OBLIGATION
 SETTLED = ("removed", "gone", "superseded")
 RETRY_LIMIT = 8
 
@@ -32,6 +40,13 @@ RETRY_LIMIT = 8
 def initial() -> dict[str, str]:
     """The obligations a prepared journal starts with."""
     return {"milestone": PENDING, "notices": PENDING, CLEANUP: PENDING}
+
+
+def record_sources(journal: dict[str, Any], intents: list[dict[str, Any]]) -> None:
+    """Save the landing's ledger sources (`landing_intents`) on the prepared journal before it is
+    first written, with the `reconcile` obligation pending."""
+    journal[INTENT] = intents
+    journal["obligations"] = {**as_dict(journal.get("obligations")), RECONCILE: PENDING}
 
 
 def outstanding(journal: dict[str, Any]) -> bool:
@@ -74,6 +89,11 @@ def reconcile(root: Path, main: Path, journal: dict[str, Any]) -> dict[str, Any]
             obligations["notices"] = "done"
     except Exception:  # noqa: BLE001, S110 — whatever is still pending is retried by recovery
         pass
+    try:
+        if obligations.get(RECONCILE) == PENDING and _sources(root, journal):
+            obligations[RECONCILE] = "done"
+    except Exception:  # noqa: BLE001, S110 — the saved sources stay pending for recovery or the heal
+        pass
     if obligations != journal.get("obligations"):
         journal["obligations"] = obligations
         try:
@@ -81,6 +101,111 @@ def reconcile(root: Path, main: Path, journal: dict[str, Any]) -> dict[str, Any]
         except OSError:
             pass
     return obligations
+
+
+def _sources(root: Path, journal: dict[str, Any]) -> bool:
+    """Append each of the journal's saved ledger sources once. True when every one is in its
+    feature's log; what is left is the ledger's heal's to finish."""
+    from . import features as features_mod
+    from . import reconcile as reconcile_mod
+
+    complete = True
+    for intent in (dict(as_dict(p)) for p in as_list(journal.get(INTENT))):
+        try:
+            reconcile_mod.append_source(features_mod.resolve(root, str(intent["feature"])), intent)
+        except AgentError, OSError, KeyError:
+            complete = False
+    return complete
+
+
+def landing_intents(root: Path, journal: dict[str, Any]) -> list[dict[str, Any]]:
+    """One `accept:` source per dispatch result this landing brings (`_represented`) with open
+    listed tasks, and one `landing:` source per feature owning a member branch that has no
+    dispatch record. An unbound branch raises none. Raises when Git cannot answer."""
+    from . import features as features_mod
+    from . import reconcile as reconcile_mod
+    from . import verify_record
+    from .activity_gate import bound_feature
+    from .dispatch import state as dispatch_state
+    from .land import main_of
+
+    ident = str(journal["id"])
+    main = main_of(root)
+    tips = {b: _landed_tip(journal, b) for b in _branches(journal) if b}
+    harness = verify_record.harness_repo(root).name
+    records = [
+        d for d in dispatch_state.load_all(root) if d.get("branch") in tips and d.get("repo") == harness
+    ]
+    pinned = _pinned(main, ident) if records else set[tuple[str, str]]()
+    out: list[dict[str, Any]] = []
+    for branch, tip in tips.items():
+        on_branch = [d for d in records if d.get("branch") == branch]
+        if not on_branch:
+            feature = bound_feature(root, branch)
+            if feature is not None:
+                out.append(reconcile_mod.landing_source(ident, feature))
+            continue
+        for d in on_branch:
+            if not _represented(main, d, tip, pinned):
+                continue
+            try:
+                feature = features_mod.resolve(root, str(d["feature"]))
+            except AgentError, KeyError:
+                continue  # its feature no longer resolves: nothing to accept against
+            if (accept := reconcile_mod.accept_source(d, ident, feature=feature)) is not None:
+                out.append(accept)
+    unique = {json.dumps(s, sort_keys=True): s for s in out}
+    return list(unique.values())
+
+
+def _represented(main: Path, d: dict[str, Any], tip: str, pinned: set[tuple[str, str]]) -> bool:
+    """Whether the dispatch's current result is part of what this landing brings: a raising
+    result with a diff (a done one without gets `@nodiff` acceptance instead) whose attempt's
+    `RESULT_HEAD` is in the member's pinned tip, and that no earlier landing already pinned.
+    Unfinished attempts, and results finalized before the head was kept, have none."""
+    from .dispatch.verdicts import has_diff
+    from .reconcile import RAISING_STATES, RESULT_HEAD, dispatch_generation
+
+    if d.get("kind") == "probe" or d.get("state") not in RAISING_STATES or not has_diff(d):
+        return False
+    head = as_dict(d.get(RESULT_HEAD))
+    if head.get("attempt") != d.get("attempt") or not head.get("sha") or not tip:
+        return False
+    if (f"accept:{d['id']}", dispatch_generation(d)) in pinned:
+        return False
+    return _contains(main, str(head["sha"]), tip)
+
+
+def _pinned(main: Path, ident: str) -> set[tuple[str, str]]:
+    """(source, dispatch G) of each `accept:` source an earlier, unaborted landing saved."""
+    out: set[tuple[str, str]] = set()
+    for journal in jn.every(main):
+        if journal.get("id") == ident or journal.get("state") == "aborted":
+            continue
+        for intent in (as_dict(p) for p in as_list(journal.get(INTENT))):
+            if str(intent.get("source") or "").startswith("accept:"):
+                out.add((str(intent["source"]), str(intent.get("G") or "").rpartition("@")[0]))
+    return out
+
+
+def _contains(main: Path, sha: str, tip: str) -> bool:
+    """Whether `sha` is `tip` or one of its ancestors. A commit Git no longer has is not."""
+    import subprocess
+
+    def git(*args: str) -> int:
+        return subprocess.run(  # noqa: S603 — fixed git argv, SHAs from our own records
+            ["git", "-C", str(main), *args],  # noqa: S607
+            capture_output=True,
+            timeout=10,
+            check=False,
+        ).returncode
+
+    code = git("merge-base", "--is-ancestor", sha, tip)
+    if code in (0, 1):
+        return code == 0
+    if git("cat-file", "-e", f"{tip}^{{commit}}") == 0 and git("cat-file", "-e", f"{sha}^{{commit}}") != 0:
+        return False
+    raise AgentError(f"git cannot tell whether {sha[:12]} is in {tip[:12]}")
 
 
 def newer_mark(root: Path, held: dict[str, Any], journal: dict[str, Any]) -> bool:

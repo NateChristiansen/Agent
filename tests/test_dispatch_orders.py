@@ -10,7 +10,7 @@ from agent_cli import core, dispatch, leases, links, notes, notes_writer, worktr
 from agent_cli.core import AgentError
 from agent_cli.dispatch import allocation, label_claims, lifecycle, orders
 from agent_cli.ops.dispatch import dispatch_preview_text
-from dispatch_helpers import PROMPT, _new, _new_fast, envelope, one
+from dispatch_helpers import PROMPT, _new, _new_fast, envelope, one, settle
 from dispatch_helpers import droot as droot
 
 
@@ -50,6 +50,7 @@ def test_preview_file_in_notes_equals_launched_bytes(droot: Path, fake_claude, m
     assert dispatch.file(droot, launched["id"], ".prompt.md").read_bytes() == approved
     assert fake_claude.calls()[0]["prompt"].encode("utf-8") == approved
     if not windows_newlines:  # the preview launch's worktree stays reusable once it completes
+        settle(droot, launched)
         second = _new_fast(droot)
         assert second["reused"] and second["worktree"] == launched["worktree"]
 
@@ -224,6 +225,7 @@ def test_three_order_wave_launches_without_repreview(
     if idle_worktree:
         fake_claude.scenario([one(envelope())])
         previous = _new_fast(droot)
+        settle(droot, previous)
     monkeypatch.setattr(lifecycle, "start", lambda root, d, **kw: d)
     jobs = [{"prompt": PROMPT + f"\nOrdinary job {i}.", "writes": [f"job-{i}.txt"]} for i in range(3)]
     prepared = [_new_fast(droot, dry_run=True, **job) for job in jobs]
