@@ -225,6 +225,8 @@ def new(
         feature = str(old["feature"])
         repo = repo or str(old["repo"])
         blind = blind or old.get("blind") is True
+        if writes is None and old.get("writes") == []:
+            writes = []  # a read-only parent's escalation stays read-only in gate, record and reservation
     feat = features_mod.resolve(root, feature, session_id)
     if not feat.is_open:
         raise AgentError(f"feature {feat.number} is {feat.status}; dispatch only into open features")
@@ -255,7 +257,7 @@ def new(
         root,
         feat,
         kind=str((old or {}).get("kind") or kind),
-        writes=writes if writes is not None or old is None else old.get("writes"),
+        writes=writes,
         tasks=[t.index for t in task_objs],
     )
     applied_timeout, timeout_source = resolve_timeout(rp, passed_timeout)

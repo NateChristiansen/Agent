@@ -96,6 +96,29 @@ def test_escalation_is_refused_once_the_feature_is_inactive(droot: Path, fake_cl
     assert len(fake_claude.calls()) == 1
 
 
+@pytest.mark.parametrize("status", ["proposed", "blocked"])
+def test_a_read_only_escalation_keeps_its_scope_and_runs_on_an_inactive_feature(
+    droot: Path, fake_claude, status: str
+):
+    fake_claude.scenario([one(envelope("question", open_questions=["which port?"])), one(envelope())])
+    parent = _new_fast(droot, writes=[])
+    assert parent["state"] == "question" and parent["writes"] == []
+    _status(droot, status)
+    child = _new_fast(droot, escalate_from=parent["id"], effort="high")
+    assert child["state"] == "done" and child["writes"] == []
+    assert state.load(droot, child["id"])["writes"] == []
+    assert len(fake_claude.calls()) == 2
+
+
+def test_an_implicit_scope_escalation_is_still_refused_before_allocation(droot: Path, fake_claude):
+    fake_claude.scenario([one(envelope("question", open_questions=["which port?"]))])
+    parent = _new_fast(droot)
+    _status(droot, "proposed")
+    with pytest.raises(AgentError, match="is proposed; implementation needs it active"):
+        _new_fast(droot, escalate_from=parent["id"], effort="high")
+    assert [r["id"] for r in state.load_all(droot)] == [parent["id"]]
+
+
 # ------------------------------------------------------------------ resume
 
 
