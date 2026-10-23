@@ -201,6 +201,7 @@ def test_supported_shell_targets_and_reads(tmp_root, edit_owner, group):
         "cat /tmp/input | dd of=src/x.py",
         "env touch src/x.py",
         "env sed -i x src/x.py",
+        "env -u UNUSED touch src/x.py",
         'cp /tmp/input "$PWD/src/x.py"',
         'echo text > "${PWD}/tests/x.py"',
     ],
@@ -230,6 +231,8 @@ def test_shell_writer_spellings_share_the_generated_file_checker(tmp_root, edit_
         "rg -i sed src/",
         "rg -n touch src/agent_cli",
         "env rg touch src/x.py",
+        "rg '|' touch src/x.py",
+        "rg '&&' install src/",
     ],
 )
 def test_reads_naming_a_writer_as_an_argument_are_never_gated(tmp_root, edit_owner, group, command):

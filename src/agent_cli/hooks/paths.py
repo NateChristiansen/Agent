@@ -424,10 +424,31 @@ def check_command(root: Path, cmd: str, *, payload: dict[str, Any] | None = None
         denial = _check_tokens(root, _op_tokens(reading))
         if denial:
             return denial
-        for target in _write_targets(_op_tokens(reading)):
+        for target in _write_targets(_op_tokens(reading), reading):
             if denial := activity_guard(root, payload or {}, target):
                 return denial
     return ""
+
+
+ENV_VALUE_OPTIONS = frozenset({"-u", "-C", "-S", "--unset", "--chdir", "--split-string"})
+
+
+def _quoted_operator_flags(cmd: str, toks: list[str]) -> list[bool]:
+    """Per token of `_op_tokens(cmd)`: True where an operator-shaped token was quoted data
+    (`rg '|' x`). Re-lexes without quote removal; if the two lexings disagree, nothing is quoted."""
+    text = drop_heredoc_bodies(cmd).replace("\\\n", " ")
+    lexer = shlex.shlex(text, posix=False, punctuation_chars=">|<&;")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        raw = [t for t in lexer if t.strip()]
+    except ValueError:
+        return [False] * len(toks)
+    if len(raw) != len(toks):
+        return [False] * len(toks)
+    return [
+        bool(t) and set(t) <= set("|&;") and not set(r) <= set("|&;") for t, r in zip(toks, raw, strict=True)
+    ]
 
 
 def _writer_operands(segment: list[str]) -> list[str]:
@@ -439,7 +460,7 @@ def _writer_operands(segment: list[str]) -> list[str]:
     if i < len(segment) and os.path.basename(segment[i]) == "env":
         i += 1
         while i < len(segment) and (segment[i].startswith("-") or ENV_ASSIGNMENT_RE.match(segment[i])):
-            i += 1
+            i += 2 if segment[i] in ENV_VALUE_OPTIONS else 1
     if i >= len(segment):
         return []
     head, rest = os.path.basename(segment[i]), segment[i + 1 :]
@@ -450,10 +471,11 @@ def _writer_operands(segment: list[str]) -> list[str]:
     return []
 
 
-def _write_targets(toks: list[str]) -> list[str]:
+def _write_targets(toks: list[str], cmd: str = "") -> list[str]:
     """The shell writes recognized by check_command; interpreters and formatters are outside it."""
+    quoted = _quoted_operator_flags(cmd, toks) if cmd else [False] * len(toks)
     while toks and ENV_ASSIGNMENT_RE.match(toks[0]):
-        toks = toks[1:]
+        toks, quoted = toks[1:], quoted[1:]
     if not toks:
         return []
     bases = [os.path.basename(t) for t in toks]
@@ -461,8 +483,8 @@ def _write_targets(toks: list[str]) -> list[str]:
     if bases[0] in ("cp", "mv", "ln") and len(toks) > 1:
         targets.append(toks[-1])
     segment: list[str] = []
-    for tok in [*toks, ";"]:
-        if tok and set(tok) <= set("|&;"):
+    for tok, is_data in zip([*toks, ";"], [*quoted, False], strict=True):
+        if tok and set(tok) <= set("|&;") and not is_data:
             targets.extend(_writer_operands(segment))
             segment = []
         else:
