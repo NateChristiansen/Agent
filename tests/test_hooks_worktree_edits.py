@@ -204,6 +204,13 @@ def test_supported_shell_targets_and_reads(tmp_root, edit_owner, group):
         "env -u UNUSED touch src/x.py",
         'cp /tmp/input "$PWD/src/x.py"',
         'echo text > "${PWD}/tests/x.py"',
+        "time touch src/x.py",
+        "command touch src/x.py",
+        "env -S touch src/x.py",
+        "env -C src touch x.py",
+        "env --chdir=src touch x.py",
+        'env -C /tmp touch "$PWD/src/x.py"',
+        "< /tmp/input dd of=src/x.py",
     ],
 )
 def test_shell_writer_spellings_share_the_generated_file_checker(tmp_root, edit_owner, group, command):
@@ -233,6 +240,11 @@ def test_shell_writer_spellings_share_the_generated_file_checker(tmp_root, edit_
         "env rg touch src/x.py",
         "rg '|' touch src/x.py",
         "rg '&&' install src/",
+        "printf %s \\| touch src/x.py",
+        'rg foo\\ bar "|" touch src/x.py',
+        "echo '>' src/x.py",
+        "command -v touch",
+        "time rg touch src/",
     ],
 )
 def test_reads_naming_a_writer_as_an_argument_are_never_gated(tmp_root, edit_owner, group, command):
@@ -244,15 +256,17 @@ def test_reads_naming_a_writer_as_an_argument_are_never_gated(tmp_root, edit_own
         assert hooks.run(tmp_root, group, json.dumps(payload))[0] == "", (session, command)
 
 
-def test_pwd_expansion_resolves_to_the_harness_root(tmp_root, edit_owner):
-    payload = {
-        "session_id": "unmapped",
-        "tool_name": "Bash",
-        "tool_input": {"command": 'echo text > "$PWD/.agent/scratch/draft"'},
-    }
-    assert hooks.run(tmp_root, "pre-bash", json.dumps(payload))[0] == ""
-    payload["tool_input"]["command"] = "env cat src/x.py"
-    assert hooks.run(tmp_root, "pre-bash", json.dumps(payload))[0] == ""
+def test_exempt_targets_resolve_from_the_command_directory(tmp_root, edit_owner):
+    for command in (
+        'echo text > "$PWD/.agent/scratch/draft"',
+        "env cat src/x.py",
+        "env -C /tmp touch src",
+        "env --chdir=/tmp dd of=src/x.py",
+        "env -C .agent/scratch touch draft",
+    ):
+        payload = {"session_id": "unmapped", "tool_name": "Bash", "tool_input": {"command": command}}
+        for group in ("pre-bash", "codex-pre-bash"):
+            assert hooks.run(tmp_root, group, json.dumps(payload))[0] == "", (group, command)
 
 
 @pytest.mark.parametrize("adapter", ["Edit", "apply_patch"])

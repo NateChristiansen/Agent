@@ -424,81 +424,204 @@ def check_command(root: Path, cmd: str, *, payload: dict[str, Any] | None = None
         denial = _check_tokens(root, _op_tokens(reading))
         if denial:
             return denial
-        for target in _write_targets(_op_tokens(reading), reading):
+        for target in _write_targets(reading):
             if denial := activity_guard(root, payload or {}, target):
                 return denial
     return ""
 
 
-ENV_VALUE_OPTIONS = frozenset({"-u", "-C", "-S", "--unset", "--chdir", "--split-string"})
-
-
-def _quoted_operator_flags(cmd: str, toks: list[str]) -> list[bool]:
-    """Per token of `_op_tokens(cmd)`: True where an operator-shaped token was quoted data
-    (`rg '|' x`). Re-lexes without quote removal; if the two lexings disagree, nothing is quoted."""
-    text = drop_heredoc_bodies(cmd).replace("\\\n", " ")
-    lexer = shlex.shlex(text, posix=False, punctuation_chars=">|<&;")
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        raw = [t for t in lexer if t.strip()]
-    except ValueError:
-        return [False] * len(toks)
-    if len(raw) != len(toks):
-        return [False] * len(toks)
-    return [
-        bool(t) and set(t) <= set("|&;") and not set(r) <= set("|&;") for t, r in zip(toks, raw, strict=True)
-    ]
-
-
-def _writer_operands(segment: list[str]) -> list[str]:
-    """Operands of a raw writer that is the command of one pipeline segment, after any `env`
-    wrapper. The same names as arguments (`rg touch src/`) are search words, not writes."""
-    i = 0
-    while i < len(segment) and ENV_ASSIGNMENT_RE.match(segment[i]):
-        i += 1
-    if i < len(segment) and os.path.basename(segment[i]) == "env":
-        i += 1
-        while i < len(segment) and (segment[i].startswith("-") or ENV_ASSIGNMENT_RE.match(segment[i])):
-            i += 2 if segment[i] in ENV_VALUE_OPTIONS else 1
-    if i >= len(segment):
-        return []
-    head, rest = os.path.basename(segment[i]), segment[i + 1 :]
-    if head in ("rm", "truncate", "dd", "install", "touch") or (
-        head in ("sed", "perl") and any(IN_PLACE_FLAG_RE.match(t) for t in rest)
-    ):
-        return [t for t in rest if not t.startswith("-")]
-    return []
-
-
-def _write_targets(toks: list[str], cmd: str = "") -> list[str]:
-    """The shell writes recognized by check_command; interpreters and formatters are outside it."""
-    quoted = _quoted_operator_flags(cmd, toks) if cmd else [False] * len(toks)
-    while toks and ENV_ASSIGNMENT_RE.match(toks[0]):
-        toks, quoted = toks[1:], quoted[1:]
-    if not toks:
-        return []
-    bases = [os.path.basename(t) for t in toks]
-    targets: list[str] = []
-    if bases[0] in ("cp", "mv", "ln") and len(toks) > 1:
-        targets.append(toks[-1])
-    segment: list[str] = []
-    for tok, is_data in zip([*toks, ";"], [*quoted, False], strict=True):
-        if tok and set(tok) <= set("|&;") and not is_data:
-            targets.extend(_writer_operands(segment))
-            segment = []
+def _shell_words(cmd: str) -> list[tuple[str, bool]]:
+    """`cmd` as (text, is_operator) pairs, quotes and escapes removed from words. Only an
+    unquoted, unescaped run of `|&;<>`, or a newline, is an operator, so `rg '|' x` and
+    `printf \\|` stay data. A leading fd number joins its redirection (`2>`)."""
+    text = drop_heredoc_bodies(cmd)
+    out: list[tuple[str, bool]] = []
+    word: list[str] = []
+    started = quoted = False
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and i + 1 < n:
+            if text[i + 1] != "\n":
+                word.append(text[i + 1])
+                started = quoted = True
+            i += 2
+        elif c == "'":
+            end = text.find("'", i + 1)
+            end = n if end < 0 else end
+            word.append(text[i + 1 : end])
+            started = quoted = True
+            i = end + 1
+        elif c == '"':
+            started = quoted = True
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and i + 1 < n and text[i + 1] in '"\\$`\n':
+                    if text[i + 1] != "\n":
+                        word.append(text[i + 1])
+                    i += 2
+                else:
+                    word.append(text[i])
+                    i += 1
+            i += 1
+        elif c in " \t\n|&;<>":
+            end = i + 1
+            if c in "|&;<>":
+                while end < n and text[end] in "|&;<>":
+                    end += 1
+            op = ";" if c == "\n" else text[i:end].strip()
+            if started and not quoted and "".join(word).isdigit() and op[:1] in ("<", ">"):
+                op = "".join(word) + op
+            elif started:
+                out.append(("".join(word), False))
+            if op:
+                out.append((op, True))
+            word, started, quoted = [], False, False
+            i = end
         else:
-            segment.append(tok)
-    for i, tok in enumerate(toks):
-        if tok in (">", ">>", ">|") and i + 1 < len(toks):
-            targets.append(toks[i + 1])
-        if os.path.basename(tok) == "tee":
-            for target in toks[i + 1 :]:
-                if target in ("|", "&", ";", ">", ">>"):
-                    break
-                if not target.startswith("-"):
-                    targets.append(target)
-    return [t.split("=", 1)[1] if t.startswith(("of=", "file=")) else t for t in targets]
+            word.append(c)
+            started = True
+            i += 1
+    if started:
+        out.append(("".join(word), False))
+    return out
+
+
+#: Standard command prefixes that run the rest of their words as a command, with the options
+#: that take a value. `chdir` options move the command's working directory; `split` options
+#: carry more words; `query` options look a command up instead of running it.
+COMMAND_PREFIXES: dict[str, dict[str, frozenset[str]]] = {
+    "command": {"query": frozenset({"-v", "-V"})},
+    "exec": {"value": frozenset({"-a"})},
+    "time": {"value": frozenset({"-f", "-o", "--format", "--output"})},
+    "nice": {"value": frozenset({"-n", "--adjustment"})},
+    "nohup": {},
+    "env": {
+        "value": frozenset({"-u", "--unset"}),
+        "chdir": frozenset({"-C", "--chdir"}),
+        "split": frozenset({"-S", "--split-string"}),
+    },
+    "timeout": {"value": frozenset({"-k", "-s", "--kill-after", "--signal"})},
+    "stdbuf": {"value": frozenset({"-e", "-i", "-o", "--error", "--input", "--output"})},
+    "xargs": {
+        "value": frozenset(
+            {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-args"}
+            | {"--max-chars", "--max-lines", "--max-procs", "--process-slot-var"}
+        )
+    },
+    "sudo": {
+        "value": frozenset({"-C", "-g", "-p", "-r", "-t", "-T", "-U", "-u", "--close-from", "--group"})
+        | frozenset({"--other-user", "--prompt", "--role", "--type", "--command-timeout", "--user"}),
+        "chdir": frozenset({"-D", "--chdir"}),
+        "query": frozenset({"-K", "-k", "-l", "-V", "-v", "--list", "--validate", "--remove-timestamp"})
+        | frozenset({"--reset-timestamp"}),
+    },
+}
+#: Positional words a prefix takes before the command: `timeout 5 cmd`.
+PREFIX_OPERANDS = {"timeout": 1}
+RAW_WRITERS = frozenset({"rm", "truncate", "install", "touch", "tee"})
+
+
+def _from_cwd(cwd: str, path: str) -> str:
+    """`path` as named from the working directory `cwd`; "" is the shell's own. `$PWD` is
+    expanded by the shell before the command runs, so it stays anchored at the shell's."""
+    if not cwd or path == "$PWD" or path.startswith(("$PWD/", "${PWD}")):
+        return path
+    if posixpath.isabs(slashes(path)) or (sys.platform == "win32" and ntpath.isabs(path)):
+        return path
+    return posixpath.join(slashes(cwd), slashes(path))
+
+
+def _destination(args: list[str]) -> list[str]:
+    for k, arg in enumerate(args):
+        if arg in ("-t", "--target-directory") and k + 1 < len(args):
+            return [args[k + 1]]
+        if arg.startswith("--target-directory="):
+            return [arg.split("=", 1)[1]]
+        if arg.startswith("-t") and len(arg) > 2:
+            return [arg[2:]]
+    operands = [a for a in args if not a.startswith("-")]
+    return operands[-1:]
+
+
+def _command_targets(words: list[str]) -> list[str]:
+    """Write operands of one simple command whose command, after leading assignments and
+    `COMMAND_PREFIXES`, is a raw writer. A writer's name anywhere else (`rg touch src/`) is data."""
+    i, cwd = 0, ""
+    while i < len(words) and ENV_ASSIGNMENT_RE.match(words[i]):
+        i += 1
+    while i < len(words) and (head := os.path.basename(words[i])) in COMMAND_PREFIXES:
+        spec = COMMAND_PREFIXES[head]
+        query, chdir, split = (spec.get(k, frozenset()) for k in ("query", "chdir", "split"))
+        takes = spec.get("value", frozenset()) | chdir | split
+        i += 1
+        while i < len(words):
+            word = words[i]
+            if word == "--":
+                i += 1
+                break
+            if head == "env" and (word == "-" or ENV_ASSIGNMENT_RE.match(word)):
+                i += 1
+                continue
+            if not word.startswith("-") or word == "-":
+                break
+            name, value, attached = word, "", False
+            if word.startswith("--"):
+                name, eq, value = word.partition("=")
+                attached = bool(eq)
+            else:
+                for j in range(1, len(word)):
+                    if "-" + word[j] in takes | query:
+                        name, value, attached = "-" + word[j], word[j + 1 :], bool(word[j + 1 :])
+                        break
+            if name in query or name in ("--help", "--version"):
+                return []
+            i += 1
+            if name in takes and not attached:
+                value = words[i] if i < len(words) else ""
+                i += 1
+            if name in chdir:
+                cwd = _from_cwd(cwd, value)
+            elif name in split:
+                words = [*words[:i], *(text for text, _ in _shell_words(value)), *words[i:]]
+        i += PREFIX_OPERANDS.get(head, 0)
+    if i >= len(words):
+        return []
+    head, rest = os.path.basename(words[i]), words[i + 1 :]
+    if head == "dd":
+        found = [w.split("=", 1)[1] for w in rest if w.startswith("of=")]
+    elif head in ("cp", "mv", "ln"):
+        found = _destination(rest)
+    elif head in RAW_WRITERS or (head in ("sed", "perl") and any(IN_PLACE_FLAG_RE.match(t) for t in rest)):
+        found = [w for w in rest if not w.startswith("-")]
+    else:
+        return []
+    return [_from_cwd(cwd, t) for t in found]
+
+
+def _write_targets(cmd: str) -> list[str]:
+    """The shell writes recognized by check_command; interpreters and formatters are outside it.
+    Each simple command between control operators adds its output redirections, which the
+    shell opens from its own directory, and the operands of a raw writer it runs."""
+    pairs = [*_shell_words(cmd), (";", True)]
+    targets: list[str] = []
+    words: list[str] = []
+    i = 0
+    while i < len(pairs):
+        text, is_op = pairs[i]
+        if not is_op:
+            words.append(text)
+        elif not set(text) & set("<>"):
+            targets.extend(_command_targets(words))
+            words = []
+        elif i + 1 < len(pairs) and not pairs[i + 1][1]:
+            i += 1
+            target = pairs[i][0]
+            duplicate = text.endswith("&") and (target.isdigit() or target == "-")
+            if ">" in text and not duplicate:
+                targets.append(target)
+        i += 1
+    return targets
 
 
 def shell_readings(cmd: str) -> list[str]:
