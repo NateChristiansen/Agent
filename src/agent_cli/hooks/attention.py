@@ -240,6 +240,8 @@ def heartbeat(root: Path, session_id: str, record: dict[str, Any]) -> None:
             from ..vault import live
 
             live.write_quietly(root)
+    except sessions.LockDeadline:
+        raise  # the caller's scope is spent: its remaining writes are skipped, not attempted
     except Exception as exc:  # noqa: BLE001 — a heartbeat is a courtesy
         sys.stderr.write(f"note: activity heartbeat failed ({exc})\n")
 

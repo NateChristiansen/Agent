@@ -440,3 +440,43 @@ def test_parallel_writers_keep_every_field(tmp_root: Path):
     record = sessions.get(tmp_root, "race") or {}
     assert all(f"f{n}_{i}" in record for n in range(8) for i in range(15))
     assert (record["name"], record["pid"]) == ("mgr-001-a", 7) and record["started_at"]
+
+
+def test_lock_deadline_bounds_waits_in_its_scope_only(tmp_root: Path):
+    """One deadline spans every session-lock wait in the scope; a tighter caller timeout keeps its
+    own error, a spent scope writes nothing, and the scope ends with the block."""
+    import threading
+    import time
+
+    from agent_cli import sessions
+    from agent_cli.core import AgentError
+
+    taken, release = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        with sessions._locked(tmp_root, "s"):
+            taken.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert taken.wait(5)
+    try:
+        with sessions.lock_deadline(0.3):
+            began = time.monotonic()
+            with pytest.raises(AgentError) as tight:
+                sessions.set_field(tmp_root, "s", "a", 1, timeout=0.05)
+            assert type(tight.value) is AgentError
+            with pytest.raises(sessions.LockDeadline):
+                sessions.set_field(tmp_root, "s", "b", 1)
+            with sessions.lock_deadline(5), pytest.raises(sessions.LockDeadline):
+                sessions.set_field(tmp_root, "s", "c", 1)  # a nested scope keeps the earlier deadline
+            assert time.monotonic() - began < 1
+        assert sessions._LOCK_DEADLINE.get() is None
+    finally:
+        release.set()
+        holder.join()
+    with sessions.lock_deadline(0), pytest.raises(sessions.LockDeadline):
+        sessions.set_field(tmp_root, "s", "d", 1)  # free, but spent
+    sessions.set_field(tmp_root, "s", "e", 1)
+    assert set(sessions.get(tmp_root, "s") or {}) == {"session_id", "e"}

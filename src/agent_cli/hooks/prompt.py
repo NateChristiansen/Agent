@@ -17,22 +17,31 @@ from ..records.narrow import as_dict
 from .activity import activity, codex_activity
 from .session import dispatch_inbox, session_start
 
+LOCK_DEADLINE_S = 2.0
+"""What one prompt hook may spend in total waiting on session locks, the inbox's own one-second
+deadline included, so a held lock cannot hold the owner's prompt past the host's budget."""
+
+
+def _failed(exc: Exception) -> None:
+    sys.stderr.write(f"note: prompt activity failed ({exc})\n")
+
 
 def prompt(root: Path, payload: dict[str, Any], activity_hook: Callable[[Path, dict[str, Any]], str]) -> str:
-    inbox = dispatch_inbox(root, payload)
-    if inbox:
+    with sessions.lock_deadline(LOCK_DEADLINE_S):
+        inbox = dispatch_inbox(root, payload)
+        if inbox:
+            try:
+                if json.loads(inbox).get("decision") == "block":
+                    # No turn starts and no Stop follows. Keep the preceding state: normally idle,
+                    # but also preserve a pending owner question or a real working turn.
+                    return inbox
+            except json.JSONDecodeError, AttributeError:
+                pass
         try:
-            if json.loads(inbox).get("decision") == "block":
-                # No turn starts and no Stop follows. Keep the preceding state: normally idle,
-                # but also preserve a pending owner question or a real working turn.
-                return inbox
-        except json.JSONDecodeError, AttributeError:
-            pass
-    try:
-        # The inbox let this prompt through, so a wake among them starts a turn.
-        activity_hook(root, {**payload, "_wake_accepted": True})
-    except Exception as exc:  # noqa: BLE001 — inbox delivery survives a courtesy activity failure
-        sys.stderr.write(f"note: prompt activity failed ({exc})\n")
+            # The inbox let this prompt through, so a wake among them starts a turn.
+            activity_hook(root, {**payload, "_wake_accepted": True})
+        except Exception as exc:  # noqa: BLE001 — inbox delivery survives a courtesy activity failure
+            _failed(exc)
     return inbox
 
 
@@ -41,6 +50,11 @@ def manager_prompt(root: Path, payload: dict[str, Any]) -> str:
 
 
 def codex_prompt(root: Path, payload: dict[str, Any]) -> str:
+    with sessions.lock_deadline(LOCK_DEADLINE_S):
+        return _codex_prompt(root, payload)
+
+
+def _codex_prompt(root: Path, payload: dict[str, Any]) -> str:
     # Codex 0.155/0.156 omits SessionStart on `codex resume`. The old record still has the
     # previous process and tab, so ordinary relabels target a closed tab even after a prompt.
     # The first prompt in the new process is the earliest reliable hook boundary.
@@ -50,9 +64,18 @@ def codex_prompt(root: Path, payload: dict[str, Any]) -> str:
     resumed = bool(record and record.get("pid") and pid and record["pid"] != pid)
     if resumed:
         old_display = str(record.get("tab_display_name") or "")
-        for field in ("tab_display_name", "tab_name", "tab_label"):
-            sessions.set_field(root, sid, field, None)
-        payload = {**payload, "_resume_claim_untitled": True, "_resume_old_display": old_display}
+        try:
+            sessions.update_record(
+                root,
+                sid,
+                lambda current: {**current, "tab_display_name": None, "tab_name": None, "tab_label": None},
+            )
+        except sessions.LockDeadline as exc:
+            # The record keeps the old pid, so the next prompt prepares the resume again.
+            _failed(exc)
+            resumed = False
+        else:
+            payload = {**payload, "_resume_claim_untitled": True, "_resume_old_display": old_display}
     result = prompt(root, payload, codex_activity)
     if not resumed:
         return result
@@ -64,6 +87,8 @@ def codex_prompt(root: Path, payload: dict[str, Any]) -> str:
         startup = str(json.loads(raw)["hookSpecificOutput"]["additionalContext"])
     except KeyError, TypeError, ValueError:
         pass
+    except sessions.LockDeadline as exc:
+        _failed(exc)
     if not startup:
         return result
     if result:

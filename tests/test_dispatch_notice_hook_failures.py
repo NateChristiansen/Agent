@@ -151,10 +151,10 @@ def test_a_held_inbox_guard_injects_nothing_well_inside_the_host_budget(mgr: Pat
     assert json.loads(stop(mgr))["reason"].startswith(HEADING)  # once free, the fallback works
 
 
-@pytest.mark.parametrize("hook", ["peer-stop", "dispatch-inbox"])
+@pytest.mark.parametrize("hook", ["peer-stop", "dispatch-inbox", "manager-prompt", "codex-prompt"])
 def test_a_held_session_lock_inside_the_guard_injects_nothing(mgr: Path, hook: str):
-    """The acknowledgment's session lock is bounded by what is left of the one deadline.
-    `manager-prompt` is not used here: its activity half writes the session record unbounded."""
+    """The acknowledgment's session lock is bounded by what is left of the one deadline, and a
+    prompt hook's activity half by what is left of its own."""
     nid = notify(mgr)
     peer_send(mgr, "queued")
     wake = reservation(mgr)
@@ -167,6 +167,53 @@ def test_a_held_session_lock_inside_the_guard_injects_nothing(mgr: Path, hook: s
     reason = json.loads(stop(mgr))["reason"]
     assert HEADING in reason and "queued" in reason
     assert not peers.stale_path(mgr, MGR).exists()  # retired once the reservation is acknowledged
+
+
+@pytest.mark.parametrize("hook", ["manager-prompt", "codex-prompt"])
+@pytest.mark.parametrize("text", ["owner's prompt", peer_wake.DISPATCH_WAKE_TEXT])
+def test_a_held_session_lock_ends_prompt_activity_and_nothing_writes_later(
+    mgr: Path, capsys, hook: str, text: str
+):
+    sessions.set_field(mgr, MGR, "activity", {"state": "idle"})
+    sessions.set_field(mgr, MGR, "owner_question_pending", True)
+    nid = notify(mgr)
+    payload = json.dumps({"session_id": MGR, "hook_event_name": "UserPromptSubmit", "prompt": text})
+    path = sessions._path(mgr, MGR)
+    with held_elsewhere(sessions._locked(mgr, MGR)):
+        (out, _), elapsed = timed(lambda: hooks.run(mgr, hook, payload))
+        held = path.read_bytes()
+    assert elapsed < HOST_BUDGET_S - 1
+    assert "decision" not in out
+    assert "note: prompt activity failed" in capsys.readouterr().err
+    time.sleep(0.2)
+    assert path.read_bytes() == held  # no write was left waiting on the lock
+    record = sessions.get(mgr, MGR) or {}
+    assert record["activity"]["state"] == "idle" and record["owner_question_pending"] is True
+    assert consumed(mgr, nid) is None
+
+    out = prompt(mgr, "owner's prompt", hook)  # uncontended, after the scope ended
+    assert HEADING in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert (sessions.get(mgr, MGR) or {})["activity"]["state"] == "working"
+    assert sessions._LOCK_DEADLINE.get() is None
+
+
+def test_a_held_session_lock_defers_codex_resume_preparation(mgr: Path, monkeypatch):
+    sessions.set_field(mgr, MGR, "provider", "codex")
+    sessions.set_field(mgr, MGR, "pid", 11111)
+    sessions.set_field(mgr, MGR, "tab_display_name", "mgr-one · cx 0001")
+    monkeypatch.setattr(sessions, "resolve_pid", lambda: 22222)
+    payload = json.dumps(
+        {"session_id": MGR, "hook_event_name": "UserPromptSubmit", "prompt": "owner's prompt"}
+    )
+    with held_elsewhere(sessions._locked(mgr, MGR)):
+        (out, _), elapsed = timed(lambda: hooks.run(mgr, "codex-prompt", payload))
+    assert elapsed < HOST_BUDGET_S - 1
+    record = sessions.get(mgr, MGR) or {}
+    assert record["pid"] == 11111 and record["tab_display_name"] == "mgr-one · cx 0001"
+
+    out = prompt(mgr, "owner's prompt", "codex-prompt")  # the next prompt prepares the resume
+    assert "source: resume" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert (sessions.get(mgr, MGR) or {})["tab_display_name"] is None
 
 
 def test_a_failed_acknowledgment_does_not_let_the_spent_wake_swallow_the_next_send(mgr: Path):

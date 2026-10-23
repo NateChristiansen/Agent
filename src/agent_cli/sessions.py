@@ -6,6 +6,7 @@ there.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import os
 import time
@@ -193,12 +194,51 @@ def set_record(
     return update_record(root, session_id, change)
 
 
+class LockDeadline(AgentError):
+    """A session-lock wait ended by the `lock_deadline` scope rather than the caller's `timeout`."""
+
+
+_LOCK_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "session_lock_deadline", default=None
+)
+
+
+@contextlib.contextmanager
+def lock_deadline(seconds: float) -> Generator[None]:
+    """Bound every session-lock wait in this thread, inside the block, by one shared monotonic
+    deadline `seconds` from now. A nested scope keeps the earlier deadline."""
+    outer = _LOCK_DEADLINE.get()
+    deadline = time.monotonic() + seconds
+    token = _LOCK_DEADLINE.set(deadline if outer is None else min(outer, deadline))
+    try:
+        yield
+    finally:
+        _LOCK_DEADLINE.reset(token)
+
+
 @contextlib.contextmanager
 def _locked(root: Path, session_id: str, timeout: float | None = None) -> Generator[None]:
     """Hold `<sid>.lock` for an entire session read-modify-write so concurrent hooks cannot overwrite
-    each other's fields. Writes take milliseconds. Callers with their own deadline pass `timeout`.
+    each other's fields. Writes take milliseconds. Callers with their own deadline pass `timeout`;
+    inside `lock_deadline` the wait is also bounded by what is left of that scope.
     """
-    with _file_locked(root, agent_parts("sessions", f"{session_id}.lock"), timeout):
+    parts = agent_parts("sessions", f"{session_id}.lock")
+    deadline = _LOCK_DEADLINE.get()
+    if deadline is None:
+        with _file_locked(root, parts, timeout):
+            yield
+        return
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise LockDeadline(BUSY)
+    explicit = timeout is not None and timeout <= left
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(_file_locked(root, parts, timeout if explicit else left))
+        except AgentError:
+            if explicit:
+                raise
+            raise LockDeadline(BUSY) from None
         yield
 
 
