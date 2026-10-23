@@ -114,6 +114,8 @@ def read(main: Path, ident: str) -> dict[str, Any]:
 def every(main: Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for p in sorted(land_dir(main).glob("*.json")):
+        if p.name.startswith("op-"):
+            continue
         try:
             out.append(read(main, p.stem))
         except AgentError:

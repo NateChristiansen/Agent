@@ -132,6 +132,14 @@ def test_a_late_note_never_moves_a_finished_operation_back(tmp_path: Path):
     assert op["state"] == "failed" and op["why"] == "did not pass" and op["pid"] == 4242
 
 
+def test_every_returns_journals_not_operation_files(tmp_path: Path):
+    jn.write(tmp_path, {"id": "j1", "state": "done", "ts": jn.now()})
+    jn.op_update(tmp_path, "o1", state="done", journal="j1")
+    assert [j["id"] for j in jn.every(tmp_path)] == ["j1"]
+    assert jn.pending(tmp_path) == []
+    assert [o["id"] for o in jn.ops_recent(tmp_path)] == ["o1"]
+
+
 def test_concurrent_notes_all_land(tmp_path: Path):
     jn.op_update(tmp_path, "op2", state="queued")
     threads = [

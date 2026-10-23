@@ -50,6 +50,13 @@ def test_land_status_shows_each_landings_figures_and_unknown_without_a_suite_blo
     assert "20261020T100000-aaaaaa done agent/20261020T100000-aaaaaa: ? tests, ? spawns, ? s" in lines
 
 
+def test_a_landing_with_a_done_operation_file_is_listed_once(main: Path):
+    landing(main, "20261023T001837-396277", "a" * 32, {"tests": 10, "spawns": 20, "wall_s": 1.0})
+    jn.op_update(main, "20261023T001837-8ea98c", state="done", journal="20261023T001837-396277")
+    landings = ops.land(main, status=True).data["landings"]
+    assert [row["id"] for row in landings] == ["20261023T001837-396277"]
+
+
 def test_doctor_warns_on_slack_above_twice_the_headroom_and_names_the_tighter_value(main: Path):
     landing(main, "20261021T100000-bbbbbb", "b" * 32, {"tests": 1000, "spawns": 10000, "wall_s": 9.0})
     budget(main, tests=1070, spawns=10600)
