@@ -477,10 +477,14 @@ def test_lock_budget_bounds_waits_in_its_scope_only(tmp_root: Path):
             assert time.monotonic() - began < 1
             release.set()
             holder.join()
-            sessions.set_field(tmp_root, "s", "d", 1)  # spent, but the lock is free
+            with pytest.raises(sessions.LockDeadline):
+                sessions.set_field(tmp_root, "s", "d", 1)  # free now, but the scope was cut
         assert sessions._LOCK_BUDGET.get() is None
     finally:
         release.set()
         holder.join()
-    sessions.set_field(tmp_root, "s", "e", 1)
-    assert set(sessions.get(tmp_root, "s") or {}) == {"session_id", "d", "e"}
+    with sessions.lock_budget(0) as spent:
+        sessions.set_field(tmp_root, "s", "e", 1)  # spent without a cut: a free lock is taken
+    assert not spent.cut
+    sessions.set_field(tmp_root, "s", "f", 1)
+    assert set(sessions.get(tmp_root, "s") or {}) == {"session_id", "e", "f"}

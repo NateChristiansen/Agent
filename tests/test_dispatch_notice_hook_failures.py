@@ -260,6 +260,56 @@ def owner_prompt() -> dict:
     return {"session_id": MGR, "hook_event_name": "UserPromptSubmit", "prompt": "owner's prompt"}
 
 
+@pytest.mark.parametrize("case", ["manager-prompt", "codex-prompt", "codex-resume"])
+def test_a_cut_lock_wait_skips_every_later_write_even_once_the_lock_is_free(
+    mgr: Path, monkeypatch, capsys, case: str
+):
+    """The holder lets go the moment the budget cuts a wait, so every later write would find the
+    lock free. None may land: the rest of the chain is skipped, not attempted."""
+    from agent_cli.core import AgentError
+
+    hook = "manager-prompt" if case == "manager-prompt" else "codex-prompt"
+    sessions.set_field(mgr, MGR, "activity", {"state": "idle"})
+    if case != "manager-prompt":
+        sessions.set_field(mgr, MGR, "provider", "codex")
+    if case == "codex-resume":
+        sessions.set_field(mgr, MGR, "pid", 11111)
+        sessions.set_field(mgr, MGR, "tab_display_name", "mgr-one · cx 0001")
+        monkeypatch.setattr(sessions, "resolve_pid", lambda: 22222)
+        monkeypatch.setattr(sessions, "resolve_identity", lambda: (22222, True))
+    path = sessions._path(mgr, MGR)
+    before = path.read_bytes()
+    held = ExitStack()
+    held.enter_context(held_elsewhere(sessions._locked(mgr, MGR)))
+    real = sessions._file_locked
+    cuts: list[float | None] = []
+
+    @contextmanager
+    def file_locked(root, parts, timeout=None):
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(real(root, parts, timeout))
+            except AgentError:
+                cuts.append(timeout)
+                held.close()  # released and joined: the lock is free from here on
+                raise
+            yield
+
+    monkeypatch.setattr(sessions, "_file_locked", file_locked)
+    with held:
+        (_, _), elapsed = timed(lambda: hooks.run(mgr, hook, json.dumps(owner_prompt())))
+    assert elapsed < HOST_BUDGET_S - 1
+    assert len(cuts) == 1  # one wait was cut; nothing after it even tried the lock
+    assert "note: prompt activity failed" in capsys.readouterr().err
+    assert path.read_bytes() == before
+
+    monkeypatch.setattr(sessions, "_file_locked", real)
+    out = prompt(mgr, "owner's prompt", hook)  # the next event refreshes what was skipped
+    assert (sessions.get(mgr, MGR) or {})["activity"]["state"] == "working"
+    if case == "codex-resume":
+        assert "source: resume" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
 @pytest.mark.parametrize("hook", ["manager-prompt", "codex-prompt"])
 def test_a_slow_successful_tab_claim_still_records_it_on_a_free_lock(
     mgr: Path, monkeypatch, capsys, hook: str

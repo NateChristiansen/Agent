@@ -232,8 +232,9 @@ def lock_budget(seconds: float) -> Generator[LockBudget]:
 def _locked(root: Path, session_id: str, timeout: float | None = None) -> Generator[None]:
     """Hold `<sid>.lock` for an entire session read-modify-write so concurrent hooks cannot overwrite
     each other's fields. Writes take milliseconds. Callers with their own deadline pass `timeout`;
-    inside `lock_budget` the wait is also bounded by what is left of that budget, and a spent
-    budget still makes one non-blocking attempt.
+    inside `lock_budget` the wait is also bounded by what is left of that budget. A spent budget
+    still makes one non-blocking attempt; once a wait has been cut, every later write in the scope
+    is skipped without trying the lock.
     """
     parts = agent_parts("sessions", f"{session_id}.lock")
     budget = _LOCK_BUDGET.get()
@@ -241,6 +242,8 @@ def _locked(root: Path, session_id: str, timeout: float | None = None) -> Genera
         with _file_locked(root, parts, timeout):
             yield
         return
+    if budget.cut:
+        raise LockDeadline(BUSY)
     explicit = timeout is not None and timeout <= budget.left
     began = time.monotonic()
     with contextlib.ExitStack() as stack:
