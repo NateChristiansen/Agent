@@ -57,17 +57,8 @@ def test_backslash_patch_to_a_generated_file_is_denied(tmp_root: Path, path: str
     assert code == 0 and _decision(out) == "deny", path
 
 
-@pytest.fixture
-def active_manager(tmp_root: Path, run, monkeypatch: pytest.MonkeyPatch, notes_remote: Path) -> None:
-    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
-    assert run(["feature", "new", "edit-owner", "--title", "Edit owner"]).code == 0
-    assert run(["feature", "use", "1", "--session-id", "mine"]).code == 0
-
-
 @pytest.mark.parametrize("path", [r".agent\scratch\plan.md", r"features\030-x\plan.md", r"harness\notes.md"])
-def test_backslash_patch_to_a_hand_edited_file_is_not_denied(
-    tmp_root: Path, path: str, active_manager
-) -> None:
+def test_backslash_patch_to_a_hand_edited_file_is_not_denied(tmp_root: Path, path: str) -> None:
     out, _ = hooks.run(tmp_root, "protect-generated", _patch(f"*** Add File: {path}\n+text"))
     assert _decision(out) != "deny", path
 

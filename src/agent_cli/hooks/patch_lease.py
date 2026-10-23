@@ -18,7 +18,6 @@ from .notes_paths import OWNER_FILES, generated_denial, lexical_vault_path, note
 from .paths import (
     PRODUCT_CODE_REASON,
     PROTECTED_PATH_RE,
-    activity_guard,
     check_path,
     deny,
     relative,
@@ -93,15 +92,6 @@ def patch_path_guard(root: Path, payload: dict[str, Any]) -> str:
                 return denial
             if logical.lower() in OWNER_FILES:
                 return deny(f"{raw} is the owner's file ({logical}); ask the owner to change it")
-    from .worktree_guard import manager_worktree, worktree_denial
-
-    for raw in patch_targets(str(data.get("command") or "")):
-        written = manager_worktree(root, raw)
-        if written is not None:
-            if denial := worktree_denial(raw, *written):
-                return denial
-        if denial := activity_guard(root, payload, raw):
-            return denial
     return ""
 
 
