@@ -430,6 +430,26 @@ def check_command(root: Path, cmd: str, *, payload: dict[str, Any] | None = None
     return ""
 
 
+def _writer_operands(segment: list[str]) -> list[str]:
+    """Operands of a raw writer that is the command of one pipeline segment, after any `env`
+    wrapper. The same names as arguments (`rg touch src/`) are search words, not writes."""
+    i = 0
+    while i < len(segment) and ENV_ASSIGNMENT_RE.match(segment[i]):
+        i += 1
+    if i < len(segment) and os.path.basename(segment[i]) == "env":
+        i += 1
+        while i < len(segment) and (segment[i].startswith("-") or ENV_ASSIGNMENT_RE.match(segment[i])):
+            i += 1
+    if i >= len(segment):
+        return []
+    head, rest = os.path.basename(segment[i]), segment[i + 1 :]
+    if head in ("rm", "truncate", "dd", "install", "touch") or (
+        head in ("sed", "perl") and any(IN_PLACE_FLAG_RE.match(t) for t in rest)
+    ):
+        return [t for t in rest if not t.startswith("-")]
+    return []
+
+
 def _write_targets(toks: list[str]) -> list[str]:
     """The shell writes recognized by check_command; interpreters and formatters are outside it."""
     while toks and ENV_ASSIGNMENT_RE.match(toks[0]):
@@ -440,14 +460,13 @@ def _write_targets(toks: list[str]) -> list[str]:
     targets: list[str] = []
     if bases[0] in ("cp", "mv", "ln") and len(toks) > 1:
         targets.append(toks[-1])
-    in_place = any(IN_PLACE_FLAG_RE.match(t) for t in toks)
-    for i, base in enumerate(bases):
-        if base in ("rm", "truncate", "dd", "install", "touch") or (base in ("sed", "perl") and in_place):
-            for tok in toks[i + 1 :]:
-                if tok in ("|", "&", ";"):
-                    break
-                if not tok.startswith("-"):
-                    targets.append(tok)
+    segment: list[str] = []
+    for tok in [*toks, ";"]:
+        if tok and set(tok) <= set("|&;"):
+            targets.extend(_writer_operands(segment))
+            segment = []
+        else:
+            segment.append(tok)
     for i, tok in enumerate(toks):
         if tok in (">", ">>", ">|") and i + 1 < len(toks):
             targets.append(toks[i + 1])

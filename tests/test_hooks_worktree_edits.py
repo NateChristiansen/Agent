@@ -220,6 +220,27 @@ def test_shell_writer_spellings_share_the_generated_file_checker(tmp_root, edit_
     assert out == ""
 
 
+@pytest.mark.parametrize("group", ["pre-bash", "codex-pre-bash"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg install src/",
+        "grep -rn touch src/x.py",
+        "pytest -k install tests/test_x.py",
+        "rg -i sed src/",
+        "rg -n touch src/agent_cli",
+        "env rg touch src/x.py",
+    ],
+)
+def test_reads_naming_a_writer_as_an_argument_are_never_gated(tmp_root, edit_owner, group, command):
+    mapped = features.resolve(tmp_root, "2")
+    mapped.meta["status"] = "proposed"
+    mapped.save()
+    for session in ("unmapped", "manager"):
+        payload = {"session_id": session, "tool_name": "Bash", "tool_input": {"command": command}}
+        assert hooks.run(tmp_root, group, json.dumps(payload))[0] == "", (session, command)
+
+
 def test_pwd_expansion_resolves_to_the_harness_root(tmp_root, edit_owner):
     payload = {
         "session_id": "unmapped",
