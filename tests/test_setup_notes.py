@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_cli import notes, ops
+from agent_cli import gitgate, notes, ops
 from agent_cli import repos as repos_mod
 from agent_cli.core import AgentError, find_root
 from symlinks import assert_linked
@@ -99,6 +99,8 @@ def test_setup_with_notes_links_the_set_and_remembers_the_repo(
     assert config["permissions"]["agent-manager"]["network"]["unix_sockets"]["/tmp/cc-socks"] == "allow"
     assert config["features"]["network_proxy"] is True
     assert _step(op, "codex manager profile")["state"] == "done"
+    assert "alpha installed" in _step(op, "git hooks")["detail"]
+    assert gitgate.inspect_review(tmp_root / "repos" / "alpha-api", tmp_root) == "installed"
     assert op.data["ok"] is True
 
 

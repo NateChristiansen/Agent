@@ -14,6 +14,7 @@ import pytest
 from agent_cli import export, gitgate
 from agent_cli.core import AgentError
 from agent_cli.hooks import commit_guard as guard_module
+from land_helpers import harness  # noqa: F401 -- pytest fixture
 
 # A `#!/bin/sh` stub runner and the executable bit are POSIX; on Windows the real agent.exe is
 # exercised by `test_the_real_gate_hooks_run_on_windows` instead.
@@ -394,6 +395,126 @@ def test_the_hook_fails_closed_without_the_checkouts_venv(tmp_path: Path) -> Non
     assert "gate unavailable" in proc.stderr
 
 
+# ------------------------------------------------------------------ product clones
+
+
+def test_each_registered_clone_gets_the_review_hook_and_its_worktrees_share_it(tmp_root: Path) -> None:
+    alpha = tmp_root / "repos" / "alpha-api"
+    assert gitgate.install_review(tmp_root) == {"alpha": "installed", "beta": "not cloned here"}
+    assert gitgate.inspect_review(alpha, tmp_root) == "installed"
+    assert gitgate.install_review(tmp_root)["alpha"] == "already installed"
+    hook = gitgate.hooks_dir(alpha) / "pre-push"
+    assert f"harness={tmp_root.resolve().as_posix()}" in hook.read_text(encoding="utf-8")
+    _git(alpha, "worktree", "add", "-q", str(tmp_root.parent / "wt"), "-b", "side")
+    assert gitgate.inspect_review(tmp_root.parent / "wt", tmp_root) == "installed"
+    hook.write_text(f"#!/bin/sh\n{gitgate.MARKER} {gitgate.REVIEW_HOOK}\nold\n", encoding="utf-8")
+    assert gitgate.install_review(tmp_root)["alpha"] == "updated"
+    assert hook.read_text(encoding="utf-8") == gitgate.review_script(tmp_root)
+    # a registered clone of another harness keeps its full gate: export-only and pass records
+    hook.write_text(gitgate.script("pre-push"), encoding="utf-8")
+    assert gitgate.install_review(tmp_root)["alpha"] == "foreign hook present, left in place"
+    assert hook.read_text(encoding="utf-8") == gitgate.script("pre-push")
+
+
+def test_the_review_hook_names_the_harness_s_main_checkout(harness: Path, tmp_path: Path) -> None:  # noqa: F811
+    """Installed from a manager worktree that later went away, the hook named the worktree: every
+    push failed for want of its venv, and doctor in the main checkout read the hook as stale."""
+    product = _repo(tmp_path / "product")
+    with (harness / "agent.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(PRODUCT.format(path="../product"))
+    _git(harness, "worktree", "add", "-q", "-b", "manager", str(tmp_path / "manager"))
+    manager = tmp_path / "manager"
+    (manager / "agent.yaml").write_bytes((harness / "agent.yaml").read_bytes())
+    assert gitgate.install_review(manager) == {"product": "installed"}
+    hook = (gitgate.hooks_dir(product) / "pre-push").read_text(encoding="utf-8")
+    assert f"harness={harness.resolve().as_posix()}\n" in hook
+    assert gitgate.review_script(manager) == gitgate.review_script(harness)
+    _git(harness, "worktree", "remove", "--force", str(manager))
+    assert gitgate.inspect_review(product, harness) == "installed"
+    # a hook an earlier build wrote with the worktree's path is ours and stale, so setup rewrites it
+    old = hook.replace(harness.resolve().as_posix(), manager.resolve().as_posix())
+    (gitgate.hooks_dir(product) / "pre-push").write_text(old, encoding="utf-8")
+    assert gitgate.inspect_review(product, harness) == "stale"
+
+
+def test_a_relative_hooks_path_is_not_shared_by_worker_worktrees(tmp_root: Path) -> None:
+    """Git reads a relative `core.hooksPath` under each worktree's own top, so a hook found under
+    the clone's `.git/hooks` does not run for a linked worker."""
+    alpha = tmp_root / "repos" / "alpha-api"
+    _git(alpha, "config", "core.hooksPath", ".git/hooks")
+    assert gitgate.install_review(tmp_root)["alpha"] == "foreign hook present, left in place"
+    assert gitgate.inspect_review(alpha, tmp_root) == "foreign"
+    _git(alpha, "config", "core.hooksPath", (alpha / ".git" / "hooks").as_posix())
+    assert gitgate.install_review(tmp_root)["alpha"] == "installed"
+    assert gitgate.inspect_review(alpha, tmp_root) == "installed"
+
+
+PRODUCT = """  - name: product
+    short: product
+    path: {path}
+    remote: git@github.com:example/product.git
+    default_branch: main
+    worktrees_dir: null
+    harness: "none"
+    dispatch: {{}}
+    notes: ""
+"""
+
+
+def test_setup_keeps_and_reports_a_clone_s_own_pre_push_hook(harness: Path, tmp_path: Path) -> None:  # noqa: F811
+    """A husky hook, or any other, stays; so does a `core.hooksPath` the repo tracks itself. The
+    harness's own checkout is `install`'s, never a product clone."""
+    from agent_cli import setup
+
+    product = _repo(tmp_path / "product")
+    with (harness / "agent.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(PRODUCT.format(path="../product"))
+    husky = gitgate.hooks_dir(product) / "pre-push"
+    husky.parent.mkdir(parents=True, exist_ok=True)
+    husky.write_text("#!/bin/sh\nnpx husky run pre-push\n", encoding="utf-8")
+    step = setup.git_hooks(harness)
+    assert step["state"] == "failed" and "product pre-push: product foreign hook present" in step["detail"], (
+        step
+    )
+    # the product clone's failure does not stop the harness's own step
+    assert f"{gitgate.EXPORT_ONLY_KEY}=" in step["detail"], step
+    assert gitgate.export_only_setting(harness) is not None
+    assert husky.read_text(encoding="utf-8") == "#!/bin/sh\nnpx husky run pre-push\n"
+    husky.unlink()
+    _git(product, "config", "core.hooksPath", ".githooks")
+    assert gitgate.install_review(harness) == {"product": "foreign hook present, left in place"}
+    assert not (product / ".githooks").exists()
+    _git(product, "config", "--unset", "core.hooksPath")
+    step = setup.git_hooks(harness)
+    assert step["state"] == "done" and "product pre-push: product installed" in step["detail"], step
+    assert gitgate.inspect(harness)["pre-push"] == "installed"
+
+
+@POSIX_STUB
+def test_the_review_hook_runs_the_harness_s_venv_and_fails_closed_without_it(tmp_path: Path) -> None:
+    home = tmp_path / "harness"
+    home.mkdir()
+    product = _repo(tmp_path / "product")
+    _stage(product, "README", "x\n")
+    _git(product, "commit", "-qm", "base")
+    bare = tmp_path / "remote.git"
+    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    hook = gitgate.hooks_dir(product) / "pre-push"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(gitgate.review_script(home), encoding="utf-8")
+    hook.chmod(0o755)
+    push = ["git", "push", "-q", str(bare), "main"]
+    refused = subprocess.run(push, cwd=product, capture_output=True, text=True)
+    assert refused.returncode != 0 and "code-review gate unavailable" in refused.stderr
+    log = tmp_path / "calls.log"
+    _stub_agent(home, log, ".venv/Scripts/python.exe")
+    assert subprocess.run(push, cwd=product, capture_output=True, text=True).returncode == 0
+    line = log.read_text(encoding="utf-8").split("\n")[-2]
+    assert (
+        line == f"-I -m agent_cli --root {home.resolve()} git push-review {product.resolve()} {bare} {bare}"
+    )
+
+
 # ------------------------------------------------------------------ export
 
 
@@ -606,3 +727,72 @@ def test_another_repos_hooks_are_its_own_business(tmp_path: Path) -> None:
     other = _repo(tmp_path / "product")
     payload = {"tool_name": "Bash", "cwd": str(other), "tool_input": {"command": "git commit -n -m x"}}
     assert guard_module.hook_bypass_guard(root, payload) == ""
+
+
+SKIPPING_PUSHES = [
+    "AGENT_PUSH_UNREVIEWED=1 git push --no-verify origin agent/001-x",
+    "git -c core.hooksPath=/dev/null push origin agent/001-x",
+    "AGENT_PUSH_UNREVIEWED=1 git -c push.followTags=true push --no-verify origin agent/001-x",
+    "AGENT_PUSH_UNREVIEWED=1 git push --no-verify --all origin",
+]
+
+
+def _bypass(root: Path, command: str, cwd: Path) -> str:
+    payload = {"tool_name": "Bash", "cwd": str(cwd), "tool_input": {"command": command}}
+    return guard_module.hook_bypass_guard(root, payload)
+
+
+def test_a_push_that_skips_pre_push_is_denied_in_a_product_clone_and_its_worktrees(tmp_root: Path) -> None:
+    """pre-push writes every override note, so a push in a registered clone may not skip it;
+    a commit there is still the clone's own business."""
+    alpha = tmp_root / "repos" / "alpha-api"
+    linked = tmp_root.parent / "alpha-linked"
+    _git(alpha, "worktree", "add", "-q", "-b", "agent/001-x", str(linked))
+    other = _repo(tmp_root.parent / "unregistered")
+    for command in SKIPPING_PUSHES:
+        for cwd in (alpha, linked):
+            reason = json.loads(_bypass(tmp_root, command, cwd))["hookSpecificOutput"][
+                "permissionDecisionReason"
+            ]
+            assert "set AGENT_PUSH_UNREVIEWED=1 in the push's environment and let the hook run" in reason, (
+                command
+            )
+        assert _bypass(tmp_root, command, other) == "", command
+    assert _bypass(tmp_root, f"git -C {linked.as_posix()} commit -n -m x", tmp_root) == ""
+
+
+def test_a_push_that_skips_pre_push_is_denied_in_a_harness_worktree_or_by_its_git_dir(tmp_path: Path) -> None:
+    """Git runs the hooks of the repository `--git-dir` or `GIT_DIR` names, not the one around
+    the shell's working directory."""
+    root = _repo(tmp_path / "vault")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "base")
+    linked = tmp_path / "vault-linked"
+    _git(root, "worktree", "add", "-q", "-b", "side", str(linked))
+    assert _decision(_bypass(root, "git push --no-verify origin side", linked)) == "deny"
+    assert _bypass(root, "git commit -n -m x", linked) == ""
+    other = _repo(tmp_path / "unregistered")
+    gitdir = (root / ".git").as_posix()
+    for command in (
+        f"git --git-dir={gitdir} --work-tree={root.as_posix()} push --no-verify origin main",
+        f"git --git-dir {gitdir} push --no-verify origin main",
+        f"GIT_DIR={gitdir} git push --no-verify origin main",
+        f"git --git-dir={(root / '.git' / 'worktrees' / 'vault-linked').as_posix()} push --no-verify origin side",
+        "git --git-dir=../vault/.git push --no-verify origin main",
+    ):
+        assert _decision(_bypass(root, command, other)) == "deny", command
+    assert (
+        _bypass(root, f"git --git-dir={(other / '.git').as_posix()} push --no-verify origin main", root) == ""
+    )
+
+
+def test_an_unreadable_registry_keeps_the_harness_only_push_scope(
+    tmp_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_cli import repos
+
+    def broken(root: Path) -> None:
+        raise ValueError("unreadable")
+
+    monkeypatch.setattr(repos, "load_registry", broken)
+    alpha = tmp_root / "repos" / "alpha-api"
+    assert _bypass(tmp_root, "git push --no-verify origin main", alpha) == ""

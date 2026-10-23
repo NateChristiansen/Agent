@@ -227,28 +227,42 @@ def skill_links(root: Path) -> dict[str, Any]:
 
 
 def git_hooks(root: Path) -> dict[str, Any]:
-    """Install the pre-commit and pre-push gates (see ADR-0026). A hook someone else wrote at
-    either name is kept and reported as failed, since doctor will fail on it too."""
+    """Install the pre-commit and pre-push gates (see ADR-0026), and the code-review pre-push hook
+    in every registered product clone (ADR-0063). A hook someone else wrote at any of those is
+    kept and reported as failed, since doctor will fail on it too. Runs after the notes step, which
+    links the registry on a first run; a registry that still cannot be read is reported and leaves
+    the clones for the next run. The clones get their hook even when the harness is not a git
+    checkout."""
     from . import gitgate
     from .core import AgentError
 
-    if not (root / ".git").exists():
-        return setup_step("git hooks", "already", "not a git checkout")
+    checkout = (root / ".git").exists()
     try:
-        result = gitgate.install(root)
+        result = gitgate.install(root) if checkout else {}
     except (AgentError, OSError) as exc:
         return setup_step("git hooks", "failed", str(exc))
-    detail = ", ".join(f"{name} {state}" for name, state in result.items())
-    if any("foreign" in state for state in result.values()):
+    try:
+        clones = gitgate.install_review(root)
+        review = ", ".join(f"{short} {state}" for short, state in clones.items()) or "no product clones"
+    except (AgentError, OSError) as exc:
+        clones, review = {}, f"not installed, run setup again once the registry reads: {exc}"
+    states = [*result.values(), *clones.values()]
+    detail = ", ".join(f"{name} {state}" for name, state in result.items()) or "not a git checkout"
+    changed = any(state in ("installed", "updated") for state in states)
+    if checkout:
+        # agent.exportOnly=true makes the pre-push hook refuse. A clone that tracks
+        # `.harness-export` gets `false` here; a source-role checkout without it gets `true`.
+        try:
+            export_state, export_detail = gitgate.settle_export_only(root)
+        except (AgentError, OSError) as exc:
+            export_state, export_detail = "failed", f"{gitgate.EXPORT_ONLY_KEY} not settled: {exc}"
+        detail += f", {export_detail}"
+        changed = changed or export_state == "done"
+        states.append(export_state)
+    detail += f"; product pre-push: {review}"
+    if any("foreign" in state or state.startswith("failed") for state in states):
         return setup_step("git hooks", "failed", detail)
-    changed = any(state in ("installed", "updated") for state in result.values())
-    state = "done" if changed else "already"
-    # agent.exportOnly=true makes the pre-push hook refuse. A clone that tracks `.harness-export`
-    # gets `false` here; a source-role checkout without it gets `true`.
-    export_state, export_detail = gitgate.settle_export_only(root)
-    if export_state == "done":
-        state = "done"
-    return setup_step("git hooks", state, f"{detail}; {export_detail}")
+    return setup_step("git hooks", "done" if changed else "already", detail)
 
 
 def render(result: dict[str, Any]) -> str:

@@ -1,6 +1,7 @@
 """`pull-warn` and `push-guard`: the two PreToolUse hooks about a registered clone's freshness
 and review state. `pull-warn` is advisory (a read against a stale
-clone); `push-guard` is a deny (an unreviewed branch pushed to a remote).
+clone); `push-guard` is a deny (an unreviewed branch pushed to a remote), the early warning of
+git's pre-push gate (`push_review`).
 """
 
 from __future__ import annotations
@@ -11,7 +12,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import sessions
+from .. import push_review, sessions
+from ..push_review import OVERRIDE_ENV as PUSH_OVERRIDE_ENV
 from ..records.narrow import as_dict, dig
 from .paths import deny, shell_tokens
 
@@ -46,30 +48,13 @@ def _repo_for_path(root: Path, file_path: str) -> str | None:
             if base == root.resolve():
                 continue
             try:
-                common = _common_dir(root)
-                if common is not None and common == _common_dir(base):
+                common = push_review.common_dir(root)
+                if common is not None and common == push_review.common_dir(base):
                     continue
             except OSError, repos_mod.ExternalFailure:
                 pass
             return repo.short
     return None
-
-
-def _common_dir(start: Path) -> Path | None:
-    """`git_discovery.common_dir`, else git's answer (on Windows the ownership check always
-    defers to git). None when neither can say."""
-    from .. import git_discovery
-
-    common = git_discovery.common_dir(start)
-    if common is not None:
-        return common
-    out = _git_line(start, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
-    if not out:
-        return None
-    try:
-        return Path(out).resolve()
-    except OSError:
-        return None
 
 
 def pull_warn(root: Path, payload: dict[str, Any]) -> str:
@@ -114,78 +99,89 @@ def pull_warn(root: Path, payload: dict[str, Any]) -> str:
 
 # ------------------------------------------------------------------ push-guard
 
-PUSH_OVERRIDE_ENV = "AGENT_PUSH_UNREVIEWED"
 REVIEW_ROW = "review"
-REVIEW_REASON_RE = re.compile(r"^\s*review(?=[:,]|\s+row\b)|(?:^|;\s*)rubric row review:", re.I)
 PUSH_GUARD_REASON = (
     "this push names no branch: a detached head in a dispatch's worktree has no branch to check a "
     "code-review round for (ADR-0063). Push it as a named branch, for example `git push origin "
     "HEAD:<branch>`."
 )
-
-
-def _unlisted_reason(why: str) -> str:
-    return (
-        f"push-guard cannot list exactly which refs this push sends ({why}), so it refuses it "
-        "(ADR-0063). Name each branch on the command line, for example `git push origin agent/<name>` "
-        "or `git push origin HEAD:agent/<name>`. To push anyway, prefix the command with "
-        f"{PUSH_OVERRIDE_ENV}=1 (it is logged to the feature)."
-    )
+AUTHORITY = (
+    "This is push-guard's early warning; git's pre-push hook checks the exact refs the push sends "
+    "and decides."
+)
 
 
 def push_guard(root: Path, payload: dict[str, Any]) -> str:
-    """Require a clean `code-review` round (ADR-0063) on the commit each guarded ref of the push
-    sends. A ref is guarded when a dispatch record in the pushed repo names its source or its
-    destination branch, and every ref pushed from a dispatch's worktree is, so a renamed branch is
-    guarded too. Other manager branches are outside this guard.
+    """Warn early, before git runs, when a push the command text names sends a guarded ref with
+    no clean `code-review` round (ADR-0063). Git's `pre-push` hook is the authority
+    (`push_review`): it reads the exact refs, so a push whose refs this parse cannot list (a bulk
+    flag, a glob, no refspec, an option it does not know, a word whose value depends on the shell)
+    passes here and is decided there. The scope, the round check and the reasons are
+    `push_review`'s.
 
-    In the harness and registered repos, a push whose refs `_refspecs` cannot list exactly is
-    refused. AGENT_PUSH_UNREVIEWED=1 overrides either refusal and logs a feature note. Fail open
-    on unreadable state so a slow Git operation cannot wedge a legitimate push: a source commit
-    git cannot resolve, and a round file of the head that is not readable JSON, let that ref
-    through. A round record that reads but lacks its branch or head is not clean.
+    `AGENT_PUSH_UNREVIEWED=1` lets every ref through, read as git will see it (`_override`), and
+    push-guard writes no note: pre-push writes every override note, and the hook-bypass guard
+    denies a push that would skip it in the harness or a registered product clone. Fail open on
+    unreadable state so a slow Git operation cannot wedge a legitimate push: an override value
+    the shell decides, a source commit git cannot resolve, and a round file of the head that is
+    not readable JSON, let the push or that ref through without a denial. Fail closed only on a
+    round record that reads but lacks its branch or head, which is not clean.
     """
     if str(payload.get("tool_name") or "") != "Bash":
         return ""
     command = str(dig(payload, "tool_input", "command") or "")
     if not _is_git_push(command):
         return ""
+    override = _override(command)
+    if override is None:
+        return ""
     where = _push_cwd(command, str(payload.get("cwd") or root))
+    refs = _refspecs(command, where)
+    if refs is None:
+        return ""
     from .. import dispatch as dispatch_mod
 
     all_records = dispatch_mod.load_all(root)
-    held = _worktree_records(all_records, where)
-    override = PUSH_OVERRIDE_ENV in command
-    repo, known = _pushed_repo(root, held, where)
-    refs, unlisted = _refspecs(command, where)
-    if refs is None:
-        if not known:
-            return ""
-        if override:
-            _note_unlisted_push(root, held, unlisted)
-            return ""
-        return deny(_unlisted_reason(unlisted))
+    held = push_review.worktree_records(all_records, where)
+    repo, others = _pushed_repo(root, held, where)
+    name = repo.name if repo else None
     denials: list[str] = []
     for source, branch in refs:
-        names = {branch, _ref_name(source, where)} - {""}
-        named = [d for d in all_records if str(d.get("branch") or "") in names]
-        if repo is not None:
-            # A record with no repo is not proof of another repo, so it stays.
-            named = [d for d in named if str(d.get("repo") or repo.name) in (repo.name, repo.short)]
-        mine = named + [d for d in held if d not in named]
+        mine = push_review.guarding(all_records, held, repo, {branch, _ref_name(source, where)}, others)
         if not mine:
             continue
         if not branch:
-            return deny(PUSH_GUARD_REASON)
-        head = _git_line(where, ["rev-parse", "--verify", "--quiet", f"{source}^{{commit}}"])
-        why = _unclean(root, head, repo.name if repo else None, mine, branch) if head else None
-        if head is None or why is None:
-            continue
+            return deny(f"{PUSH_GUARD_REASON} {AUTHORITY}")
         if override:
-            _note_unreviewed_push(root, mine, branch, head, why)
-        else:
-            denials.append(_code_review_reason(mine, branch, head, why))
-    return deny(" ".join(denials)) if denials else ""
+            continue
+        head = push_review.git_line(where, ["rev-parse", "--verify", "--quiet", f"{source}^{{commit}}"])
+        if head is None:
+            continue
+        why = push_review.unclean(root, head, name, mine, branch, strict=False)
+        if why is not None:
+            how = f"prefix the command with {PUSH_OVERRIDE_ENV}=1"
+            denials.append(push_review.reason(mine, branch, head, why, how=how, checkout=where, repo=name))
+    return deny(" ".join([*denials, AUTHORITY])) if denials else ""
+
+
+_SHELL_EXPANDS = ("$", "`")
+
+
+def _override(command: str) -> bool | None:
+    """Whether git's environment will hold `AGENT_PUSH_UNREVIEWED=1` exactly: the last of the
+    command's leading assignments to it, else push-guard's own environment, which the shell
+    passes on. None when the shell decides the value: it expands, or the assignment is its own
+    statement (`AGENT_PUSH_UNREVIEWED=1;`), which reaches git only if the name is exported."""
+    value: str | None = None
+    for word in _env_prefix(command):
+        name, _, assigned = word.partition("=")
+        if name == PUSH_OVERRIDE_ENV:
+            value = assigned
+    if value is None:
+        return os.environ.get(PUSH_OVERRIDE_ENV) == "1"
+    if _CONTROL_RE.search(value) or any(c in value for c in _SHELL_EXPANDS):
+        return None
+    return value == "1"
 
 
 #: Push options that change neither which refs are sent nor where they go.
@@ -218,15 +214,18 @@ def _command_words(command: str) -> list[str]:
     return out
 
 
-def _refspecs(command: str, where: Path) -> tuple[list[tuple[str, str]] | None, str]:
-    """Each ref the push sends, as (source, destination branch), or None and why when the
-    refs cannot be listed exactly: a bulk flag, a glob or matching (`:`) refspec, no refspec at
-    all (git then pushes what its configuration says), or an option this parse does not know.
+def _refspecs(command: str, where: Path) -> list[tuple[str, str]] | None:
+    """Each ref the push sends, as (source, destination branch), or None when the refs cannot be
+    listed exactly: a word the shell expands (`"$B"`, a backtick, `$(...)`), a bulk flag, a glob or
+    matching (`:`) refspec, no refspec at all (git then pushes what its configuration says), or an
+    option this parse does not know. Those are the pre-push hook's to decide.
     `+HEAD:refs/heads/agent/016` is (`HEAD`, `agent/016`) and a bare `agent/016` is itself on both
-    sides. With `--repo`, every positional word is read as a refspec. A deletion (`:agent/016`,
-    or any refspec under `--delete`) sends no commit and is left out. A destination of `HEAD` on
-    a detached checkout reads as no branch."""
+    sides. With `--repo`, every positional word is read as a refspec. A deletion (`:agent/016`, or
+    any refspec under `--delete`) sends no commit and is left out. A destination of `HEAD` on a
+    detached checkout reads as no branch."""
     words = _command_words(command)
+    if any(c in word for word in words for c in _SHELL_EXPANDS):
+        return None
     i = 1
     while i < len(words) and words[i] != "push":
         if words[i] in ("-C", "-c"):
@@ -234,7 +233,7 @@ def _refspecs(command: str, where: Path) -> tuple[list[tuple[str, str]] | None, 
         elif words[i] == "--no-pager":
             i += 1
         else:
-            return None, f"the git option `{words[i]}`, which push-guard does not parse"
+            return None
     remote: str | None = None
     specs: list[str] = []
     delete = positional = False
@@ -251,7 +250,7 @@ def _refspecs(command: str, where: Path) -> tuple[list[tuple[str, str]] | None, 
         elif tok == "--":
             positional = True
         elif tok in _BULK_FLAGS:
-            return None, f"`{tok}` pushes refs the command does not name"
+            return None
         elif tok in _DELETE_FLAGS:
             delete = True
         elif tok in _PUSH_ARG_FLAGS:
@@ -261,22 +260,20 @@ def _refspecs(command: str, where: Path) -> tuple[list[tuple[str, str]] | None, 
         elif tok.startswith("--repo="):
             remote = tok.removeprefix("--repo=")
         elif not (tok in _PUSH_FLAGS or tok.startswith(("--force-with-lease=", "--push-option="))):
-            return None, f"the option `{tok}`, which push-guard does not parse"
+            return None
     if not specs:
-        return None, "no refspec, so git pushes what its configuration says"
+        return None
     out: list[tuple[str, str]] = []
     for spec in specs:
         plain = spec.removeprefix("+")
-        if "*" in plain:
-            return None, f"the glob refspec `{spec}`"
-        if plain == ":":
-            return None, "the matching refspec `:`"
+        if "*" in plain or plain == ":":
+            return None
         source, colon, dest = plain.partition(":")
         if delete or not source:
             continue
         dest = (dest if colon else source).removeprefix("refs/heads/")
         out.append((source, _current_branch(where) if dest == "HEAD" else dest))
-    return out, ""
+    return out
 
 
 def _ref_name(source: str, where: Path) -> str:
@@ -284,92 +281,36 @@ def _ref_name(source: str, where: Path) -> str:
     return _current_branch(where) if source == "HEAD" else source.removeprefix("refs/heads/")
 
 
-def _pushed_repo(root: Path, held: list[dict[str, Any]], where: Path) -> tuple[Repo | None, bool]:
-    """The registered repo the push comes from, and whether it is the harness or a registered
-    repo. A dispatch worktree's repo first; else the registered repo sharing `where`'s git common
-    directory, so a linked worktree outside the checkout resolves too; else the registered
-    checkout holding `where` when git cannot say (the deepest, for a nested clone). The harness
-    checkout counts as known even when the registry does not list it."""
+def _pushed_repo(root: Path, held: list[dict[str, Any]], where: Path) -> tuple[Repo | None, frozenset[str]]:
+    """`push_review.repo_of` over the registry, with `push_review.harness_others`; an unreadable
+    registry leaves the repo unknown."""
     from .. import repos as repos_mod
 
     try:
         registry = repos_mod.load_registry(root).repos
-        target = where.expanduser().resolve()
     except Exception:  # noqa: BLE001 — an unreadable registry leaves the repo unknown
-        return None, False
-    named = {str(d.get("repo") or "") for d in held} - {""}
-    if held:
-        return next((r for r in registry if named & {r.name, r.short}), None), True
-    common = _safe_common_dir(target)
-    if common is not None:
-        for r in registry:
-            if _safe_common_dir(r.abs_path(root)) == common:
-                return r, True
-        return None, common == _safe_common_dir(root)
-    holding: list[tuple[int, Repo]] = []
-    for r in registry:
-        try:
-            base = r.abs_path(root).resolve()
-        except OSError:
-            continue
-        if target == base or base in target.parents:
-            holding.append((len(base.parts), r))
-    return (max(holding, key=lambda pair: pair[0])[1], True) if holding else (None, False)
+        return None, frozenset()
+    repo = push_review.repo_of(root, registry, held, where)
+    return repo, push_review.harness_others(root, registry, repo, where)
 
 
-def _safe_common_dir(start: Path) -> Path | None:
-    try:
-        return _common_dir(start) if start.exists() else None
-    except Exception:  # noqa: BLE001 — git that cannot say leaves the repo to the path rules
-        return None
-
-
-def _unclean(root: Path, head: str, repo: str | None, mine: list[dict[str, Any]], branch: str) -> str | None:
-    """Why `head` has no clean code-review round in `repo` (any repo when the push's is unknown);
-    None when it has one or a round file of the head is not readable JSON (fail open). A round
-    recorded under the pushed branch's name decides alone; only with none does a clean round
-    under a guarded dispatch's branch name count."""
-    from .. import code_review
-
-    if code_review.unreadable(root, head):
-        return None
-    if bad := code_review.malformed(root, head):
-        return f"a malformed round record ({', '.join(bad)})"
-    if code_review.latest(root, branch=branch, head=head, repo=repo) is None:
-        others = dict.fromkeys(
-            str(d.get("branch")) for d in mine if d.get("branch") and d.get("branch") != branch
-        )
-        if any(code_review.clean(root, branch=name, head=head, repo=repo) for name in others):
-            return None
-    return code_review.unclean(root, branch=branch, head=head, repo=repo)
-
-
-def _code_review_reason(records: list[dict[str, Any]], branch: str, head: str, why: str) -> str:
-    build = next(
-        (d for d in records if not REVIEW_REASON_RE.search(str(d.get("choice_reason") or ""))), records[0]
-    )
-    return (
-        f"{branch} at {head[:12]} has no clean code-review round on that head: {why}. A push needs a "
-        "complete `code-review` round with zero verified blocking findings on the pushed head "
-        f'(ADR-0063). Run the `dispatch` action `code-review` with dispatch_id="{build.get("id")}", '
-        "and call it again after each return until the round completes. To push anyway, prefix the "
-        f"command with {PUSH_OVERRIDE_ENV}=1 (it is logged to the feature)."
-    )
-
-
-_GIT_C_RE = re.compile(r"(?:^|\s)-C\s+(\S+)")
 _ENV_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _env_prefix(command: str) -> list[str]:
+    """The leading `VAR=value` words of `command`, as the shell reads them."""
+    toks = shell_tokens(command)
+    i = 0
+    while i < len(toks) and _ENV_PREFIX_RE.match(toks[i]):
+        i += 1
+    return toks[:i]
 
 
 def _push_tokens(command: str) -> list[str]:
     """`command` with any leading `VAR=value` env prefix dropped.
 
     So `AGENT_PUSH_UNREVIEWED=1 git push` still parses as a git push."""
-    toks = shell_tokens(command)
-    i = 0
-    while i < len(toks) and _ENV_PREFIX_RE.match(toks[i]):
-        i += 1
-    return toks[i:]
+    return shell_tokens(command)[len(_env_prefix(command)) :]
 
 
 _GIT_FLAGS_WITH_ARG = ("-C", "--git-dir", "--work-tree", "--namespace", "-c")
@@ -396,79 +337,18 @@ def _is_git_push(command: str) -> bool:
 
 
 def _push_cwd(command: str, cwd: str) -> Path:
-    m = _GIT_C_RE.search(command)
-    return Path(m.group(1)) if m else Path(cwd)
-
-
-def _worktree_records(records: list[dict[str, Any]], where: Path) -> list[dict[str, Any]]:
-    """Every dispatch whose worktree holds `where`, so a push from a worker's checkout is
-    guarded whatever the branch is called. Path-only, like `_repo_for_path`: no git, no
-    subprocess, inside the hook's budget."""
-    try:
-        target = where.expanduser().resolve()
-    except OSError:
-        return []
-    out: list[dict[str, Any]] = []
-    for d in records:
-        raw = str(d.get("worktree") or "")
-        if not raw:
-            continue
-        try:
-            base = Path(raw).expanduser().resolve()
-        except OSError:
-            continue
-        if target == base or base in target.parents:
-            out.append(d)
-    return out
-
-
-def _git_line(cwd: Path, args: list[str]) -> str | None:
-    import subprocess
-
-    try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=2, check=False)
-    except OSError, subprocess.SubprocessError:
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.strip() or None
+    """Where git runs the push: `cwd`, then each `-C <path>` before the verb in turn, read from
+    the shell's words so a quoted path is the path."""
+    where = Path(cwd)
+    words = _command_words(command)
+    i = 1
+    while i < len(words) and words[i] != "push":
+        if words[i] == "-C" and i + 1 < len(words):
+            where = where / words[i + 1]
+        i += 2 if words[i] in _GIT_FLAGS_WITH_ARG else 1
+    return where
 
 
 def _current_branch(cwd: Path) -> str:
-    name = _git_line(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) or ""
+    name = push_review.git_line(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) or ""
     return "" if name == "HEAD" else name
-
-
-def _note_unreviewed_push(root: Path, mine: list[dict[str, Any]], branch: str, head: str, why: str) -> None:
-    """The override is not silent: it goes in the log of the feature of the pushed repo's dispatch,
-    where the next retro reads it, naming the head and why its round is not clean."""
-    _note(
-        root,
-        mine,
-        f"pushed {branch} at {head[:12]} with {PUSH_OVERRIDE_ENV}=1 without a clean code-review round: {why}.",
-    )
-
-
-def _note_unlisted_push(root: Path, held: list[dict[str, Any]], why: str) -> None:
-    """An override of a push whose refs cannot be listed. Only a push from a dispatch's worktree
-    has a feature to log on; any other names no branch to find one by."""
-    _note(
-        root,
-        held,
-        f"pushed with {PUSH_OVERRIDE_ENV}=1 a push whose refs push-guard cannot list ({why}), so no "
-        "code-review round was checked.",
-    )
-
-
-def _note(root: Path, mine: list[dict[str, Any]], text: str) -> None:
-    """Log `text` on the first of `mine`'s features. Fails open like everything else here."""
-    try:
-        from .. import features as features_mod
-        from .. import log as log_mod
-
-        feature_id = next((d.get("feature") for d in mine if d.get("feature") is not None), None)
-        if feature_id is None:
-            return
-        log_mod.append(features_mod.resolve(root, str(feature_id)), "note", text)
-    except Exception:  # noqa: BLE001, S110 — a hook never raises; failing open is the contract
-        pass

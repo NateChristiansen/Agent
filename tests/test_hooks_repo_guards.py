@@ -58,7 +58,7 @@ def test_pull_warn_asks_git_for_a_linked_harness_tree_when_discovery_cannot_say(
 
 
 def test_pull_warn_runs_no_git_when_discovery_answers(tmp_path: Path, monkeypatch):
-    from agent_cli import git_discovery, repos
+    from agent_cli import git_discovery, push_review, repos
     from agent_cli.hooks import repo_guards
 
     harness, linked = tmp_path / "manager", tmp_path / "linked"
@@ -71,7 +71,7 @@ def test_pull_warn_runs_no_git_when_discovery_answers(tmp_path: Path, monkeypatc
     def no_git(cwd, args):
         raise AssertionError(f"git {args} ran")
 
-    monkeypatch.setattr(repo_guards, "_git_line", no_git)
+    monkeypatch.setattr(push_review, "git_line", no_git)
     payload = json.loads(_read(str(harness / "README.md"), session_id="fast"))
     assert repo_guards.pull_warn(linked, payload) == ""
 
@@ -220,20 +220,22 @@ def test_push_guard_ignores_branches_no_dispatch_ever_touched(tmp_root: Path, ru
     repo = tmp_root / "repos/alpha-api"
     _branch(repo, "harness/016-t11")
     assert run(["hook", "push-guard"], stdin=_push("git push origin harness/016-t11", repo)).out == ""
-    # a push with no refspec cannot be listed, so in a registered repo it is refused anyway
-    assert _decision(run(["hook", "push-guard"], stdin=_push("git push", repo))) == "deny"
+    # a push with no refspec cannot be listed, so the pre-push hook decides it
+    assert run(["hook", "push-guard"], stdin=_push("git push", repo)).out == ""
     # and it is a git-push guard, not a substring guard
     assert run(["hook", "push-guard"], stdin=_push("git log --grep push", repo)).out == ""
     assert run(["hook", "push-guard"], stdin=_push("grep -r push .", repo)).out == ""
 
 
-def test_push_guard_override_is_honoured_and_logged(tmp_root: Path, run):
-    run(["feature", "new", "x", "--title", "X"])
+def test_push_guard_honours_the_override_and_leaves_the_note_to_pre_push(tmp_root: Path, run, monkeypatch):
+    from agent_cli import features, log
+
+    notes: list[str] = []
+    monkeypatch.setattr(features, "resolve", lambda root, ref: f"feature {ref}")
+    monkeypatch.setattr(log, "append", lambda f, kind, text: notes.append(text))
     repo = tmp_root / "repos/alpha-api"
     _branch(repo, "agent/001-x")
     _record(tmp_root, "001-01", choice_reason="build row: a page with tests")
     cmd = "AGENT_PUSH_UNREVIEWED=1 git push origin agent/001-x"
     assert run(["hook", "push-guard"], stdin=_push(cmd, repo)).out == ""
-    log = (tmp_root / "features/001-x/log.md").read_text()
-    assert "AGENT_PUSH_UNREVIEWED=1" in log
-    assert "[!note]" in log
+    assert notes == []

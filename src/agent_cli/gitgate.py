@@ -1,5 +1,6 @@
 """The git boundaries of this repo: a pre-commit gate on staged content, and a pre-push guard
-(see ADR-0026).
+(see ADR-0026). Each registered product clone gets a pre-push hook too, the code-review gate on
+pushes (`push_review`, ADR-0063).
 
 Both came out of one afternoon. Two commits landed lines longer than ruff's limit. Every check
 involved already existed. They just ran after the commit: format in CI. Both committers ran
@@ -24,6 +25,7 @@ ordinary path; CI stays the authoritative backstop for format and size.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -306,6 +308,128 @@ def install(root: Path) -> dict[str, str]:
             state, "updated"
         )
     return result
+
+
+# ------------------------------------------------------------------ product clones
+
+REVIEW_HOOK = "pre-push review"
+
+
+def review_script(harness: Path) -> str:
+    """The pre-push hook of a registered product clone: the harness's code-review gate on the
+    exact refs git pushes (`push_review`), run by the harness's own venv against its records.
+    The harness's main checkout is written in, because nothing in the clone leads back to it: a
+    manager worktree that ran setup goes away, and the main checkout holds the venv `script` falls
+    back to and the records. Its venv is tried as POSIX and Windows, as `script` does. It fails
+    closed when neither exists. A hook naming another path reads as stale, so setup rewrites it."""
+    home = shlex.quote(_main_checkout(harness).as_posix())
+    return (
+        f"#!/bin/sh\n{MARKER} {REVIEW_HOOK}\n"
+        f"harness={home}\n"
+        "root=$(git rev-parse --show-toplevel) || exit 2\n"
+        'for agent in "$harness/.venv/bin/agent" "$harness/.venv/Scripts/python.exe"; do\n'
+        '  [ -x "$agent" ] && break\n'
+        "done\n"
+        'if [ ! -x "$agent" ]; then\n'
+        "  printf '%s\\n' \"pre-push code-review gate unavailable: run uv sync in $harness\" >&2\n"
+        "  exit 2\n"
+        "fi\n"
+        "module=\n"
+        'case "$agent" in *.exe) module="-I -m agent_cli" ;; esac\n'
+        'exec "$agent" $module --root "$harness" git push-review "$root" "$@"\n'
+    )
+
+
+def _main_checkout(harness: Path) -> Path:
+    """`worktree.main_checkout`, as `verify_record.main_of` finds it; `harness` itself when it is
+    not a git checkout, whatever repository holds it."""
+    from .worktree import main_checkout
+
+    if not (harness / ".git").exists():
+        return harness.resolve()
+    try:
+        return main_checkout(harness).resolve()
+    except Exception:  # noqa: BLE001 — a harness git cannot place is its own main checkout
+        return harness.resolve()
+
+
+def _clone_dirs(checkout: Path) -> tuple[Path, Path | None]:
+    """The clone's git common dir and hooks dir, both absolute. The hooks dir is None when it is
+    not one place: git reads a relative `core.hooksPath` from each worktree's own top, so a linked
+    worker would not run a hook found under this checkout."""
+    out = _git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-path", "hooks")
+    common, hooks = out.decode().strip().splitlines()
+    configured = subprocess.run(
+        ["git", "-C", str(checkout), "config", "--get", "core.hooksPath"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if configured and not Path(os.path.expanduser(configured)).is_absolute():
+        return Path(common).resolve(), None
+    return Path(common).resolve(), Path(hooks).resolve()
+
+
+def common_dir(checkout: Path) -> Path:
+    """The checkout's git common dir: one repository's, shared by its linked worktrees."""
+    return _clone_dirs(checkout)[0]
+
+
+def inspect_review(checkout: Path, harness: Path) -> str:
+    """The product clone's pre-push hook: `installed`, `stale` (ours, out of date), `missing`, or
+    `foreign` (someone else's, a harness's full pre-push, or a `core.hooksPath` outside the git
+    dir or relative, which the repo manages itself)."""
+    return _review_state(*_clone_dirs(checkout), harness)
+
+
+def _review_state(common: Path, hooks: Path | None, harness: Path) -> str:
+    if hooks is None or not hooks.is_relative_to(common):
+        return "foreign"
+    path = hooks / "pre-push"
+    if not path.exists():
+        return "missing"
+    text = path.read_text(encoding="utf-8", errors="replace", newline="")
+    # Only the review hook is this install's: another harness clone's full pre-push carries the
+    # same marker and its own export-only and pass-record gates.
+    if text.replace("\r\n", "\n").split("\n")[:2] != ["#!/bin/sh", f"{MARKER} {REVIEW_HOOK}"]:
+        return "foreign"
+    return "installed" if text == review_script(harness) and os.access(path, os.X_OK) else "stale"
+
+
+def install_review(root: Path) -> dict[str, str]:
+    """Write the pre-push code-review hook into every registered product clone; a worker's
+    worktree shares it through its clone's git dir. The harness's own checkout has `install`'s
+    hook. A hook someone else wrote is left in place and reported. Keyed by repo short."""
+    from . import repos as repos_mod
+
+    own = common_dir(root) if (root / ".git").exists() else None
+    result: dict[str, str] = {}
+    for repo in repos_mod.load_registry(root).repos:
+        checkout = repo.abs_path(root)
+        if not (checkout / ".git").exists():
+            result[repo.short] = "not cloned here"
+            continue
+        try:
+            common, hooks = _clone_dirs(checkout)
+            if common == own:
+                continue
+            result[repo.short] = _install_review(common, hooks, root)
+        except (AgentError, OSError, ValueError) as exc:
+            result[repo.short] = f"failed: {exc}"
+    return result
+
+
+def _install_review(common: Path, hooks: Path | None, harness: Path) -> str:
+    state = _review_state(common, hooks, harness)
+    if state == "foreign" or hooks is None:
+        return "foreign hook present, left in place"
+    if state == "installed":
+        return "already installed"
+    hooks.mkdir(parents=True, exist_ok=True)
+    path = hooks / "pre-push"
+    path.write_text(review_script(harness), encoding="utf-8", newline="\n")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return "installed" if state == "missing" else "updated"
 
 
 def describe(data: dict[str, Any]) -> str:

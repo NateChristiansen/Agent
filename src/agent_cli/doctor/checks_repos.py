@@ -6,6 +6,7 @@ from pathlib import Path
 
 import yaml
 
+from .. import gitgate
 from .. import repos as repos_mod
 from ..core import AgentError
 from ..repos_validate import registry_unknown_keys
@@ -21,6 +22,7 @@ def check_registry(root: Path) -> list[Check]:
     out.append(new_check("agent.yaml", "ok", f"{len(registry.repos)} repo(s)"))
     data = yaml.safe_load(repos_mod.registry_path(root).read_text(encoding="utf-8"))
     out.extend(new_check("agent.yaml unknown key", "warn", p) for p in registry_unknown_keys(data))
+    own = _own_repo(root)
     for repo in registry.repos:
         path = repo.abs_path(root)
         if not repo.worktrees_dir:
@@ -60,6 +62,7 @@ def check_registry(root: Path) -> list[Check]:
             )
             continue
         out.append(new_check(f"repo {repo.short} path", "ok", f"{path}{_source(repo)}"))
+        out += _review_hook_check(root, repo, path, own)
         info = repos_mod.repo_status(root, repo)
         if repo.local_only:
             out.append(
@@ -104,6 +107,42 @@ def closed_leftovers(root: Path) -> list[Check]:
             )
         )
     return out
+
+
+_REVIEW_HOOK = {
+    "installed": ("ok", "installed"),
+    "missing": ("fail", "missing, so pushes from it skip the code-review gate; run `agent setup`"),
+    "stale": ("fail", "out of date; run `agent setup`"),
+    "foreign": (
+        "fail",
+        "foreign hook present (someone else's pre-push, or a core.hooksPath the repo manages), "
+        "left in place; the code-review gate does not run there",
+    ),
+}
+
+
+def _own_repo(root: Path) -> Path | None:
+    """The harness checkout's git common dir. Setup gives that repository the full gate, not the
+    review hook; a product clone that shares only its hooks dir is still a product clone."""
+    if not (root / ".git").exists():
+        return None
+    try:
+        return gitgate.common_dir(root)
+    except AgentError, OSError, ValueError:
+        return None
+
+
+def _review_hook_check(root: Path, repo: repos_mod.Repo, clone: Path, own: Path | None) -> list[Check]:
+    """The clone's pre-push code-review hook (ADR-0063), as `gitgate.inspect_review` reads it."""
+    name = f"repo {repo.short} pre-push review hook"
+    try:
+        if own is not None and gitgate.common_dir(clone) == own:
+            return []
+        state = gitgate.inspect_review(clone, root)
+    except (AgentError, OSError, ValueError) as exc:
+        return [new_check(name, "fail", f"cannot read it: {exc}")]
+    level, detail = _REVIEW_HOOK[state]
+    return [new_check(name, level, detail)]
 
 
 def _source(repo: repos_mod.Repo) -> str:

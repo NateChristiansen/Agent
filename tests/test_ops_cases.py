@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 
 import seeded
-from agent_cli import codex_mcp, dispatch, obsidian, ops
+from agent_cli import codex_mcp, dispatch, gitgate, obsidian, ops
 from agent_cli.core import json_default
 from harness_root import FIXED_NOW, copy_notes, link_notes
 from test_dispatch import PROMPT
@@ -319,6 +319,7 @@ def ops_root(tmp_root: Path, externals, _ops_template: Path) -> Path:
 def _shared_base(tmp_path_factory: pytest.TempPathFactory, _ops_template: Path) -> Path:
     base = tmp_path_factory.mktemp("ops-shared")
     seeded.install(_ops_template, base)
+    gitgate.install_review(base / "harness")  # setup's product pre-push hook, which doctor reports on
     return base
 
 

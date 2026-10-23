@@ -152,14 +152,67 @@ def _skips_hooks(sub: str, args: list[str], options: list[str]) -> bool:
     return False
 
 
+PUSH_BYPASS_REASON = (
+    "git's pre-push hook is this repo's publish and code-review gate (ADR-0026, ADR-0063); do not "
+    "skip it with --no-verify or core.hooksPath. To push a ref past the code-review gate, set "
+    "AGENT_PUSH_UNREVIEWED=1 in the push's environment and let the hook run: it logs the override "
+    "to the feature."
+)
+
+
+def _git_dir(command: str, at: Path, options: list[str]) -> Path | None:
+    """The repository a git call names instead of the one around `at`: its last `--git-dir`
+    (either spelling), else a leading `GIT_DIR=` assignment, relative to `at` as git reads it.
+    Its hooks are the ones git runs, whatever the working directory."""
+    named: str | None = None
+    for word in shell_tokens(command):
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", word):
+            break
+        if word.startswith("GIT_DIR="):
+            named = word.removeprefix("GIT_DIR=")
+    for i, option in enumerate(options):
+        if option == "--git-dir" and i + 1 < len(options):
+            named = options[i + 1]
+        elif option.startswith("--git-dir="):
+            named = option.removeprefix("--git-dir=")
+    if not named:
+        return None
+    return at / os.path.expanduser(native_path(named))
+
+
+def _push_gated(root: Path, at: Path) -> bool:
+    """Whether a push from `at` is the review gate's: `at` shares the git common dir of the
+    harness or of a registered product clone, so a linked worktree of either counts. A checkout
+    git cannot place is gated, as a commit's is; an unreadable registry leaves the harness only."""
+    from .. import push_review
+    from .. import repos as repos_mod
+
+    common = push_review.safe_common_dir(at)
+    if common is None:
+        return True
+    try:
+        checkouts = [repo.abs_path(root) for repo in repos_mod.load_registry(root).repos]
+    except Exception:  # noqa: BLE001 — an unreadable registry keeps the harness-only scope
+        checkouts = []
+    return any(push_review.safe_common_dir(path) == common for path in [root, *checkouts])
+
+
 def hook_bypass_guard(root: Path, payload: dict[str, Any]) -> str:
-    """Deny a `git commit` or `git push` in this checkout that skips its hooks: the pre-commit
-    gate on format and size, and the pre-push guard against publishing private history."""
+    """Deny a `git commit` or `git merge` in this checkout that skips its hooks, the pre-commit
+    gate on format and size, and a `git push` that skips them in the harness, a registered product
+    clone, or a worktree of either: pre-push is the code-review gate and writes every override
+    note, so it always runs there."""
     if payload.get("tool_name") != "Bash":
         return ""
     command = str(dig(payload, "tool_input", "command") or "")
-    for call in git_calls(command, Path(str(payload.get("cwd") or root))):
-        if not _skips_hooks(call[1], call[2], call[3]):
+    cwd = Path(str(payload.get("cwd") or root))
+    for text in shell_readings(command):
+        call = _git_call(text, cwd)
+        if call is None or not _skips_hooks(call[1], call[2], call[3]):
+            continue
+        if call[1] == "push":
+            if _push_gated(root, _git_dir(text, call[0], call[3]) or call[0]):
+                return deny(PUSH_BYPASS_REASON)
             continue
         top = _git(call[0], "rev-parse", "--show-toplevel")
         if top is not None and Path(top.strip()).resolve() != root.resolve():

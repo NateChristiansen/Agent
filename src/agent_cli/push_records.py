@@ -28,7 +28,8 @@ if TYPE_CHECKING:
 MAIN = "refs/heads/main"
 
 
-def _commit(root: Path, oid: str) -> str | None:
+def commit(root: Path, oid: str) -> str | None:
+    """The commit `oid` names in `root`, an annotated tag peeled; None when it names none."""
     proc = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{oid}^{{commit}}"],
         cwd=root,
@@ -61,7 +62,7 @@ def problems(root: Path, updates: list[Update]) -> list[str]:
             if update.remote_ref == MAIN:
                 out.append("refusing to delete main: a push from here never removes it")
             continue
-        sha = _commit(root, update.local_oid)
+        sha = commit(root, update.local_oid)
         if sha is None:
             out.append(f"{name}: {update.local_oid[:12]} is not a commit this checkout can read; refusing")
             continue

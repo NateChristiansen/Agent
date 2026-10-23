@@ -318,7 +318,8 @@ paths = [
   "src/agent_cli/code_review.py", "src/agent_cli/ops/code_review.py",
 ]
 tests = [
-  "tests/test_plan_review*.py", "tests/test_code_review*.py", "tests/test_peer_route.py", "tests/test_hooks_malformed_records.py",
+  "tests/test_plan_review*.py", "tests/test_code_review*.py", "tests/test_push_review.py",
+  "tests/test_peer_route.py", "tests/test_hooks_malformed_records.py",
   "tests/test_ops_malformed_records.py", "tests/test_mcp_wording.py", "tests/test_docs_refs.py",
   "tests/test_prose_rules.py",
 ]
@@ -359,8 +360,8 @@ paths = [
 tests = [
   "tests/test_setup*.py", "tests/test_doctor*.py", "tests/test_skill_links.py",
   "tests/test_installs.py", "tests/test_manager_settings.py", "tests/test_homepage_config.py",
-  "tests/test_hook_commands.py", "tests/test_ops_behaviour.py", "tests/test_journal_denials.py",
-  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+  "tests/test_hook_commands.py", "tests/test_ops_behaviour.py", "tests/test_ops_cases.py",
+  "tests/test_journal_denials.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
 ]
 
 [[bundle]]
@@ -372,7 +373,8 @@ paths = [
 ]
 tests = [
   "tests/test_push*.py", "tests/test_gitgate.py", "tests/test_mcp_harness.py",
-  "tests/test_verify_record*.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+  "tests/test_verify_record*.py", "tests/test_code_review_gate.py", "tests/test_hooks_repo_guards.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
 ]
 
 [[bundle]]

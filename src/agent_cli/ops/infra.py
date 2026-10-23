@@ -301,12 +301,13 @@ def setup(
         setup_mod.caveman_submodule(root),
         setup_mod.skill_links(root),
         installs_mod.terminal_python(root, system),
-        setup_mod.git_hooks(root),
         setup_mod.harness_role(root),
         setup_mod.machine_label(root, machine),
         _notes_step(root, notes),
     ]
     notes_ok = steps[-1]["state"] != "failed"
+    # After the notes step: on a first run the registry naming the product clones only exists from here on.
+    steps.append(setup_mod.git_hooks(root))
     if notes_ok and owner:
         from .. import config_file
 

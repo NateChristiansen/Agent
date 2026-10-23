@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from agent_cli import code_review, land, land_recover
+from agent_cli import code_review, gitgate, land, land_recover
 from agent_cli import land_journal as jn
 from agent_cli.core import AgentError
 from hooks_test_helpers import _decision, _reason
@@ -271,6 +271,21 @@ def _commit(repo: Path, message: str) -> str:
 def pushed(tmp_root: Path, run, notes_remote) -> tuple[Path, str]:
     """Alpha's `agent/001-x`, a worker branch whose dispatch names it (no worktree)."""
     assert run(["feature", "new", "x", "--title", "X"]).code == 0
+    return _worker_branch(tmp_root)
+
+
+@pytest.fixture
+def unnoted(tmp_root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str, list[str]]:
+    """`pushed` without `feature new`, and every log note push-guard writes."""
+    from agent_cli import features, log
+
+    notes: list[str] = []
+    monkeypatch.setattr(features, "resolve", lambda root, ref: f"feature {ref}")
+    monkeypatch.setattr(log, "append", lambda f, kind, text: notes.append(text))
+    return (*_worker_branch(tmp_root), notes)
+
+
+def _worker_branch(tmp_root: Path) -> tuple[Path, str]:
     repo = tmp_root / "repos/alpha-api"
     subprocess.run(["git", "checkout", "-q", "-b", "agent/001-x"], cwd=repo, check=True)
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True)
@@ -298,11 +313,14 @@ PUSH_CASES = [
 ]
 
 
-def test_push_guard_needs_a_clean_round_on_the_pushed_head(pushed: tuple[Path, str], tmp_root: Path, run):
-    repo, head = pushed
+def test_push_guard_needs_a_clean_round_on_the_pushed_head(
+    unnoted: tuple[Path, str, list[str]], tmp_root: Path, run
+):
+    repo, head, _ = unnoted
     reason = _denied(run, PUSH, repo)
     assert f"agent/001-x at {head[:12]}" in reason and "no code-review round has run on it" in reason
     assert 'code-review` with dispatch_id="001-01"' in reason and "AGENT_PUSH_UNREVIEWED=1" in reason
+    assert "push-guard's early warning; git's pre-push hook checks the exact refs" in reason
     # a finished review-row dispatch, the rule before ADR-0063, is not enough
     _dispatch(
         tmp_root,
@@ -355,9 +373,9 @@ def test_push_guard_strips_a_force_prefix_before_matching_records(
 
 
 def test_push_guard_checks_the_refspec_source_not_the_local_destination(
-    pushed: tuple[Path, str], tmp_root: Path, run
+    unnoted: tuple[Path, str, list[str]], tmp_root: Path, run
 ):
-    repo, head = pushed
+    repo, head, _ = unnoted
     _round(tmp_root, head, branch="agent/001-x", repo=ALPHA)
     _dispatch(tmp_root, "001-01", repo=ALPHA, branch="agent/001-x", worktree=str(repo))
     subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, check=True)
@@ -365,7 +383,8 @@ def test_push_guard_checks_the_refspec_source_not_the_local_destination(
     assert _guard(run, PUSH, repo) == ""  # the local branch is the reviewed head
     for cmd in ("git push origin HEAD:agent/001-x", "git push origin +HEAD:refs/heads/agent/001-y"):
         assert "has no clean code-review round on that head" in _denied(run, cmd, repo)
-    assert "detached head" in _denied(run, "git push origin HEAD", repo)
+    detached = _denied(run, "git push origin HEAD", repo)
+    assert "detached head" in detached and "git's pre-push hook checks the exact refs" in detached
 
 
 def test_push_guard_scopes_records_and_rounds_to_the_pushed_repo(
@@ -402,61 +421,61 @@ def test_push_guard_fails_open_on_an_unreadable_round_of_the_head(
     assert _guard(run, PUSH, repo) == ""
 
 
-def test_push_guard_override_notes_the_pushed_repo_s_feature(pushed: tuple[Path, str], tmp_root: Path, run):
-    repo, head = pushed
-    assert run(["feature", "new", "y", "--title", "Y"]).code == 0
-    _dispatch(tmp_root, "001-00", repo="beta-web", branch="agent/001-x", feature=2)
-    assert _guard(run, f"AGENT_PUSH_UNREVIEWED=1 {PUSH}", repo) == ""
-    log = (tmp_root / "features/001-x/log.md").read_text()
-    assert (
-        f"pushed agent/001-x at {head[:12]} with AGENT_PUSH_UNREVIEWED=1 without a clean code-review round"
-        in log
-    )
-    assert "no code-review round has run on it" in log
-    other = tmp_root / "features/002-y/log.md"
-    assert not other.exists() or "AGENT_PUSH_UNREVIEWED" not in other.read_text()
-
-
-UNLISTED = [
-    ("git push --all origin", "`--all` pushes refs the command does not name"),
-    ("git push --mirror origin", "`--mirror`"),
-    ("git push --tags origin", "`--tags`"),
-    ("git push origin 'refs/heads/*:refs/heads/*'", "the glob refspec"),
-    ("git push origin :", "the matching refspec `:`"),
-    ("git push origin +:", "the matching refspec `:`"),
-    ("git push", "no refspec"),
-    ("git push origin", "no refspec"),
-    ("git push --frobnicate origin agent/001-x", "the option `--frobnicate`"),
-    ("git --git-dir=.git push origin agent/001-x", "the git option `--git-dir=.git`"),
+OVERRIDES = [
+    ("", "1", True),
+    ("", "0", False),
+    ("", None, False),
+    ("AGENT_PUSH_UNREVIEWED=1 ", None, True),
+    ("AGENT_PUSH_UNREVIEWED=0 ", "1", False),
+    ("AGENT_PUSH_UNREVIEWED=0 AGENT_PUSH_UNREVIEWED=1 ", None, True),
+    ("AGENT_PUSH_UNREVIEWED=1 AGENT_PUSH_UNREVIEWED=0 ", "1", False),
+    ("AGENT_PUSH_UNREVIEWED='1' ", None, True),
+    ("AGENT_PUSH_UNREVIEWED=$X ", None, True),
+    ("AGENT_PUSH_UNREVIEWED=1; ", "0", True),
 ]
 
 
-@pytest.mark.parametrize(("cmd", "why"), UNLISTED)
-def test_push_guard_fails_closed_on_a_push_it_cannot_list(pushed: tuple[Path, str], run, cmd: str, why: str):
-    repo, head = pushed
-    reason = _denied(run, cmd, repo)
-    assert "cannot list exactly which refs this push sends" in reason and why in reason
-    assert "`git push origin HEAD:agent/<name>`" in reason and "AGENT_PUSH_UNREVIEWED=1" in reason
-
-
-def test_an_unlisted_push_with_the_override_passes_and_notes_the_worktree_s_feature(
-    pushed: tuple[Path, str], tmp_root: Path, run
+def test_push_guard_reads_the_override_as_git_will_see_it_and_leaves_its_note_to_pre_push(
+    unnoted: tuple[Path, str, list[str]], tmp_root: Path, run, monkeypatch: pytest.MonkeyPatch
 ):
-    repo, _ = pushed
-    _dispatch(tmp_root, "001-01", repo=ALPHA, branch="agent/001-x", worktree=str(repo))
-    assert _guard(run, "AGENT_PUSH_UNREVIEWED=1 git push --all origin", repo) == ""
-    log = (tmp_root / "features/001-x/log.md").read_text()
-    assert "a push whose refs push-guard cannot list (`--all` pushes refs the command does not name)" in log
-
-
-def test_an_unlisted_push_outside_the_harness_and_registered_repos_is_not_guarded(tmp_root: Path):
+    """The command's last leading assignment wins; with none, push-guard's own environment is
+    the shell's. A value the shell decides passes to pre-push."""
     from agent_cli.hooks.repo_guards import push_guard
 
-    loose = tmp_root.parent / "loose"
-    loose.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=loose, check=True)
-    payload = json.loads(_push("git push --all origin", loose))
-    assert push_guard(tmp_root, payload) == ""
+    repo, _, notes = unnoted
+    assert _guard(run, f"AGENT_PUSH_UNREVIEWED=1 {PUSH}", repo) == ""
+    assert _guard(run, f"AGENT_PUSH_UNREVIEWED=0 {PUSH}", repo) != ""
+    for prefix, env, passes in OVERRIDES:
+        if env is None:
+            monkeypatch.delenv("AGENT_PUSH_UNREVIEWED", raising=False)
+        else:
+            monkeypatch.setenv("AGENT_PUSH_UNREVIEWED", env)
+        payload = {"tool_name": "Bash", "cwd": str(repo), "tool_input": {"command": prefix + PUSH}}
+        assert (push_guard(tmp_root, payload) == "") is passes, (prefix, env)
+    assert notes == []
+    # the exact refs are the pre-push hook's (`test_push_review.py`), so with that hook to run,
+    # push-guard passes a push it cannot list and writes no note for it either
+    monkeypatch.delenv("AGENT_PUSH_UNREVIEWED", raising=False)
+    _dispatch(tmp_root, "001-01", repo=ALPHA, branch="agent/001-x", worktree=str(repo))
+    gitgate.install_review(tmp_root)
+    for cmd in UNLISTED:
+        assert _guard(run, cmd, repo) == "", cmd
+        assert _guard(run, f"AGENT_PUSH_UNREVIEWED=1 {cmd}", repo) == "", cmd
+    assert notes == []
+
+
+UNLISTED = [
+    "git push --all origin",
+    "git push --mirror origin",
+    "git push --tags origin",
+    "git push origin 'refs/heads/*:refs/heads/*'",
+    "git push origin :",
+    "git push origin +:",
+    "git push",
+    "git push origin",
+    "git push --frobnicate origin agent/001-x",
+    "git --git-dir=.git push origin agent/001-x",
+]
 
 
 def test_push_guard_reads_a_repo_option_apart_from_the_refspecs(
@@ -483,6 +502,23 @@ def test_push_guard_guards_a_ref_whose_source_a_dispatch_names(pushed: tuple[Pat
     assert _guard(run, "git push origin agent/001-x:feature/renamed", repo) == ""
 
 
+def test_a_word_the_shell_expands_leaves_the_push_to_pre_push(
+    unnoted: tuple[Path, str, list[str]], tmp_root: Path, run
+):
+    """Read literally, `"HEAD:$B"` named a branch `$B` with no round, and push-guard denied a push
+    whose expanded destination pre-push lets through."""
+    repo, head, _ = unnoted
+    _dispatch(tmp_root, "001-01", repo=ALPHA, branch="agent/001-x", worktree=str(repo))
+    _round(tmp_root, head, branch="release/x", repo=ALPHA)
+    for spec in (
+        '"HEAD:$B"',
+        "HEAD:${B}",
+        "HEAD:`git branch --show-current`",
+        "HEAD:$(git branch --show-current)",
+    ):
+        assert _guard(run, f"B=release/x; git push origin {spec}", repo) == "", spec
+
+
 def test_a_ref_only_another_repo_s_dispatch_names_is_not_guarded(
     pushed: tuple[Path, str], tmp_root: Path, run
 ):
@@ -495,10 +531,9 @@ def test_a_ref_only_another_repo_s_dispatch_names_is_not_guarded(
 
 
 def test_a_linked_worktree_outside_the_checkout_resolves_to_its_repo(
-    pushed: tuple[Path, str], tmp_root: Path, run
+    unnoted: tuple[Path, str, list[str]], tmp_root: Path, run
 ):
-    repo, _ = pushed
-    assert run(["feature", "new", "y", "--title", "Y"]).code == 0
+    repo, _, notes = unnoted
     linked = tmp_root.parent / "alpha-linked"
     subprocess.run(["git", "worktree", "add", "-q", "-b", "agent/001-l", str(linked)], cwd=repo, check=True)
     head = _commit(linked, "linked work")
@@ -507,8 +542,7 @@ def test_a_linked_worktree_outside_the_checkout_resolves_to_its_repo(
     _round(tmp_root, head, branch="agent/001-l", repo="beta-web")
     assert 'dispatch_id="001-02"' in _denied(run, "git push origin agent/001-l", linked)
     assert _guard(run, "AGENT_PUSH_UNREVIEWED=1 git push origin agent/001-l", linked) == ""
-    assert "pushed agent/001-l" in (tmp_root / "features/001-x/log.md").read_text()
-    assert "pushed agent/001-l" not in (tmp_root / "features/002-y/log.md").read_text()
+    assert notes == []
 
 
 @pytest.mark.parametrize("cmd", ["git push origin --delete agent/001-x", "git push origin :agent/001-x"])

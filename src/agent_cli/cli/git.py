@@ -20,6 +20,13 @@ def add_parser(sub: Subparsers) -> None:
     pp = gt.add_parser("pre-push", help="refuse a push from this checkout; run by the hook")
     pp.add_argument("remote", nargs="?", help="passed by git; unused")
     pp.add_argument("url", nargs="?", help="passed by git; unused")
+    pr = gt.add_parser(
+        "push-review",
+        help="refuse a product clone's push of a ref with no clean code-review round; run by its hook",
+    )
+    pr.add_argument("checkout", help="the pushing clone's top-level directory")
+    pr.add_argument("remote", nargs="?", help="passed by git; unused")
+    pr.add_argument("url", nargs="?", help="passed by git; unused")
     gh = gt.add_parser("hooks", help="show the hooks' state; --install writes them")
     gh.add_argument("--install", action="store_true", help="write missing or stale hooks")
     ex = sub.add_parser(
@@ -42,9 +49,10 @@ def git_pre_commit(root: Path, args: argparse.Namespace, out: Output) -> int:
 
 
 def git_pre_push(root: Path, args: argparse.Namespace, out: Output) -> int:
-    """The one pre-push hook, over one strict reading of git's stdin: the export-only gate, then
-    the pass record each pushed tip needs (see ADR-0041)."""
-    from .. import push_input, push_records
+    """The one pre-push hook, over one strict reading of git's stdin: the export-only gate, the
+    pass record each pushed tip needs (see ADR-0041), then the clean code-review round each
+    guarded ref needs (ADR-0063), against the main checkout's records."""
+    from .. import push_input, push_records, push_review, verify_record
 
     updates = push_input.parse_updates(sys.stdin.read(push_input.MAX_INPUT_CHARS + 1))
     problems = gitgate.pre_push(root)
@@ -54,7 +62,18 @@ def git_pre_push(root: Path, args: argparse.Namespace, out: Output) -> int:
     if unrecorded:
         head = "push refused: every pushed tip needs a full pass record (ADR-0041)"
         return _report(out, [head, *unrecorded], "")
-    return _report(out, [], "")
+    unreviewed = push_review.problems(verify_record.main_of(root), root, updates)
+    return _report(out, [push_review.REFUSED, *unreviewed] if unreviewed else [], "")
+
+
+def git_push_review(root: Path, args: argparse.Namespace, out: Output) -> int:
+    """A product clone's pre-push hook: the code-review gate alone, over git's stdin, against this
+    harness's records (ADR-0063)."""
+    from .. import push_input, push_review
+
+    updates = push_input.parse_updates(sys.stdin.read(push_input.MAX_INPUT_CHARS + 1))
+    unreviewed = push_review.problems(root, Path(args.checkout), updates)
+    return _report(out, [push_review.REFUSED, *unreviewed] if unreviewed else [], "")
 
 
 def git_hooks(root: Path, args: argparse.Namespace, out: Output) -> int:
@@ -70,6 +89,7 @@ def export_build(root: Path, args: argparse.Namespace, out: Output) -> int:
 HANDLERS = {
     ("git", "pre-commit"): git_pre_commit,
     ("git", "pre-push"): git_pre_push,
+    ("git", "push-review"): git_push_review,
     ("git", "hooks"): git_hooks,
     ("export", None): export_build,
 }

@@ -102,9 +102,11 @@ def test_dispatch_dry_run_shows_the_local_base(tmp_root: Path, run, fake_claude,
 
 
 def test_doctor_reports_a_local_only_repo_as_ok(tmp_root: Path):
+    from agent_cli import gitgate
     from agent_cli.doctor.checks_repos import check_registry
 
     _add_gamma(tmp_root)
+    gitgate.install_review(tmp_root)  # setup's product pre-push hook
     checks = {c["check"]: c for c in check_registry(tmp_root)}
     remote = checks["repo gamma remote"]
     assert remote["level"] == "ok"

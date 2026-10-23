@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_cli import gitgate
 from harness_root import link_notes
 
 pytestmark = pytest.mark.usefixtures("notes_remote")
@@ -13,6 +14,7 @@ def _levels(r):
 
 def test_clean_fixture_passes(tmp_root: Path, run):
     link_notes(tmp_root)  # a notes repo is required
+    gitgate.install_review(tmp_root)  # setup's product pre-push hook
     run(["feature", "new", "x", "--title", "X"])
     run(["adr", "new", "a", "--title", "A", "--feature", "1", "--scope", "harness"])
     r = run(["--json", "doctor"])
