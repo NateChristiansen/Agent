@@ -22,6 +22,9 @@ LOCK_DEADLINE_S = 2.0
 deadline included, so a held lock cannot hold the owner's prompt past the host's budget."""
 
 
+RESUME_PENDING_FIELD = "codex_resume_pending"
+
+
 def _failed(exc: Exception) -> None:
     sys.stderr.write(f"note: prompt activity failed ({exc})\n")
 
@@ -61,17 +64,24 @@ def _codex_prompt(root: Path, payload: dict[str, Any]) -> str:
     sid = str(payload.get("session_id") or "")
     record = (sessions.get(root, sid) or {}) if sid else {}
     pid = sessions.resolve_pid()
-    resumed = bool(record and record.get("pid") and pid and record["pid"] != pid)
+    pending = as_dict(record.get(RESUME_PENDING_FIELD))
+    resumed = bool(pending) or bool(record and record.get("pid") and pid and record["pid"] != pid)
     if resumed:
-        old_display = str(record.get("tab_display_name") or "")
+        old_display = str(pending.get("old_display") or record.get("tab_display_name") or "")
         try:
+            # Activity moves the pid before the resume is finished; the marker keeps it retryable.
             sessions.update_record(
                 root,
                 sid,
-                lambda current: {**current, "tab_display_name": None, "tab_name": None, "tab_label": None},
+                lambda current: {
+                    **current,
+                    "tab_display_name": None,
+                    "tab_name": None,
+                    "tab_label": None,
+                    RESUME_PENDING_FIELD: {"old_display": old_display},
+                },
             )
         except sessions.LockDeadline as exc:
-            # The record keeps the old pid, so the next prompt prepares the resume again.
             _failed(exc)
             resumed = False
         else:
@@ -87,6 +97,14 @@ def _codex_prompt(root: Path, payload: dict[str, Any]) -> str:
         startup = str(json.loads(raw)["hookSpecificOutput"]["additionalContext"])
     except KeyError, TypeError, ValueError:
         pass
+    except sessions.LockDeadline as exc:
+        _failed(exc)
+    try:
+        # The deadline only moves forward, so this write succeeding means no earlier write in the
+        # resume was cut short by it.
+        sessions.update_record(
+            root, sid, lambda current: {k: v for k, v in current.items() if k != RESUME_PENDING_FIELD}
+        )
     except sessions.LockDeadline as exc:
         _failed(exc)
     if not startup:

@@ -12,7 +12,7 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from pathlib import Path
 
 import pytest
@@ -216,6 +216,48 @@ def test_a_held_session_lock_defers_codex_resume_preparation(mgr: Path, monkeypa
     out = prompt(mgr, "owner's prompt", "codex-prompt")  # the next prompt prepares the resume
     assert "source: resume" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
     assert (sessions.get(mgr, MGR) or {})["tab_display_name"] is None
+
+
+def test_a_codex_resume_cut_short_after_the_pid_moves_is_finished_by_the_next_prompt(mgr: Path, monkeypatch):
+    from agent_cli import session_liveness, tab_drain
+
+    sessions.set_field(mgr, MGR, "provider", "codex")
+    sessions.set_field(mgr, MGR, "pid", 11111)
+    sessions.set_field(mgr, MGR, "activity", {"state": "ended"})
+    sessions.set_field(mgr, MGR, "tab_display_name", "mgr-one · cx 0001")
+    monkeypatch.setattr(sessions, "resolve_pid", lambda: 22222)
+    monkeypatch.setattr(sessions, "resolve_identity", lambda: (22222, True))
+    held, taken = ExitStack(), []
+    real = session_liveness.set_identity
+
+    def set_identity(root, sid, pid, known):
+        out = real(root, sid, pid, known)
+        if not taken:  # the first identity write lands; then the lock is taken
+            taken.append(True)
+            held.enter_context(held_elsewhere(sessions._locked(mgr, MGR)))
+        return out
+
+    monkeypatch.setattr(session_liveness, "set_identity", set_identity)
+    with held:
+        (_, _), elapsed = timed(lambda: hooks.run(mgr, "codex-prompt", json.dumps(owner_prompt())))
+    assert elapsed < HOST_BUDGET_S - 1
+    record = sessions.get(mgr, MGR) or {}
+    assert record["pid"] == 22222  # the successful write stays
+    assert record["activity"]["state"] == "ended" and not record.get(tab_drain.RESUMED_FIELD)
+
+    out = prompt(mgr, "owner's prompt", "codex-prompt")
+    assert "source: resume" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    record = sessions.get(mgr, MGR) or {}
+    assert record[tab_drain.RESUMED_FIELD] is True and record["activity"]["state"] == "working"
+    assert record["tab_display_name"] is None and record["pid"] == 22222
+    assert "codex_resume_pending" not in record
+
+    out = prompt(mgr, "owner's prompt", "codex-prompt")  # finished: not prepared a third time
+    assert "source: resume" not in out
+
+
+def owner_prompt() -> dict:
+    return {"session_id": MGR, "hook_event_name": "UserPromptSubmit", "prompt": "owner's prompt"}
 
 
 def test_a_failed_acknowledgment_does_not_let_the_spent_wake_swallow_the_next_send(mgr: Path):
