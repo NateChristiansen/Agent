@@ -532,18 +532,6 @@ def _from_cwd(cwd: str, path: str) -> str:
     return posixpath.join(slashes(cwd), slashes(path))
 
 
-def _destination(args: list[str]) -> list[str]:
-    for k, arg in enumerate(args):
-        if arg in ("-t", "--target-directory") and k + 1 < len(args):
-            return [args[k + 1]]
-        if arg.startswith("--target-directory="):
-            return [arg.split("=", 1)[1]]
-        if arg.startswith("-t") and len(arg) > 2:
-            return [arg[2:]]
-    operands = [a for a in args if not a.startswith("-")]
-    return operands[-1:]
-
-
 def _command_targets(words: list[str]) -> list[str]:
     """Write operands of one simple command whose command, after leading assignments and
     `COMMAND_PREFIXES`, is a raw writer. A writer's name anywhere else (`rg touch src/`) is data."""
@@ -590,8 +578,6 @@ def _command_targets(words: list[str]) -> list[str]:
     head, rest = os.path.basename(words[i]), words[i + 1 :]
     if head == "dd":
         found = [w.split("=", 1)[1] for w in rest if w.startswith("of=")]
-    elif head in ("cp", "mv", "ln"):
-        found = _destination(rest)
     elif head in RAW_WRITERS or (head in ("sed", "perl") and any(IN_PLACE_FLAG_RE.match(t) for t in rest)):
         found = [w for w in rest if not w.startswith("-")]
     else:
@@ -605,6 +591,12 @@ def _write_targets(cmd: str) -> list[str]:
     shell opens from its own directory, and the operands of a raw writer it runs."""
     pairs = [*_shell_words(cmd), (";", True)]
     targets: list[str] = []
+    toks = _op_tokens(cmd)
+    while toks and ENV_ASSIGNMENT_RE.match(toks[0]):
+        toks = toks[1:]
+    if len(toks) > 1 and os.path.basename(toks[0]) in ("cp", "mv", "ln"):
+        last = toks[-1]
+        targets.append(last.split("=", 1)[1] if last.startswith(("of=", "file=")) else last)
     words: list[str] = []
     i = 0
     while i < len(pairs):
