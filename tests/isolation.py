@@ -13,10 +13,12 @@ fixed clock left two such jobs alive after the run on Windows, holding venv DLLs
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+import suite_cost
 from agent_cli.telemetry import fence
 from agent_cli.usage import job as usage_job
 
@@ -36,6 +38,44 @@ def _live_state_fence(tmp_path_factory: pytest.TempPathFactory) -> Path:
     # socket first, and a missing one falls back to `obsidian.app_running`, which tests stub.
     os.environ["AGENT_OBSIDIAN_CLI_SOCKET"] = str(base / "no-obsidian-cli.sock")
     return base
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _host_facts_uncounted() -> Iterator[None]:
+    """What the host and the running harness cost to ask, kept out of each test's spawn figure.
+
+    The client-ancestor walk (`session_identity.client_process`) starts at this process's parent
+    and climbs the host's process tree with a `ps` per step, so its cost is how pytest was launched:
+    94 call-phase starts for one worktree test under a landing, 70 alone, 118 under a probe record.
+    Those steps leave the running test's figure; a walk over a pid a test made up still counts.
+    `harness_revision` is cached for the process, so it is asked here, before any test pays for it."""
+    from agent_cli import session_identity
+    from agent_cli.dispatch import telemetry_events
+
+    command, parent = session_identity._command, session_identity._parent_pid
+    host: set[int] = set()
+    with suite_cost.uncounted():
+        telemetry_events.harness_revision()
+        pid: int | None = os.getppid()
+        while pid and pid > 1 and pid not in host:
+            host.add(pid)
+            pid = parent(pid)
+
+    def host_command(pid: int) -> str:
+        if pid not in host:
+            return command(pid)
+        with suite_cost.uncounted():
+            return command(pid)
+
+    def host_parent(pid: int) -> int | None:
+        if pid not in host:
+            return parent(pid)
+        with suite_cost.uncounted():
+            return parent(pid)
+
+    session_identity._command, session_identity._parent_pid = host_command, host_parent
+    yield
+    session_identity._command, session_identity._parent_pid = command, parent
 
 
 @pytest.fixture(autouse=True)

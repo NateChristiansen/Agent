@@ -127,10 +127,14 @@ def _record(opaque_start: bool) -> None:
 
 
 def install() -> None:
-    """Wrap `Popen.__init__` once; a second call in the same process keeps the first wrapper."""
-    current = subprocess.Popen.__init__
-    if getattr(current, "suite_cost", None) is not None:
+    """Wrap `Popen.__init__` once; a second call in the same process keeps the first wrapper.
+
+    Asked on the `subprocess` module, not on `Popen`: while a test has a subclass in `Popen`'s
+    place, its `__init__` carries no mark, and wrapping it again made this module instance the one
+    `isolated_code` is read from, with the controller's spawn file as its sink."""
+    if getattr(subprocess, "suite_cost", None) is not None:
         return
+    current = subprocess.Popen.__init__
 
     @functools.wraps(current)
     def counting(self: subprocess.Popen[Any], args: Any, *a: Any, **kw: Any) -> None:
@@ -156,7 +160,7 @@ def active() -> Any:
     A pytest worker that inherited the spawn file imported this file as `sitecustomize` before the
     plugin loaded it under another name; both are the same counter, and the first one wins."""
     install()
-    return subprocess.Popen.__init__.suite_cost  # type: ignore[attr-defined]
+    return subprocess.suite_cost  # type: ignore[attr-defined]
 
 
 def _run_shadowed() -> None:

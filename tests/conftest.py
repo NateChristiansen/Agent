@@ -38,7 +38,11 @@ from harness_root import (  # noqa: F401  (imported for registration and re-expo
 
 # The live-state fences (isolation.py) are autouse for the whole suite; importing them here is what
 # registers them.
-from isolation import _live_state_fence, _no_fence_violations  # noqa: F401  (registration)
+from isolation import (  # noqa: F401  (registration)
+    _host_facts_uncounted,
+    _live_state_fence,
+    _no_fence_violations,
+)
 from land_helpers import _land_template  # noqa: F401  (registration)
 from seeded import HOST_IDENTITY, _aa_tmp_path_first  # noqa: F401  (registration)
 

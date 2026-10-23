@@ -58,8 +58,9 @@ MOCK_ATTRS = frozenset(
 #: Markers that only place a test on a worker; two bodies differing only in these are duplicates.
 SCHEDULING_MARKS = frozenset({"xdist_group", "timing"})
 NO_ENTRY = "no budget entry allows this"
-#: The only files that may use `suite_cost.uncounted`: the shared record cache and the plugin's own.
-UNCOUNTED_USERS = frozenset({"land_helpers.py", "suite_cost.py", "test_suite_cost_plugin.py"})
+#: The only files that may use `suite_cost.uncounted`: the shared record cache, the host-facts
+#: fence and the plugin's own.
+UNCOUNTED_USERS = frozenset({"land_helpers.py", "isolation.py", "suite_cost.py", "test_suite_cost_plugin.py"})
 
 
 @dataclass
@@ -425,8 +426,9 @@ def scan(tests: Path) -> Found:
             if not exempt and _uses_uncounted(node):
                 found.problems.append(
                     f"uncounted-use: {rel}:{getattr(node, 'lineno', 0)} uses suite_cost.uncounted, which only the shared "
-                    f"record cache in tests/land_helpers.py may use to leave starts out of a test's ceiling; "
-                    f"{NO_ENTRY}"
+                    f"record cache in tests/land_helpers.py (who pays depends on scheduling) and the host-facts "
+                    f"fence in tests/isolation.py (what the process tree costs depends on how pytest was launched) "
+                    f"may use to leave starts out of a test's ceiling; {NO_ENTRY}"
                 )
             if isinstance(node, ast.ImportFrom) and node.module == "time":
                 sleep_names |= {a.asname or a.name for a in node.names if a.name == "sleep"}
@@ -643,7 +645,7 @@ def _run(
         (
             "import suite_cost\ndef test_a():\n    with suite_cost.uncounted():\n        run()\n    assert f()\n",
             "uncounted-use: tests/test_x.py:3 uses suite_cost.uncounted, which only the shared record cache in "
-            "tests/land_helpers.py may use",
+            "tests/land_helpers.py (who pays depends on scheduling) and the host-facts fence in tests/isolation.py",
         ),
         ("from suite_cost import uncounted\n", "uncounted-use: tests/test_x.py:1 uses suite_cost.uncounted"),
         (
@@ -679,19 +681,24 @@ def test_platform_skips_need_only_a_reason(tmp_path: Path):
     assert _run(tmp_path, {"test_x.py": source}) == []
 
 
-def test_only_the_record_cache_and_the_plugin_may_use_uncounted(tmp_path: Path):
+def test_only_the_record_cache_the_host_fence_and_the_plugin_may_use_uncounted(tmp_path: Path):
     use = "import suite_cost\ndef helper():\n    with suite_cost.uncounted():\n        run()\n"
     (tmp_path / "tests" / "sub").mkdir(parents=True)
     problems = _run(
         tmp_path,
         {
             "land_helpers.py": use,
+            "isolation.py": use,
             "suite_cost.py": use,
             "test_suite_cost_plugin.py": use,
             "sub/land_helpers.py": use,
+            "sub/isolation.py": use,
         },
     )
-    assert [p.split(" uses")[0] for p in problems] == ["uncounted-use: tests/sub/land_helpers.py:3"], problems
+    assert sorted(p.split(" uses")[0] for p in problems) == [
+        "uncounted-use: tests/sub/isolation.py:3",
+        "uncounted-use: tests/sub/land_helpers.py:3",
+    ], problems
 
 
 def test_a_nested_helper_the_test_calls_counts_as_its_assert(tmp_path: Path):

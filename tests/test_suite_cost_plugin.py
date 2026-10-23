@@ -236,6 +236,34 @@ def test_the_harness_s_isolated_children_start_unchanged_when_not_measuring(
     assert len(started) == (1 if os.name == "nt" else 2)
 
 
+def test_a_popen_subclass_in_place_keeps_the_one_counter(monkeypatch: pytest.MonkeyPatch):
+    """Asked under the Obsidian guard's subclass, `active` wrapped that subclass too and named its
+    own module on `subprocess`, whose sink in an xdist worker is the controller's spawn file: the
+    worker's later verifier children counted in no test."""
+    counter = suite_cost.counter
+
+    class Sub(subprocess.Popen):  # type: ignore[type-arg]
+        def __init__(self, args: Any, *rest: Any, **kw: Any) -> None:
+            super().__init__(args, *rest, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", Sub)
+    assert site.active() is counter
+    assert subprocess.suite_cost is counter  # type: ignore[attr-defined]
+    assert getattr(Sub.__init__, "suite_cost", None) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the walk asks psutil there and starts nothing")
+def test_a_walk_over_the_host_s_ancestors_is_set_aside_and_any_other_pid_counts():
+    from agent_cli import session_identity
+
+    process = suite_cost._process  # pyright: ignore[reportPrivateUsage]
+    assert process is not None
+    before, set_aside = process.total(), process.uncounted
+    session_identity._command(os.getppid())  # pyright: ignore[reportPrivateUsage]
+    session_identity._command(os.getpid())  # pyright: ignore[reportPrivateUsage]
+    assert (process.total() - before, process.uncounted - set_aside) == (2, 1)
+
+
 class _Recorded(Exception):
     """Raised by a listener in place of the start it was shown."""
 
