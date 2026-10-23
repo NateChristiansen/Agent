@@ -110,6 +110,7 @@ def harness(
     batch: list[str] | None = None,
     origins: list[str] | None = None,
     budget_raise: str | None = None,
+    review_override: str | None = None,
     since: str | None = None,
     until: str | None = None,
 ) -> Op:
@@ -204,6 +205,7 @@ def harness(
             extra=batch,
             origins=origins,
             budget_raise=budget_raise,
+            review_override=review_override,
         )
     else:
         raise AgentError(f"unknown harness action {action!r}")  # unreachable: the schema enum refuses it
@@ -257,7 +259,9 @@ HARNESS_TOOLS: dict[str, ToolSpec] = {
         "or undoes an interrupted landing, and abort=<id> puts a stalled one's files back, only on the "
         "owner's say-so. Land refuses a tree over its suite budget or one that loosens the "
         "budget file; budget_raise=<reason>, the reason of the [[raise]] entry the branch adds, lets it "
-        "land, only when the owner has approved the raise. "
+        "land, only when the owner has approved the raise. Land refuses a branch head with no clean "
+        "`code-review` round (ADR-0063); review_override=<reason> lands it anyway, only on the owner's "
+        "say-so, and logs the reason to the feature. "
         "`ok` is false when the command found a problem (a doctor failure). Long output "
         "comes back as a head plus a scratch file path. Setup, export, hooks and process reaping are "
         "person-only: give the owner the command instead.",

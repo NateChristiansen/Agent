@@ -412,6 +412,7 @@ def _landable(droot: Path, monkeypatch, fake_claude, count: int = 2) -> list[dic
     monkeypatch.setattr(
         land, "_certificate", lambda root, cand, **_: {"run_id": "certified-in-test", "reused": True}
     )
+    monkeypatch.setattr(land, "_review_gate", lambda *_, **__: [])  # cleanup, not review, is under test
     return ds
 
 

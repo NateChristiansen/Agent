@@ -39,6 +39,11 @@ def add_parser(sub: Subparsers) -> None:
         metavar="REASON",
         help="the reason of the [[raise]] entry the branch adds to tests/budget.toml (the owner's call)",
     )
+    lp.add_argument(
+        "--review-override",
+        metavar="REASON",
+        help="land with no clean code-review round on the head; logged to the feature (the owner's call)",
+    )
     which = lp.add_mutually_exclusive_group()
     which.add_argument("--recover", metavar="ID", help="finish or undo an interrupted landing")
     which.add_argument("--abort", metavar="ID", help="put a stalled landing's files back (the owner's call)")
@@ -66,6 +71,7 @@ def land(root: Path, args: argparse.Namespace, out: Output) -> int:
             extra=args.extra,
             origins=args.origins,
             budget_raise=args.budget_raise,
+            review_override=args.review_override,
         )
     )
 

@@ -9,11 +9,14 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .. import sessions
 from ..records.narrow import as_dict, dig
 from .paths import deny, shell_tokens
+
+if TYPE_CHECKING:
+    from ..repos import Repo
 
 # ------------------------------------------------------------------ pull-warn
 
@@ -115,22 +118,32 @@ PUSH_OVERRIDE_ENV = "AGENT_PUSH_UNREVIEWED"
 REVIEW_ROW = "review"
 REVIEW_REASON_RE = re.compile(r"^\s*review(?=[:,]|\s+row\b)|(?:^|;\s*)rubric row review:", re.I)
 PUSH_GUARD_REASON = (
-    "this branch has no `review` dispatch newer than its last commit. /dispatch's "
-    '"before the push" step is a review-row dispatch that reads the '
-    "branch against the work order's precedents and the repo's testing guidelines; its findings go back to the build worker with `dispatch resume` before the "
-    "push. To push anyway, prefix the command with "
-    f"{PUSH_OVERRIDE_ENV}=1 (it is logged to the feature)."
+    "this push names no branch: a detached head in a dispatch's worktree has no branch to check a "
+    "code-review round for (ADR-0063). Push it as a named branch, for example `git push origin "
+    "HEAD:<branch>`."
 )
 
 
-def push_guard(root: Path, payload: dict[str, Any]) -> str:
-    """Require a current review for pushes of dispatched branches or from dispatch worktrees,
-    including renamed branches. Other manager branches are outside this guard.
+def _unlisted_reason(why: str) -> str:
+    return (
+        f"push-guard cannot list exactly which refs this push sends ({why}), so it refuses it "
+        "(ADR-0063). Name each branch on the command line, for example `git push origin agent/<name>` "
+        "or `git push origin HEAD:agent/<name>`. To push anyway, prefix the command with "
+        f"{PUSH_OVERRIDE_ENV}=1 (it is logged to the feature)."
+    )
 
-    Accept a finished review-row dispatch after the branch's latest commit, or a review whose
-    recorded head equals the pushed head. An older-head review does not qualify.
-    AGENT_PUSH_UNREVIEWED=1 overrides and logs a feature note. Fail open on unreadable state so a
-    slow Git operation cannot wedge a legitimate push.
+
+def push_guard(root: Path, payload: dict[str, Any]) -> str:
+    """Require a clean `code-review` round (ADR-0063) on the commit each guarded ref of the push
+    sends. A ref is guarded when a dispatch record in the pushed repo names its source or its
+    destination branch, and every ref pushed from a dispatch's worktree is, so a renamed branch is
+    guarded too. Other manager branches are outside this guard.
+
+    In the harness and registered repos, a push whose refs `_refspecs` cannot list exactly is
+    refused. AGENT_PUSH_UNREVIEWED=1 overrides either refusal and logs a feature note. Fail open
+    on unreadable state so a slow Git operation cannot wedge a legitimate push: a source commit
+    git cannot resolve, and a round file of the head that is not readable JSON, let that ref
+    through. A round record that reads but lacks its branch or head is not clean.
     """
     if str(payload.get("tool_name") or "") != "Bash":
         return ""
@@ -138,52 +151,209 @@ def push_guard(root: Path, payload: dict[str, Any]) -> str:
     if not _is_git_push(command):
         return ""
     where = _push_cwd(command, str(payload.get("cwd") or root))
-    branch = _push_branch(command, str(payload.get("cwd") or root))
     from .. import dispatch as dispatch_mod
 
     all_records = dispatch_mod.load_all(root)
-    records = [d for d in all_records if branch and str(d.get("branch") or "") == branch]
-    records += [d for d in _worktree_records(all_records, where) if d not in records]
-    if not records:
-        return ""
-    if not branch:
-        # a detached head in a worker's worktree: nothing to date a review against
-        return deny(PUSH_GUARD_REASON)
-    if PUSH_OVERRIDE_ENV in command:
-        _note_unreviewed_push(root, records, branch)
-        return ""
-    last_commit = _branch_last_commit(where, branch)
-    for d in records:
-        if not REVIEW_REASON_RE.search(str(d.get("choice_reason") or "")):
-            continue
-        finished = str(d.get("finished") or "")
-        if finished and (last_commit is None or finished > last_commit):
+    held = _worktree_records(all_records, where)
+    override = PUSH_OVERRIDE_ENV in command
+    repo, known = _pushed_repo(root, held, where)
+    refs, unlisted = _refspecs(command, where)
+    if refs is None:
+        if not known:
             return ""
-    if _reviewed_head(all_records, records, where, branch):
-        return ""
-    return deny(PUSH_GUARD_REASON)
+        if override:
+            _note_unlisted_push(root, held, unlisted)
+            return ""
+        return deny(_unlisted_reason(unlisted))
+    denials: list[str] = []
+    for source, branch in refs:
+        names = {branch, _ref_name(source, where)} - {""}
+        named = [d for d in all_records if str(d.get("branch") or "") in names]
+        if repo is not None:
+            # A record with no repo is not proof of another repo, so it stays.
+            named = [d for d in named if str(d.get("repo") or repo.name) in (repo.name, repo.short)]
+        mine = named + [d for d in held if d not in named]
+        if not mine:
+            continue
+        if not branch:
+            return deny(PUSH_GUARD_REASON)
+        head = _git_line(where, ["rev-parse", "--verify", "--quiet", f"{source}^{{commit}}"])
+        why = _unclean(root, head, repo.name if repo else None, mine, branch) if head else None
+        if head is None or why is None:
+            continue
+        if override:
+            _note_unreviewed_push(root, mine, branch, head, why)
+        else:
+            denials.append(_code_review_reason(mine, branch, head, why))
+    return deny(" ".join(denials)) if denials else ""
 
 
-def _reviewed_head(
-    all_records: list[dict[str, Any]], records: list[dict[str, Any]], where: Path, branch: str
-) -> bool:
-    """A review on its own branch and worktree, cut from the build branch, as /dispatch runs it.
-    Neither its branch nor its worktree matches the push, so it counts only on
-        proof that it read the pushed commit: a `done` review-row dispatch, in the same repo as a
-        guarded record, whose `start_sha` is the pushed head. A branch name or a finish time is not
-        proof: a review that started at H1 and finished after the branch moved to H2 did not read
-        H2. `start_sha` is set at the first attempt and kept across resumes, so a review resumed
-        after the branch moved does not count either; that errs toward the override."""
-    head = _git_line(where, ["rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"])
-    repos = {str(d.get("repo")) for d in records if d.get("repo")}
-    if not head or not repos:
-        return False
-    return any(
-        REVIEW_REASON_RE.search(str(d.get("choice_reason") or ""))
-        and d.get("state") == "done"
-        and str(d.get("repo") or "") in repos
-        and str(d.get("start_sha") or "") == head
-        for d in all_records
+#: Push options that change neither which refs are sent nor where they go.
+_PUSH_FLAGS = frozenset(
+    {
+        "-f", "--force", "-u", "--set-upstream", "-q", "--quiet", "-v", "--verbose", "--no-verify",
+        "--verify", "--force-with-lease", "--force-if-includes", "--no-force-if-includes", "--atomic",
+        "--no-atomic", "-n", "--dry-run", "--porcelain", "--progress", "--no-progress",
+    }
+)  # fmt: skip
+_PUSH_ARG_FLAGS = ("-o", "--push-option")
+_BULK_FLAGS = frozenset({"--all", "--branches", "--mirror", "--tags", "--follow-tags", "--prune"})
+_DELETE_FLAGS = frozenset({"-d", "--delete"})
+_CONTROL_RE = re.compile(r"[;&|<>]")
+
+
+def _command_words(command: str) -> list[str]:
+    """The push's own words: `_push_tokens` cut at the first shell control operator or
+    redirection (`&&`, `|`, `;`, `2>&1`), so what follows is not read as a refspec."""
+    out: list[str] = []
+    for tok in _push_tokens(command):
+        m = _CONTROL_RE.search(tok)
+        if m is None:
+            out.append(tok)
+            continue
+        head = tok[: m.start()]
+        if head and not head.isdigit():
+            out.append(head)
+        break
+    return out
+
+
+def _refspecs(command: str, where: Path) -> tuple[list[tuple[str, str]] | None, str]:
+    """Each ref the push sends, as (source, destination branch), or None and why when the
+    refs cannot be listed exactly: a bulk flag, a glob or matching (`:`) refspec, no refspec at
+    all (git then pushes what its configuration says), or an option this parse does not know.
+    `+HEAD:refs/heads/agent/016` is (`HEAD`, `agent/016`) and a bare `agent/016` is itself on both
+    sides. With `--repo`, every positional word is read as a refspec. A deletion (`:agent/016`,
+    or any refspec under `--delete`) sends no commit and is left out. A destination of `HEAD` on
+    a detached checkout reads as no branch."""
+    words = _command_words(command)
+    i = 1
+    while i < len(words) and words[i] != "push":
+        if words[i] in ("-C", "-c"):
+            i += 2
+        elif words[i] == "--no-pager":
+            i += 1
+        else:
+            return None, f"the git option `{words[i]}`, which push-guard does not parse"
+    remote: str | None = None
+    specs: list[str] = []
+    delete = positional = False
+    rest = words[i + 1 :]
+    j = 0
+    while j < len(rest):
+        tok = rest[j]
+        j += 1
+        if positional or not tok.startswith("-") or tok == "-":
+            if remote is None:
+                remote = tok
+            else:
+                specs.append(tok)
+        elif tok == "--":
+            positional = True
+        elif tok in _BULK_FLAGS:
+            return None, f"`{tok}` pushes refs the command does not name"
+        elif tok in _DELETE_FLAGS:
+            delete = True
+        elif tok in _PUSH_ARG_FLAGS:
+            j += 1
+        elif tok == "--repo" and j < len(rest):
+            remote, j = rest[j], j + 1
+        elif tok.startswith("--repo="):
+            remote = tok.removeprefix("--repo=")
+        elif not (tok in _PUSH_FLAGS or tok.startswith(("--force-with-lease=", "--push-option="))):
+            return None, f"the option `{tok}`, which push-guard does not parse"
+    if not specs:
+        return None, "no refspec, so git pushes what its configuration says"
+    out: list[tuple[str, str]] = []
+    for spec in specs:
+        plain = spec.removeprefix("+")
+        if "*" in plain:
+            return None, f"the glob refspec `{spec}`"
+        if plain == ":":
+            return None, "the matching refspec `:`"
+        source, colon, dest = plain.partition(":")
+        if delete or not source:
+            continue
+        dest = (dest if colon else source).removeprefix("refs/heads/")
+        out.append((source, _current_branch(where) if dest == "HEAD" else dest))
+    return out, ""
+
+
+def _ref_name(source: str, where: Path) -> str:
+    """The branch a refspec's source names: the checked-out one for `HEAD`."""
+    return _current_branch(where) if source == "HEAD" else source.removeprefix("refs/heads/")
+
+
+def _pushed_repo(root: Path, held: list[dict[str, Any]], where: Path) -> tuple[Repo | None, bool]:
+    """The registered repo the push comes from, and whether it is the harness or a registered
+    repo. A dispatch worktree's repo first; else the registered repo sharing `where`'s git common
+    directory, so a linked worktree outside the checkout resolves too; else the registered
+    checkout holding `where` when git cannot say (the deepest, for a nested clone). The harness
+    checkout counts as known even when the registry does not list it."""
+    from .. import repos as repos_mod
+
+    try:
+        registry = repos_mod.load_registry(root).repos
+        target = where.expanduser().resolve()
+    except Exception:  # noqa: BLE001 — an unreadable registry leaves the repo unknown
+        return None, False
+    named = {str(d.get("repo") or "") for d in held} - {""}
+    if held:
+        return next((r for r in registry if named & {r.name, r.short}), None), True
+    common = _safe_common_dir(target)
+    if common is not None:
+        for r in registry:
+            if _safe_common_dir(r.abs_path(root)) == common:
+                return r, True
+        return None, common == _safe_common_dir(root)
+    holding: list[tuple[int, Repo]] = []
+    for r in registry:
+        try:
+            base = r.abs_path(root).resolve()
+        except OSError:
+            continue
+        if target == base or base in target.parents:
+            holding.append((len(base.parts), r))
+    return (max(holding, key=lambda pair: pair[0])[1], True) if holding else (None, False)
+
+
+def _safe_common_dir(start: Path) -> Path | None:
+    try:
+        return _common_dir(start) if start.exists() else None
+    except Exception:  # noqa: BLE001 — git that cannot say leaves the repo to the path rules
+        return None
+
+
+def _unclean(root: Path, head: str, repo: str | None, mine: list[dict[str, Any]], branch: str) -> str | None:
+    """Why `head` has no clean code-review round in `repo` (any repo when the push's is unknown);
+    None when it has one or a round file of the head is not readable JSON (fail open). A round
+    recorded under the pushed branch's name decides alone; only with none does a clean round
+    under a guarded dispatch's branch name count."""
+    from .. import code_review
+
+    if code_review.unreadable(root, head):
+        return None
+    if bad := code_review.malformed(root, head):
+        return f"a malformed round record ({', '.join(bad)})"
+    if code_review.latest(root, branch=branch, head=head, repo=repo) is None:
+        others = dict.fromkeys(
+            str(d.get("branch")) for d in mine if d.get("branch") and d.get("branch") != branch
+        )
+        if any(code_review.clean(root, branch=name, head=head, repo=repo) for name in others):
+            return None
+    return code_review.unclean(root, branch=branch, head=head, repo=repo)
+
+
+def _code_review_reason(records: list[dict[str, Any]], branch: str, head: str, why: str) -> str:
+    build = next(
+        (d for d in records if not REVIEW_REASON_RE.search(str(d.get("choice_reason") or ""))), records[0]
+    )
+    return (
+        f"{branch} at {head[:12]} has no clean code-review round on that head: {why}. A push needs a "
+        "complete `code-review` round with zero verified blocking findings on the pushed head "
+        f'(ADR-0063). Run the `dispatch` action `code-review` with dispatch_id="{build.get("id")}", '
+        "and call it again after each return until the round completes. To push anyway, prefix the "
+        f"command with {PUSH_OVERRIDE_ENV}=1 (it is logged to the feature)."
     )
 
 
@@ -252,22 +422,6 @@ def _worktree_records(records: list[dict[str, Any]], where: Path) -> list[dict[s
     return out
 
 
-def _push_branch(command: str, cwd: str) -> str:
-    """The branch being pushed.
-
-    The last non-flag token when the command names a remote and a ref
-    (`git push origin agent/016`). Otherwise the checked-out branch of the cwd (or the `-C`
-    path). `HEAD` and a detached checkout read as no branch, and the hook falls open."""
-    toks = [t for t in _push_tokens(command) if not t.startswith("-")]
-    if "push" in toks:
-        after = toks[toks.index("push") + 1 :]
-        if len(after) >= 2:
-            ref = after[1].split(":")[-1].removeprefix("refs/heads/")
-            if ref and ref != "HEAD":
-                return ref
-    return _current_branch(_push_cwd(command, cwd))
-
-
 def _git_line(cwd: Path, args: list[str]) -> str | None:
     import subprocess
 
@@ -285,29 +439,36 @@ def _current_branch(cwd: Path) -> str:
     return "" if name == "HEAD" else name
 
 
-def _branch_last_commit(cwd: Path, branch: str) -> str | None:
-    """The branch tip's commit time, ISO-8601 with an offset, for comparison against a
-    dispatch's `finished`. `None` when git cannot say. That makes any finished review count:
-    fail open."""
-    return _git_line(cwd, ["log", "-1", "--format=%cI", branch])
+def _note_unreviewed_push(root: Path, mine: list[dict[str, Any]], branch: str, head: str, why: str) -> None:
+    """The override is not silent: it goes in the log of the feature of the pushed repo's dispatch,
+    where the next retro reads it, naming the head and why its round is not clean."""
+    _note(
+        root,
+        mine,
+        f"pushed {branch} at {head[:12]} with {PUSH_OVERRIDE_ENV}=1 without a clean code-review round: {why}.",
+    )
 
 
-def _note_unreviewed_push(root: Path, records: list[dict[str, Any]], branch: str) -> None:
-    """The override is not silent: it goes in the feature's log, where the next retro reads it.
+def _note_unlisted_push(root: Path, held: list[dict[str, Any]], why: str) -> None:
+    """An override of a push whose refs cannot be listed. Only a push from a dispatch's worktree
+    has a feature to log on; any other names no branch to find one by."""
+    _note(
+        root,
+        held,
+        f"pushed with {PUSH_OVERRIDE_ENV}=1 a push whose refs push-guard cannot list ({why}), so no "
+        "code-review round was checked.",
+    )
 
-    Fails open like everything else here."""
+
+def _note(root: Path, mine: list[dict[str, Any]], text: str) -> None:
+    """Log `text` on the first of `mine`'s features. Fails open like everything else here."""
     try:
         from .. import features as features_mod
         from .. import log as log_mod
 
-        feature_id = next((d.get("feature") for d in records if d.get("feature") is not None), None)
+        feature_id = next((d.get("feature") for d in mine if d.get("feature") is not None), None)
         if feature_id is None:
             return
-        f = features_mod.resolve(root, str(feature_id))
-        log_mod.append(
-            f,
-            "note",
-            f"pushed {branch} with {PUSH_OVERRIDE_ENV}=1: no review-row dispatch newer than its last commit.",
-        )
+        log_mod.append(features_mod.resolve(root, str(feature_id)), "note", text)
     except Exception:  # noqa: BLE001, S110 — a hook never raises; failing open is the contract
         pass

@@ -125,6 +125,7 @@ def test_a_crash_mid_batch_recovers_and_records_every_member(harness: Path):
     _dispatch(harness, "001-mac-02", "y")
     code = (
         "from pathlib import Path; from agent_cli import land\n"
+        "land._review_gate = lambda *a, **k: []\n"
         f"land.land(Path({str(harness)!r}), 'x', extra=['y'])\n"
     )
     env = {**os.environ, land.SEAM: f"{point}:exit"}

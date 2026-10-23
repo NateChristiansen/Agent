@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 
 import suite_cost
+from agent_cli import land, verify_record
 from agent_cli import land_journal as jn
-from agent_cli import verify_record
 
 PASS = "echo 3 passed in 0.01s"
 REGISTRY = """version: 1
@@ -84,11 +84,27 @@ def _land_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture
 def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _land_template: Path) -> Path:
-    """A copy of `_land_template`: main, and `feature` one commit ahead."""
+    """A copy of `_land_template`: main, and `feature` one commit ahead. In-process landings here
+    skip the code-review gate (ADR-0063), which the `review_gate` fixture puts back."""
     root = tmp_path / "harness"
     shutil.copytree(_land_template, root, symlinks=True)
     monkeypatch.setenv("AGENT_ROOT", str(root))
+    monkeypatch.setattr(land, "_review_gate", _no_review_gate)
     return root
+
+
+def _no_review_gate(*_: Any, **__: Any) -> list[dict[str, Any]]:
+    return []
+
+
+_REAL_GATE = land._review_gate
+
+
+@pytest.fixture
+def review_gate(harness: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`harness` with the real code-review gate."""
+    monkeypatch.setattr(land, "_review_gate", _REAL_GATE)
+    return harness
 
 
 #: Where records already run in this session are kept, by (tree, environment digest, policy
@@ -140,9 +156,11 @@ def certified(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def child(root: Path, seam: str = "", *args: str) -> subprocess.Popen[str]:
-    """`agent land feature` in a child process; `seam` is `<point>:exit` or `<point>:pause`."""
+    """`agent land feature` in a child process, past the code-review gate like `harness`; `seam`
+    is `<point>:exit` or `<point>:pause`."""
     code = (
         "import sys; from pathlib import Path; from agent_cli import land\n"
+        "land._review_gate = lambda *a, **k: []\n"
         "try:\n"
         f"    land.land(Path({str(root)!r}), 'feature', strategy={(args[0] if args else 'ff')!r})\n"
         "except Exception as exc:\n"

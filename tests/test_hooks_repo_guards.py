@@ -137,16 +137,22 @@ def _branch(repo: Path, name: str) -> str:
 
 
 def test_push_guard_denies_a_dispatched_branch_with_no_review(tmp_root: Path, run):
-    """A build worker's `done` is not a review: the push waits for a review-row dispatch."""
+    """A build worker's `done` is not a review, and since ADR-0063 neither is a finished review-row
+    dispatch: the push waits for a clean `code-review` round on the pushed head."""
     run(["feature", "new", "x", "--title", "X"])
     repo = tmp_root / "repos/alpha-api"
     _branch(repo, "agent/001-x")
     _record(tmp_root, "001-01", choice_reason="build row: a page with tests")
+    _record(
+        tmp_root, "001-02", choice_reason=REVIEW, finished="2099-01-01T00:00:00-07:00", start_sha=_head(repo)
+    )
     r = run(["hook", "push-guard"], stdin=_push("git push origin agent/001-x", repo))
     assert _decision(r) == "deny"
     reason = _reason(r)
-    assert "no `review` dispatch" in reason
+    assert "no clean code-review round" in reason and "`code-review`" in reason
     assert "AGENT_PUSH_UNREVIEWED=1" in reason
+    _clean_round(tmp_root, _head(repo))
+    assert run(["hook", "push-guard"], stdin=_push("git push origin agent/001-x", repo)).out == ""
 
 
 def test_push_guard_denies_git_c_from_vault_root(tmp_root: Path, run):
@@ -164,31 +170,6 @@ def test_push_guard_denies_git_c_from_vault_root(tmp_root: Path, run):
     assert _decision(run(["hook", "push-guard"], stdin=_push(command, tmp_root))) == "deny"
 
 
-def test_push_guard_allows_a_review_newer_than_the_last_commit(tmp_root: Path, run):
-    """A review of an older head is not a review of this one, so the comparison is against the
-    branch tip's commit time, not merely "a review exists"."""
-    run(["feature", "new", "x", "--title", "X"])
-    repo = tmp_root / "repos/alpha-api"
-    committed = _branch(repo, "agent/001-x")
-    assert committed  # the fixture clone commits at FIXED_NOW (2026-09-03)
-    _record(tmp_root, "001-01", choice_reason="build row: a page with tests")
-    _record(
-        tmp_root,
-        "001-02",
-        choice_reason="review row: read the branch",
-        finished="2020-01-01T00:00:00-07:00",
-    )
-    assert _decision(run(["hook", "push-guard"], stdin=_push("git push", repo))) == "deny"
-    _record(
-        tmp_root,
-        "001-02",
-        choice_reason="review row: read the branch",
-        finished="2099-01-01T00:00:00-07:00",
-    )
-    assert run(["hook", "push-guard"], stdin=_push("git push", repo)).out == ""
-    assert run(["hook", "push-guard"], stdin=_push(f"git -C {repo} push", tmp_root)).out == ""
-
-
 def test_push_guard_catches_a_renamed_branch_by_the_worktree(tmp_root: Path, run):
     """Found live 2026-09-17 (reported by the 023 manager): the guard matched the
     branch NAME only. A worker's commits pushed as `feature/...` matched no record and sailed
@@ -200,15 +181,8 @@ def test_push_guard_catches_a_renamed_branch_by_the_worktree(tmp_root: Path, run
     _record(tmp_root, "001-01", choice_reason="build row: a page with tests", worktree=str(repo))
     r = run(["hook", "push-guard"], stdin=_push("git push origin feature/renamed-by-hand", repo))
     assert _decision(r) == "deny"
-    # a review newer than the tip still allows it, by the same rule as the named branch
-    _record(
-        tmp_root,
-        "001-02",
-        branch="agent/001-x",
-        worktree=str(repo),
-        choice_reason="review row: read the branch",
-        finished="2099-01-01T00:00:00-07:00",
-    )
+    # a clean round on the head under the dispatch's branch name allows it
+    _clean_round(tmp_root, _head(repo))
     assert run(["hook", "push-guard"], stdin=_push("git push origin feature/renamed-by-hand", repo)).out == ""
     # a push from somewhere else in the same repo tree is still guarded; the manager's own
     # vault root is not
@@ -226,66 +200,28 @@ def _head(repo: Path) -> str:
 REVIEW = "review row: read the branch"
 
 
-REVIEW_CASES = [
-    # the review read the pushed head: allowed, whatever its branch, base and clock say
-    ({}, True),
-    # it read an older head and finished after the branch moved on: not a review of this head
-    ({"start_sha": "old", "finished": "2099-01-01T00:00:00-07:00"}, False),
-    # same branch name and head in another repo proves nothing about this one
-    ({"repo": "beta"}, False),
-    # an unsuccessful review has a finish time but read nothing to the end
-    ({"state": "failed"}, False),
-    ({"state": "cancelled"}, False),
-    # a non-review record with the same head proves nothing
-    ({"choice_reason": "build row: another page"}, False),
-    # its base names the pushed branch, but its head is unknown
-    ({"start_sha": None, "base": "agent/001-x"}, False),
-]
+def _clean_round(root: Path, head: str, branch: str = "agent/001-x") -> None:
+    from agent_cli import code_review
 
-
-def test_push_guard_accepts_a_review_on_its_own_branch_only_for_the_head_it_read(tmp_root: Path, run):
-    """/dispatch runs a review on its own branch, cut from the build branch, in its
-    own worktree. The guard matched records by branch name or worktree only, so a branch that
-    was reviewed twice was refused and needed the override. Such a review now counts only on
-    proof that it read the pushed commit: done, review row, same repo, `start_sha` == head.
-    The first reviewer rejected a base-name match: it let a review of H1 that finished after
-    the branch moved to H2 approve H2, and let a review in another repo approve this one."""
-    import subprocess
-
-    run(["feature", "new", "x", "--title", "X"])
-    repo = tmp_root / "repos/alpha-api"
-    _branch(repo, "agent/001-x")
-    old = _head(repo)
-    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "h2"], cwd=repo, check=True)
-    head = _head(repo)
-    _record(tmp_root, "001-01", repo="alpha", choice_reason="build row: a page", worktree=str(repo))
-    push = _push("git push origin agent/001-x", repo)
-    assert _decision(run(["hook", "push-guard"], stdin=push)) == "deny"
-    # One repo for every case: each rewrites the same review record.
-    for over, allowed in REVIEW_CASES:
-        review = {
-            "repo": "alpha",
-            "branch": "agent/001-x-review",
-            "base": "origin/main",
-            "worktree": str(tmp_root / "repos/review-wt"),
-            "start_sha": head,
-            "state": "done",
-            "choice_reason": REVIEW,
-            "finished": "2020-01-01T00:00:00-07:00",
-            **over,
-        }
-        if review["start_sha"] == "old":
-            review["start_sha"] = old
-        _record(tmp_root, "001-02", **review)
-        out = run(["hook", "push-guard"], stdin=push).out
-        assert (out == "") is allowed, (over, out)
+    base = code_review.reviews_dir(root)
+    base.mkdir(parents=True, exist_ok=True)
+    rec = {
+        "repo": "alpha-api",
+        "branch": branch,
+        "head": head,
+        "round": 1,
+        "phase": "complete",
+        "blocking": [],
+    }
+    (base / f"{head}-1.json").write_text(json.dumps(rec), encoding="utf-8")
 
 
 def test_push_guard_ignores_branches_no_dispatch_ever_touched(tmp_root: Path, run):
     repo = tmp_root / "repos/alpha-api"
     _branch(repo, "harness/016-t11")
     assert run(["hook", "push-guard"], stdin=_push("git push origin harness/016-t11", repo)).out == ""
-    assert run(["hook", "push-guard"], stdin=_push("git push", repo)).out == ""
+    # a push with no refspec cannot be listed, so in a registered repo it is refused anyway
+    assert _decision(run(["hook", "push-guard"], stdin=_push("git push", repo))) == "deny"
     # and it is a git-push guard, not a substring guard
     assert run(["hook", "push-guard"], stdin=_push("git log --grep push", repo)).out == ""
     assert run(["hook", "push-guard"], stdin=_push("grep -r push .", repo)).out == ""

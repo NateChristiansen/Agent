@@ -156,6 +156,7 @@ def land(
     extra: list[str] | None = None,
     origins: list[str] | None = None,
     budget_raise: str | None = None,
+    review_override: str | None = None,
 ) -> Op:
     """Move local main to `branch` through a full pass record (see ADR-0041), finish or undo an
     interrupted landing (`recover`), or put a stalled one's files back (`abort`). A landing
@@ -163,7 +164,8 @@ def land(
     log at once (a landing outlasts an MCP call);
     `status` lists recent landings. `extra` lands more branches in the same batch (land.py).
     `origins` carries '<branch> <tip-sha>' entries for the original branches of copied work.
-    `budget_raise` names the owner's suite budget raise (suite_budget.py)."""
+    `budget_raise` names the owner's suite budget raise (suite_budget.py). `review_override` is the
+    owner's reason to land without a clean code-review round (ADR-0063)."""
     from .. import land as land_mod
     from .. import land_recover
 
@@ -171,7 +173,7 @@ def land(
         return _land_status(root)
     if detach and branch:
         return _land_detached(
-            root, branch, strategy, message, wait_s, extra or [], origins or [], budget_raise
+            root, branch, strategy, message, wait_s, extra or [], origins or [], budget_raise, review_override
         )
     if recover:
         journal = land_recover.recover(root, recover)
@@ -195,6 +197,7 @@ def land(
             extra=extra,
             origins=origins,
             budget_raise=budget_raise,
+            review_override=review_override,
         )
     except Exception as exc:
         jn.op_update(main, op, state="failed", why=str(exc)[:500])
@@ -245,6 +248,7 @@ def _land_detached(
     extra: list[str],
     origins: list[str],
     budget_raise: str | None,
+    review_override: str | None,
 ) -> Op:
     """Start `agent land` in its own process and return its log path and pid."""
     import subprocess
@@ -266,6 +270,7 @@ def _land_detached(
     argv += [arg for other in extra for arg in ("--with", other)]
     argv += [arg for origin in origins for arg in ("--origins", origin)]
     argv += [f"--budget-raise={budget_raise}"] if budget_raise is not None else []
+    argv += [f"--review-override={review_override}"] if review_override is not None else []
     env = dict(os.environ)
     try:  # who asked for the landing: its task notice to that session is queued, not rung
         env["AGENT_LAND_SESSION"] = sessions_mod.resolve_session_id(root, None)

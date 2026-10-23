@@ -163,7 +163,7 @@ tests = [
   "tests/test_hook*.py", "tests/test_*guard*.py", "tests/test_permissions.py", "tests/test_powershell_policy.py",
   "tests/test_worker_*.py", "tests/test_codex_hooks.py", "tests/test_codex_dispatch.py",
   "tests/test_dispatch_permissions.py", "tests/test_consumer_mode.py", "tests/test_conventions_comments.py",
-  "tests/test_mcp_grant_contract_cases.py", "tests/test_policy_corpus.py",
+  "tests/test_mcp_grant_contract_cases.py", "tests/test_policy_corpus.py", "tests/test_code_review_gate.py",
   "tests/test_docs_refs.py", "tests/test_prose_rules.py",
 ]
 
@@ -187,7 +187,7 @@ tests = [
   "tests/test_dispatch_reverify.py", "tests/test_dispatch_holdings.py", "tests/test_dispatch_no_diff.py",
   "tests/test_select*.py", "tests/test_certify_attempt.py", "tests/test_procs*.py", "tests/test_telemetry*.py",
   "tests/test_verify_record*.py", "tests/test_record_*.py", "tests/test_land*.py", "tests/test_same_tree_replay.py",
-  "tests/test_owner_question_events.py", "tests/test_attention_events.py",
+  "tests/test_owner_question_events.py", "tests/test_attention_events.py", "tests/test_code_review_gate.py",
   "tests/test_win*.py", "tests/test_utf8_decoding.py", "tests/test_main_sync.py", "tests/test_main_guard.py",
   "tests/test_docs_refs.py", "tests/test_prose_rules.py",
 ]
@@ -318,7 +318,7 @@ paths = [
   "src/agent_cli/code_review.py", "src/agent_cli/ops/code_review.py",
 ]
 tests = [
-  "tests/test_plan_review*.py", "tests/test_code_review.py", "tests/test_peer_route.py", "tests/test_hooks_malformed_records.py",
+  "tests/test_plan_review*.py", "tests/test_code_review*.py", "tests/test_peer_route.py", "tests/test_hooks_malformed_records.py",
   "tests/test_ops_malformed_records.py", "tests/test_mcp_wording.py", "tests/test_docs_refs.py",
   "tests/test_prose_rules.py",
 ]

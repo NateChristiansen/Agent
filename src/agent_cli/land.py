@@ -370,13 +370,15 @@ def land(
     extra: list[str] | None = None,
     origins: list[str] | None = None,
     budget_raise: str | None = None,
+    review_override: str | None = None,
 ) -> dict[str, Any]:
     """Land `branch` on local main. Returns the finished journal with the record it relied on.
     `op` names the landing operation whose stages `land_journal.op_update` records. `extra` lands
     a bounded batch (`batch_candidate`): one certificate for the exact combined tree, one journal.
     `origins` names pre-copy source tips, fetched locally and carried in the landed trailers.
     `budget_raise` is the reason of the owner's `[[raise]]` entry the candidate adds to the suite
-    budget."""
+    budget. `review_override` is the owner's reason to land a member with no clean code-review
+    round on its head (`_review_gate`)."""
     # Certificate locks support Windows as well as POSIX. Detached operation uses the shared
     # terminal flock.
     from .harness_role import consumer
@@ -385,6 +387,8 @@ def land(
         raise AgentError(
             "this is a consumer install (harness.role: consumer); it never lands harness changes"
         )
+    if review_override is not None and not review_override.strip():
+        raise AgentError("review_override needs the owner's reason")
     main = main_of(root)
     git = obs.Git(main)
     asked = time.monotonic()
@@ -405,6 +409,7 @@ def land(
                 trail,
                 origins,
                 budget_raise,
+                review_override,
             )
     except BaseException as exc:
         _op_event(main, trail, asked, "failed", why=str(exc))
@@ -464,6 +469,111 @@ def _budget_text(git: obs.Git, rev: str) -> str | None:
     return git.blob(entry.oid).decode("utf-8", "replace")
 
 
+def _review_gate(
+    root: Path, git: obs.Git, old: str, members: list[tuple[str, str]], override: str | None
+) -> list[dict[str, Any]]:
+    """ADR-0063: every member needs a clean code-review round on its tip (code_review.py). Refuse
+    one that has none; with the owner's `override`, return each such member for the journal and
+    its feature note. An unreadable or malformed round record of the tip is not clean."""
+    from . import code_review, verify_record
+    from .dispatch import state as dispatch_state
+
+    repo = verify_record.harness_repo(root).name
+    dispatches = [d for d in dispatch_state.load_all(root) if d.get("repo") == repo]
+    dispatches.sort(key=lambda d: str(d.get("created") or ""))
+    missing: list[dict[str, Any]] = []
+    for branch, tip in members:
+        name = branch.removeprefix("refs/heads/")
+        mine = [d for d in dispatches if d.get("branch") == name]
+        bad = code_review.unreadable(root, tip) + code_review.malformed(root, tip)
+        why = (
+            f"an unreadable or malformed round record ({', '.join(bad)})"
+            if bad
+            else code_review.unclean(root, branch=name, head=tip, repo=repo)
+        )
+        if why is not None:
+            missing.append(
+                {"branch": name, "tip": tip, "why": why, "call": _review_call(git, old, tip, name, mine)}
+            )
+    if not missing:
+        return []
+    if override is None:
+        lines = "; ".join(
+            f"{m['branch']} at {m['tip'][:12]}: {m['why']}. Run the `dispatch` action `code-review` with "
+            f"{m['call']}, and call it again after each return until the round completes"
+            for m in missing
+        )
+        raise AgentError(
+            f"land needs a clean code-review round on each branch head (ADR-0063): {lines}. Or pass "
+            "`review_override=<reason>` if the owner accepts it unreviewed; the reason is logged to the feature"
+        )
+    for m in missing:
+        m["feature"] = _feature_of(root, m["branch"], dispatches)
+    if homeless := [m["branch"] for m in missing if m["feature"] is None]:
+        raise AgentError(
+            f"review_override is logged to the branch's feature, and {', '.join(homeless)} has none: no "
+            "dispatch names a feature and no worktree binds one. Bind the worktree with the `harness` "
+            "action `worktree_new`, name = the worktree's name (its branch is agent/<name>) and feature = "
+            "the feature id; a re-run on an existing worktree binds it as it is. Then land again"
+        )
+    return [{k: m[k] for k in ("branch", "tip", "why", "feature")} for m in missing]
+
+
+def _review_call(git: obs.Git, old: str, tip: str, name: str, mine: list[dict[str, Any]]) -> str:
+    """The `code-review` arguments that would review this branch."""
+    if mine:
+        return f'dispatch_id="{mine[0].get("id")}"'
+    code, out = _code(git, "merge-base", old, tip)
+    base = out.strip() if not code and out.strip() else old
+    return f'branch="{name}", base="{base}", paths=["<the acceptance file>"]'
+
+
+def _feature_of(root: Path, name: str, dispatches: list[dict[str, Any]]) -> int | None:
+    """The feature a branch belongs to: its dispatch's, else its worktree binding's."""
+    for d in dispatches:
+        if d.get("branch") == name and isinstance(d.get("feature"), int):
+            return d["feature"]
+    from .worktree import binding
+
+    try:
+        feature = (binding(root, name) or {}).get("feature")
+    except AgentError:
+        return None
+    return feature if isinstance(feature, int) else None
+
+
+REVIEW_NOTE = "review_note"
+
+
+def _note_review_override(root: Path, journal: dict[str, Any]) -> None:
+    """Settle a done landing's pending `review_note` obligation: log each member the owner's
+    review_override landed on its feature, then save the journal. `land_followups.reconcile`
+    reaches this through `note_members` after a landing and after its recovery; a pending
+    obligation keeps the journal owing, so a failure here is retried."""
+    from . import features as features_mod
+    from . import log as log_mod
+    from .records.narrow import as_dict, dict_list
+
+    obligations = as_dict(journal.get("obligations"))
+    if journal.get("state") != "done" or obligations.get(REVIEW_NOTE) != followups.PENDING:
+        return
+    main = main_of(root)
+    held = as_dict(journal.get("review_override"))
+    for m in dict_list(held.get("members")):
+        if m.get("noted"):
+            continue
+        log_mod.append(
+            features_mod.resolve(root, str(m.get("feature"))),
+            "note",
+            f"landed {m.get('branch')} at {str(m.get('tip'))[:12]} (land {journal.get('id')}) without a "
+            f"clean code-review round: {m.get('why')}. The owner's review_override: {held.get('reason')}",
+        )
+        m["noted"] = True  # a retry after a later member fails does not note this one twice
+        jn.write(main, journal)
+    journal["obligations"] = {**obligations, REVIEW_NOTE: "logged"}
+    jn.write(main, journal)
+
+
 def record_kind(record: dict[str, Any]) -> str:
     """`retry-passed` (a full run whose only failures were approved timing flakes that passed their
     one serial retry) or `full`."""
@@ -484,6 +594,7 @@ def _land(
     trail: dict[str, Any],
     origins: list[str] | None,
     budget_raise: str | None,
+    review_override: str | None,
 ) -> dict[str, Any]:
     from . import land_recover, land_warning, verify_record
     from .tidy import ResolutionContext
@@ -502,6 +613,7 @@ def _land(
             raise AgentError(f"nothing to land: main already contains {branch}")
         if len(members) > BATCH_MAX:
             raise AgentError(f"a batch lands at most {BATCH_MAX} branches")
+        overridden = _review_gate(root, git, old, members, review_override)
         if len(members) > 1:
             chosen = strategy or "squash"
             cand = batch_candidate(git, old, members, chosen, ident)
@@ -553,9 +665,13 @@ def _land(
             **({"members": [{"branch": b, "tip": t} for b, t in members]} if len(members) > 1 else {}),
             **({"origins": [{"branch": b, "tip": t} for b, t in sources]} if sources else {}),
             **({"budget_raise": budget_raise} if budget_raise else {}),
+            **({"review_override": {"reason": review_override, "members": overridden}} if overridden else {}),
             # Record follow-up intent, worktree cleanup included, before marking done so recovery
             # can complete it after a crash.
-            "obligations": followups.initial(),
+            "obligations": {
+                **followups.initial(),
+                **({REVIEW_NOTE: followups.PENDING} if overridden else {}),
+            },
             "session": os.environ.get("AGENT_LAND_SESSION") or None,  # who asked, for the notices
         }
         jn.op_update(main, op, state="landing", journal=ident, record=record["run_id"])
@@ -572,6 +688,7 @@ def note_members(root: Path, journal: dict[str, Any]) -> None:
     members = journal.get("members") or [{"branch": journal.get("branch"), "tip": journal.get("tip")}]
     for member in members:
         note_integration(root, str(member.get("branch") or ""), journal, member.get("tip"))
+    _note_review_override(root, journal)
 
 
 def batch_candidate(git: obs.Git, old: str, members: list[tuple[str, str]], strategy: str, ident: str) -> str:
