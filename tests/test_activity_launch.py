@@ -432,15 +432,13 @@ def test_each_result_generation_is_accepted_by_the_first_landing_that_brings_it(
 
     _two_tasks(harness)
     _finished(harness, "001-mac-01")
+    _finished(harness, "001-mac-02", task=2)
     land.land(harness, "feature", strategy="merge")
-    assert _owed(harness) == [("accept:001-mac-01", "task#1")]
+    assert _owed(harness) == [("accept:001-mac-01", "task#1"), ("accept:001-mac-02", "task#2")]
     settle("accept:001-mac-01", 1)
-    # A later result on the branch lands; the first one's unchanged result is not owed again.
-    _finished(harness, "001-mac-02", at=_work(harness, "second"), task=2)
-    land.land(harness, "feature", strategy="merge")
-    assert _owed(harness) == [("accept:001-mac-02", "task#2")]
     settle("accept:001-mac-02", 2)
     # The first dispatch resumed and committed a new result: a new generation, owed once more.
+    # The second's unchanged result is still on the branch and is not owed again.
     _finished(harness, "001-mac-01", at=_work(harness, "third"), attempt=2, result={"summary": "again"})
     journal = land.land(harness, "feature", strategy="merge")
     assert _owed(harness) == [("accept:001-mac-01", "task#1")]
