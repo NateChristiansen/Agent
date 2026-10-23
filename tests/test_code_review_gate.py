@@ -14,7 +14,7 @@ from agent_cli import code_review, land, land_recover
 from agent_cli import land_journal as jn
 from agent_cli.core import AgentError
 from hooks_test_helpers import _decision, _reason
-from land_helpers import certified, git, harness, review_gate  # noqa: F401
+from land_helpers import certified, git, harness, owned, review_gate  # noqa: F401
 
 
 def _branch(root: Path, name: str, start: str = "main", file: str = "b.txt") -> str:
@@ -71,16 +71,16 @@ def no_suite(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def notes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
-    """Feature notes, as (feature, text), for a fixture with no features."""
-    from agent_cli import features, log
+    """Feature notes, as (feature, text)."""
+    from agent_cli import log
 
     seen: list[tuple[str, str]] = []
-    monkeypatch.setattr(features, "resolve", lambda root, ref: f"feature {ref}")
-    monkeypatch.setattr(log, "append", lambda f, kind, text: seen.append((f, text)))
+    monkeypatch.setattr(log, "append", lambda f, kind, text: seen.append((f"feature {f.number}", text)))
     return seen
 
 
 def test_a_clean_round_on_the_head_lands(gated: Path, certified):  # noqa: F811
+    owned(gated, "fresh")
     _round(gated, git(gated, "rev-parse", "fresh"), branch="fresh")
     assert land.land(gated, "fresh")["state"] == "done"
 
@@ -143,6 +143,7 @@ def test_a_batch_checks_every_member(gated: Path, no_suite):
 
 
 def test_the_owner_override_lands_and_notes_the_feature(gated: Path, certified, notes):  # noqa: F811
+    owned(gated, "fresh")
     _dispatch(gated, "001-01", repo="Harness", branch="fresh")
     with pytest.raises(AgentError, match="needs the owner's reason"):
         land.land(gated, "fresh", review_override="  ")
@@ -151,7 +152,7 @@ def test_the_owner_override_lands_and_notes_the_feature(gated: Path, certified, 
     held = journal["review_override"]
     assert held["reason"] == "hotfix, reviewed by hand" and held["members"][0]["branch"] == "fresh"
     [(where, text)] = notes
-    assert where == "feature 1"
+    assert where == "feature 001"
     assert "without a clean code-review round: no code-review round has run on it" in text
     assert "hotfix, reviewed by hand" in text
     land_recover.recover_all(gated, gated)  # settled: nothing is owed, and no second note
@@ -168,6 +169,7 @@ def test_a_retried_override_note_writes_each_member_once(gated: Path, certified,
     from agent_cli import log
 
     _branch(gated, "other", file="c.txt")
+    owned(gated, "fresh", "other")
     _dispatch(gated, "001-01", repo="Harness", branch="fresh")
     _dispatch(gated, "001-02", repo="Harness", branch="other")
     record = log.append
@@ -194,6 +196,7 @@ def test_an_override_landing_interrupted_before_done_notes_on_recovery(
     monkeypatch,
 ):
     """Dies where `AGENT_LAND_SEAM=released:exit` would, in process to spare the spawns."""
+    owned(gated, "fresh")
     _dispatch(gated, "001-01", repo="Harness", branch="fresh")
     seam = land._seam
 

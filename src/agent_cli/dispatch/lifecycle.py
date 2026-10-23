@@ -255,7 +255,7 @@ def new(
         root,
         feat,
         kind=str((old or {}).get("kind") or kind),
-        writes=writes,
+        writes=writes if writes is not None or old is None else old.get("writes"),
         tasks=[t.index for t in task_objs],
     )
     applied_timeout, timeout_source = resolve_timeout(rp, passed_timeout)
