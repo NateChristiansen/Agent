@@ -29,6 +29,7 @@ from dispatch_helpers import (  # noqa: E402
     droot,  # noqa: F401  # pyright: ignore[reportUnusedImport] -- a fixture, used as a parameter name
     envelope,
     one,
+    settle,
 )
 
 
@@ -131,6 +132,7 @@ def test_narrowing_on_resume_frees_the_paths_it_dropped(droot: Path, fake_claude
     """022 N1a could not resume while its own selection-table reservation overlapped N0."""
     fake_claude.scenario([one(envelope())])
     builder = new_fast(droot)
+    settle(droot, builder)
     _running(droot, "099-mac-99", ["tests/selection.toml"], repo=builder["repo"], short=builder["short"])
     d = load(droot, builder["id"])
     d["writes"] = ["tests/selection.toml", "src/report/cost.py"]

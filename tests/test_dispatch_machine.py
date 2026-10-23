@@ -22,7 +22,7 @@ from agent_cli.dispatch import handoffs as handoffs_mod
 from agent_cli.dispatch import machine
 from agent_cli.ops import dispatch as ops_dispatch
 from agent_cli.vault import live
-from dispatch_helpers import _new_fast, droot, envelope, one  # noqa: F401 — droot is a pytest fixture
+from dispatch_helpers import _new_fast, droot, envelope, one, settle  # noqa: F401 — droot is a pytest fixture
 
 HANDOFFS = Path("features/001-alpha-work/handoffs")
 OTHER = "feedfacefeedface"  # another install's token
@@ -96,6 +96,7 @@ def test_dispatch_new_refuses_without_a_valid_tag_and_names_the_fix(droot: Path,
 def test_handoffs_carry_machine_and_one_install_token(droot: Path, fake_claude):
     fake_claude.scenario([one(envelope()), one(envelope())])
     first = _new_fast(droot)
+    settle(droot, first)
     second = _new_fast(droot)
     stored = json.loads((droot / ".agent" / "install.json").read_text(encoding="utf-8"))
     token = stored["token"]

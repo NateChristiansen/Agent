@@ -41,7 +41,7 @@ from agent_cli.dispatch import (
     supervisor,
 )
 from agent_cli.dispatch.codex_rpc import CodexAppServer
-from dispatch_helpers import _new, droot, envelope, one  # noqa: F401 -- pytest fixtures
+from dispatch_helpers import _new, droot, envelope, one, settle  # noqa: F401 -- pytest fixtures
 
 PROBE = os.getenv("AGENT_CODEX_PRODUCT_HOOKS_PROBE") == "1"
 REAL_SNAPSHOT = procs.snapshot  # read at import, before conftest's autouse stub replaces it
@@ -438,6 +438,7 @@ def test_finished_attempt_keeps_no_slot_so_resume_needs_a_trusted_inventory(
     fake_claude.scenario([one(envelope(), commit=COMMIT)])
     d = _finished(droot)
     assert "slot" not in d and "slot_schema" not in d  # given back once the worker is gone
+    settle(droot, d)
     monkeypatch.setattr(procs, "snapshot", lambda: [])
     with pytest.raises(AgentError, match="process inventory is not trustworthy"):
         _resume_prep(droot, d["id"])

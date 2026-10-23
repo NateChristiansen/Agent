@@ -20,7 +20,7 @@ from agent_cli.dispatch import lifecycle, worktrees
 from agent_cli.dispatch import verification_gate as gate
 from agent_cli.dispatch.allocation import GUARD_TIMEOUT_S
 from agent_cli.dispatch.state import load, save
-from dispatch_helpers import _new_fast, _set_alpha_dispatch, droot, envelope, one  # noqa: F401
+from dispatch_helpers import _new_fast, _set_alpha_dispatch, droot, envelope, one, settle  # noqa: F401
 from test_dispatch_alloc import _no_detach
 
 
@@ -114,6 +114,7 @@ def _done(root: Path) -> dict:
 def test_cleanup_runs_git_with_no_records_guard_held(droot: Path, fake_claude, monkeypatch, step):
     fake_claude.scenario([one(envelope())])
     d = _done(droot)
+    settle(droot, d)
     hold = Hold()
 
     def at_step(args: list[str], *rest: Any, **kwargs: Any) -> bool:

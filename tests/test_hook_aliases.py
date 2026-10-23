@@ -40,6 +40,14 @@ def test_an_alias_is_a_silent_no_op(tmp_root: Path, name: str):
     assert parse(["hook", name]).name == name  # the full CLI parser accepts it too
 
 
+def test_the_record_guard_is_a_new_live_name_and_done_unticked_stays_an_alias():
+    """The new Stop guard does not revive the retired `done-unticked`: a cached wiring of that
+    name still does nothing, and the new name resolves on its own."""
+    assert "record-guard" in NAMES and "record-guard" not in ALIASES
+    assert "done-unticked" in ALIASES and "done-unticked" not in NAMES
+    assert parse(["hook", "record-guard"]).name == "record-guard"
+
+
 def test_an_alias_through_the_console_entry_exits_clean(tmp_root: Path):
     """The path a Codex Stop hook takes: a fresh interpreter, `agent hook <name>`."""
     done = subprocess.run(

@@ -24,6 +24,7 @@ from dispatch_helpers import (  # noqa: F401 -- droot is a pytest fixture, used 
     droot,
     envelope,
     one,
+    settle,
 )
 
 # ------------------------------------------------------------------ failure modes and auto-resume
@@ -278,6 +279,7 @@ def test_budget_hit_is_blocked_with_a_resume_hint_and_resumes_at_exactly_the_own
     assert "> handoff 001-mac-01 ← alpha: blocked (attempt 1" in _log(droot)
     assert Path(d["worktree"]).is_dir()
     assert d["cost_usd"] == 1.0
+    settle(droot, d)
     with pytest.raises(AgentError, match=r"has spent \$1\.00 of its \$1\.00 budget"):
         dispatch.resume(droot, dispatch_id="001-mac-01", answer="carry on")
     assert len(fake_claude.calls()) == 1
@@ -372,6 +374,7 @@ def test_a_worker_that_returns_nothing_is_failed(droot: Path, fake_claude):
     assert Path(d["worktree"]).is_dir()
     assert d["session_established"] is False
     (Path(d["worktree"]) / "partial.txt").write_text("prior work\n", encoding="utf-8")
+    settle(droot, d)
     with pytest.raises(AgentError, match="changed its worktree"):
         dispatch.resume(droot, dispatch_id="001-mac-01", answer="try again", watch=True)
     assert dispatch.load(droot, "001-mac-01")["attempt"] == 1
@@ -417,6 +420,7 @@ def test_failed_startup_restarts_full_work_order_instead_of_resuming_missing_ses
     err = (droot / ".agent/dispatches/001-mac-01.err").read_text(encoding="utf-8")
     assert "version probe: TimeoutError" in err
 
+    settle(droot, first)
     second = dispatch.resume(droot, dispatch_id="001-mac-01", answer="Start from the top", watch=True)
     assert second["state"] == "done" and second["session_established"] is True
     assert _options(fake_claude, 1).resume is None
@@ -538,6 +542,7 @@ def test_ack_holds_until_the_next_finish(droot: Path, fake_claude, monkeypatch):
     assert k["thread"][-1]["text"] == "ack"
     monkeypatch.setenv("AGENT_NOW", "2026-09-16T11:00:00")
     fake_claude.scenario([one(envelope())])
+    settle(droot, d)
     r = dispatch.resume(droot, dispatch_id="001-mac-01", answer="one more pass", watch=True)
     assert r["state"] == "done" and dispatch.is_live(r)
 
@@ -617,6 +622,8 @@ def test_resume_carries_a_real_verdicts_finding_and_no_finding_for_a_verified_at
         ),
         start=1,
     ):
+        if n > 1:  # the previous attempt's done result
+            settle(droot, d)
         current = dispatch.load(droot, d["id"])
         current["verification_result"] = verdict
         dispatch.save(droot, current)
@@ -645,6 +652,7 @@ def test_resume_answer_becomes_escalation_prefix_without_rewriting_work_order(
     manager_text = [entry["text"] for entry in resumed["thread"] if entry["from"] == "manager"]
     assert manager_text == ["Original work order", "Manager's latest instruction"]
     monkeypatch.setattr(lifecycle, "start", lambda root, d, watch: d)
+    settle(droot, original)
     escalated = dispatch.new(
         droot,
         repo="alpha",

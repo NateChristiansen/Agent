@@ -28,6 +28,7 @@ from dispatch_helpers import (  # noqa: F401 -- droot is a pytest fixture, used 
     envelope,
     one,
     says,
+    settle,
     turn,
 )
 
@@ -54,6 +55,7 @@ def test_worktree_path_branch_and_seq_suffix(droot: Path, fake_claude):
     this is also the dirty-worktree-is-not-reused case, and seq suffixing of a fresh worktree."""
     fake_claude.scenario([one(envelope(), dirty=True)])
     d1 = _new_fast(droot)
+    settle(droot, d1)
     d2 = _new_fast(droot)
     assert d1["worktree"] == str(droot / "repos/_worktrees/alpha/001-alpha-work-mac-01")
     assert d1["branch"] == "feature/alpha-work-mac-01"
@@ -75,7 +77,9 @@ def test_second_dispatch_reuses_a_clean_done_worktree_and_keeps_an_existing_bran
     fake_claude.scenario([one(envelope())])
     d1 = _new_fast(droot)
     assert d1["reused"] is False
+    settle(droot, d1)
     d2 = _new_fast(droot)
+    settle(droot, d2)
     assert d2["worktree"] == d1["worktree"]
     assert d2["reused"] is True
     assert d2["branch"] != d1["branch"]
@@ -108,9 +112,11 @@ def test_running_or_blocked_clean_worktree_is_not_reused(droot: Path, fake_claud
     later dispatch stealing it would switch its branch underneath them (ADR-0008)."""
     fake_claude.scenario([one(envelope())])
     d1 = _new_fast(droot)
+    settle(droot, d1)
     d1["state"] = "running"
     dispatch.save(droot, d1)
     d2 = _new_fast(droot)
+    settle(droot, d2)
     assert d2["worktree"] != d1["worktree"]
     assert d2["reused"] is False
     for d in (d1, d2):

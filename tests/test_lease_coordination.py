@@ -11,7 +11,17 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from agent_cli import core, hooks, leases, sessions
+
+
+@pytest.fixture
+def active_managers(tmp_root: Path, run, monkeypatch: pytest.MonkeyPatch, notes_remote: Path) -> None:
+    monkeypatch.delenv("AGENT_DISPATCH_ID", raising=False)
+    assert run(["feature", "new", "lease-owner", "--title", "Lease owner"]).code == 0
+    for session in ("holder", "needer", "mine"):
+        assert run(["feature", "use", "1", "--session-id", session]).code == 0
 
 
 def _edit(session_id: str, rel: str = "src/agent_cli/x.py") -> dict:
@@ -27,7 +37,7 @@ def _stop(session_id: str) -> dict:
     return {"session_id": session_id, "hook_event_name": "Stop", "last_assistant_message": "ok"}
 
 
-def test_a_resting_holder_s_lease_is_taken_over(tmp_root: Path, monkeypatch):
+def test_a_resting_holder_s_lease_is_taken_over(tmp_root: Path, monkeypatch, active_managers):
     """The holder here sits on the whole-subtree area while the needer edits one file inside
     it. Since then the needer's area is the narrower path, so the takeover has to clear
     the resting parent rather than layer a child lease under it — two overlapping leases
@@ -46,7 +56,7 @@ def test_a_resting_holder_s_lease_is_taken_over(tmp_root: Path, monkeypatch):
     assert held == [("vault:src/agent_cli/x.py", "needer")]
 
 
-def test_a_file_lease_already_held_stands_in_for_its_directory(tmp_root: Path, monkeypatch):
+def test_a_file_lease_already_held_stands_in_for_its_directory(tmp_root: Path, monkeypatch, active_managers):
     """Two managers each leased one file in `hooks/`; the edit hook still asked for the whole
     directory and refused both (2026-09-24)."""
     monkeypatch.setattr(core, "is_alive", lambda pid: True)
@@ -58,7 +68,7 @@ def test_a_file_lease_already_held_stands_in_for_its_directory(tmp_root: Path, m
     assert leases.get(tmp_root, "vault:src/agent_cli/hooks") is None
 
 
-def test_a_busy_holder_is_asked_and_yields_at_turn_end(tmp_root: Path, monkeypatch):
+def test_a_busy_holder_is_asked_and_yields_at_turn_end(tmp_root: Path, monkeypatch, active_managers):
     monkeypatch.setattr(core, "is_alive", lambda pid: True)
     sessions.set_record(tmp_root, "needer", name="mgr-007-example")
     area = "vault:src/agent_cli/x.py"

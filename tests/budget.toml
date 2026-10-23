@@ -8,6 +8,13 @@ tests_max = 8970
 spawns_max = 62490
 headroom_pct = 3
 
+[[raise]]
+date = 2026-10-22
+from = 100
+to = 142
+reason = "039 result-generation test: two real landings measured 129 processes; owner approved ceiling 142"
+approved_by = "owner"
+
 # Tests allowed more than the per-test ceiling of 100 call-phase spawns (tests/suite_cost.py),
 # each at ceil(measured * 1.1) from pass record 523d7c15.
 [slow]
@@ -36,6 +43,7 @@ headroom_pct = 3
 "tests/test_tidy_inventory.py::test_dispatch_owned_product_refs_only_and_all_cleanup_holds" = 148
 "tests/test_task_check.py::test_the_first_dispatch_of_a_session_carries_the_check" = 145
 "tests/test_land.py::test_main_moved_during_the_landing_stalls_with_no_rollback" = 142
+"tests/test_activity_launch.py::test_each_result_generation_is_accepted_by_the_first_landing_that_brings_it" = 142
 "tests/test_dispatch_notice_producers.py::test_reverify_by_the_launcher_is_show_consumed_and_by_another_session_is_delivered" = 139
 "tests/test_dispatch_launch.py::test_second_dispatch_reuses_a_clean_done_worktree_and_keeps_an_existing_branchs_commits@timing-0" = 138
 "tests/test_record_flights.py::test_extra_commands_are_certified_and_required_for_reuse" = 138

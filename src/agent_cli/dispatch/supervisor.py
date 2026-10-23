@@ -23,12 +23,12 @@ from claude_agent_sdk import (
     ToolPermissionContext,
 )
 
+from .. import activity_gate, maintenance, sessions
 from .. import features as features_mod
-from .. import maintenance, sessions
 from .. import repos as repos_mod
 from ..core import AgentError, atomic_write, is_alive, iso, now
 from ..permissions import shown_tool
-from ..records.narrow import as_dict
+from ..records.narrow import as_dict, as_list
 from ..vault import live
 from . import client_version, holdings
 from . import verification_gate as gate
@@ -227,16 +227,27 @@ def run(root: Path, *, dispatch_id: str) -> dict[str, Any]:
         while True:
             # Detached queues and automatic retries must observe the current registry too.
             try:
+                feat = features_mod.resolve(root, str(d["feature"]))
                 rp = repos_mod.load_registry(root).require(d["repo"])
                 check_verification_preflight(verification_preflight(rp, no_checks=d.get("no_checks", False)))
                 maintenance.check(root, feat.number, "auto_resume" if int(d["attempt"]) > 1 else "launch")
+                why = _activity_refusal(root, d)
             except AgentError as exc:
                 return finalize(root, d, feat, {"state": "blocked", "error": str(exc)})
+            if why:
+                return finalize(root, d, feat, {"state": "blocked", "error": why})
             d = _launch_attempt(root, d, feat, rp)
             d = load(root, d["id"])
             outcome = evaluate(root, d, rp)
             reason = outcome.get("auto_resume")
             if reason and d["attempt"] < d["max_attempts"]:
+                # Before the retry is queued, so a refused retry keeps this attempt's number.
+                try:
+                    why = _activity_refusal(root, d)
+                except AgentError as exc:
+                    why = f"implementation attempt not started: {exc}"
+                if why:
+                    return finalize(root, d, feat, {**outcome, "state": "blocked", "error": why})
                 with gate.record_guard(root, d["id"]) as current:
                     if current["state"] != "cancelled" and not gate.requires_lease(root, current):
                         d = queue_auto_resume(root, current, feat, outcome, reason)
@@ -269,6 +280,19 @@ def run(root: Path, *, dispatch_id: str) -> dict[str, Any]:
         # Never let the legacy process reaper replace the verifier's own cleanup protocol.
         if not gate.requires_lease(root, load(root, dispatch_id)):
             _reap_dispatch_tree(root, dispatch_id)
+
+
+def _activity_refusal(root: Path, d: dict[str, Any]) -> str | None:
+    """Why the next attempt may not start: the feature, re-read now, is not active, owes
+    reconciliation, or a named task is held. Read-only dispatches always pass."""
+    why = activity_gate.launch_refusal(
+        root,
+        str(d["feature"]),
+        kind=d.get("kind"),
+        writes=d.get("writes"),
+        tasks=[n for n in as_list(d.get("tasks")) if isinstance(n, int)],
+    )
+    return f"implementation attempt not started: {why}" if why else None
 
 
 def _reap_dispatch_tree(root: Path, dispatch_id: str) -> None:

@@ -16,7 +16,13 @@ import pytest
 from agent_cli import dispatch, features
 from agent_cli.core import AgentError
 from agent_cli.dispatch import spend
-from dispatch_helpers import _new_fast, droot, envelope, one  # noqa: F401 -- droot is a pytest fixture
+from dispatch_helpers import (  # noqa: F401 -- droot is a pytest fixture
+    _new_fast,
+    droot,
+    envelope,
+    one,
+    settle,
+)
 
 # The package re-exports a function named `evaluate`, which shadows the module attribute.
 evaluate_mod = importlib.import_module("agent_cli.dispatch.evaluate")
@@ -312,6 +318,7 @@ def test_resumed_dispatch_records_its_own_spend(droot: Path, fake_claude):
 def test_an_escalation_carries_the_parent_total_into_the_fork(droot: Path, fake_claude):
     fake_claude.scenario([one(envelope("blocked", cost=8.98)), one(envelope(cost=10.70))])
     old = _new_fast(droot)
+    settle(droot, old)
     fork = _new_fast(droot, escalate_from=old["id"])
     assert fork["forked_from_session"] == old["session_id"]
     assert fork["fork_parent_cost_usd"] == pytest.approx(8.98)
