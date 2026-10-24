@@ -29,6 +29,20 @@ to = 66000
 reason = "023 local prompt-lock repair: one-time suite admission up to 8978 tests and 66000 spawns; permanent caps unchanged"
 approved_by = "owner"
 
+[[raise]]
+date = 2026-10-24
+from = 8970
+to = 8982
+reason = "038 review-integrity fixes: one-time local batch admission up to 8982 tests and 66000 spawns; permanent caps unchanged"
+approved_by = "owner"
+
+[[raise]]
+date = 2026-10-24
+from = 62490
+to = 66000
+reason = "038 review-integrity fixes: one-time local batch admission up to 8982 tests and 66000 spawns; permanent caps unchanged"
+approved_by = "owner"
+
 # Tests allowed more than the per-test ceiling of 100 call-phase spawns (tests/suite_cost.py),
 # each at ceil(measured * 1.1) from pass record 523d7c15.
 [slow]
