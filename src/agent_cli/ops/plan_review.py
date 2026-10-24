@@ -87,7 +87,11 @@ _SECTION = re.compile(
     r"(?:\s*\(\d+\))?[*_\s]*:[*_\s]*(?P<rest>.*)$",
     re.IGNORECASE,
 )
-_ITEM = re.compile(r"^(?P<indent>\s*)(?:[-*+•]|\d+[.)]|\(\d+\))\s+(?P<text>\S.*)$")
+# A bullet or number is dropped from the item's text; a label such as `B1 —` or `P2:` is kept.
+_ITEM = re.compile(
+    r"^(?P<indent>\s*)(?:(?:[-*+•]|\d+[.)]|\(\d+\))\s+|(?=[*_]*[A-Z]{1,2}-?\d{1,3}[*_]*(?:[:.)]|\s+[—–-])\s))"
+    r"(?P<text>\S.*)$"
+)
 _HEADING = re.compile(r"^(?:(?P<hashes>#+)\s.*|[*_]*(?P<label>[A-Z][\w /-]{0,40}):[*_]*)$")
 # Labels a reviewer puts inside one finding; unindented, they still do not end the section.
 _FIELD = frozenset(
@@ -136,8 +140,9 @@ def _heading_level(text: str) -> int:
 
 def findings_of(summary: str) -> list[str]:
     """Every item under `Blocking:` and `Optional:` in a reviewer's summary, one string each. A
-    section line with text after the colon is itself one item; a list item's indented lines,
-    sub-bullets, labels and subheadings belong to it. Unindented prose after a blank line, or
+    section line with text after the colon is itself one item, and so is the section's first
+    paragraph or a line opening with a label such as `B1 —`; a list item's indented lines,
+    sub-bullets, labels and subheadings belong to it. Other unindented prose after a blank line, or
     after an empty item, is held: it joins the item before it once a later real item shows it
     sat between items, and is dropped otherwise, so a closing remark is never a finding. Only
     an unindented heading at the section's own level ends the section. `None found.` and the
@@ -160,7 +165,7 @@ def findings_of(summary: str) -> list[str]:
             if _empty(rest):
                 in_section = False
             elif rest:
-                current = [rest]
+                current, opening = [rest], False
                 items.append(current)
             continue
         if not in_section:
@@ -192,7 +197,7 @@ def findings_of(summary: str) -> list[str]:
             current.append(stripped)
         elif _empty(stripped):
             current = None
-        elif opening and not blank:
+        elif opening:
             current = [stripped]
             items.append(current)
         else:
