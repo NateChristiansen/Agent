@@ -42,6 +42,8 @@ unknown. The dispatch ledger applies the same provenance distinction to worker r
 
 Amended 2026-10-05: a Claude provider's per-attempt cost is the session's running total, so dispatch spend now adds only each session's rise over its last total (`dispatch/spend.py`). Summing the recorded totals had nearly doubled the real spend.
 
+Amended by [[adrs/0064-claude-cost-from-transcript|ADR-0064]]: Claude manager cost is now priced from its transcript, not the status line's provider total, and Codex cost sums the root rollout with its child rollouts.
+
 ## Alternatives considered
 
 Tokens everywhere would stay exact but would leave the two managers incomparable in dollars.

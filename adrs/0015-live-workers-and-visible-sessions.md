@@ -30,6 +30,7 @@ What waits on the owner, and what each session is doing, is explicit state on th
 
 - Amended by [[adrs/0016-live-views-over-a-snapshot|ADR-0016]]: the Managers splice is gone; manager and worker state reach the Dashboard through `.agent/live.json`.
 - Amended by [[adrs/0058-harness-state-after-audit-5|ADR-0058]]: `lease-nudge` is gone; `lease-yield` only stamps the turn end, and a resting lease is free to take.
+- Amended by [[adrs/0064-claude-cost-from-transcript|ADR-0064]]: the statusline is gone; state shows on the Dashboard and the Terminal tab labels.
 - ADR-0006's "handoffs are the record" stands. A handoff now also carries `live`, `goal`, `ask` and `open`, refreshed by `status render`.
 - New hooks: `activity` (on six events), `session-name`, `lease-nudge`, `lease-yield`. The PostToolUse `.*` pair runs `bin/agent` on every tool call, and that latency is unmeasured.
 - Tab labels and `dispatch open` depend on the Obsidian CLI and on undocumented Terminal plugin view state. `nameSource` in `~/.claude/sessions/<pid>.json` is also undocumented. Each fails soft: no label, a printed command, or no rename.

@@ -50,6 +50,13 @@ to = 65000
 reason = "112/124/064 reviewed reductions: one-time local admission up to 8970 tests and 65000 spawns; permanent caps unchanged"
 approved_by = "owner"
 
+[[raise]]
+date = 2026-10-24
+from = 62490
+to = 64000
+reason = "121 status line removal and manager Stop pricing: one-time local batch admission up to 64000 spawns; permanent caps unchanged"
+approved_by = "owner"
+
 # Tests allowed more than the per-test ceiling of 100 call-phase spawns (tests/suite_cost.py),
 # each at ceil(measured * 1.1) from pass record 523d7c15.
 [slow]
