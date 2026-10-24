@@ -269,6 +269,10 @@ def dispatch(
             reraise_of=reraise_of,
         )
     if action == "code-review":
+        if dry_run:
+            raise AgentError(
+                "code-review does not support dry_run=True; no subject was read and no review launched"
+            )
         return ops.dispatch_code_review(
             ctx.root,
             dispatch_id=dispatch_id,

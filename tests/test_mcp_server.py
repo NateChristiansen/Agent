@@ -527,3 +527,36 @@ async def test_dispatch_resume_dry_run_refuses_before_read_or_operation(
     } == before_prompts
     assert (seeded / original["handoff"]).read_bytes() == before_handoff
     assert len(fake_claude.calls()) == 0
+
+
+async def test_dispatch_code_review_dry_run_refuses_before_lookup_and_launch(
+    seeded: Path, fake_claude, monkeypatch
+):
+    from agent_cli import ops
+
+    def snapshot() -> dict[str, bytes]:
+        return {str(p): p.read_bytes() for p in (seeded / ".agent").rglob("*") if p.is_file()}
+
+    seen: list[dict] = []
+
+    def fake_review(root, **kw):
+        seen.append(kw)
+        return Op({}, "reviewed")
+
+    monkeypatch.setattr(
+        ops, "dispatch_code_review", lambda *a, **k: pytest.fail("code-review operation invoked")
+    )
+    before = snapshot()
+    args = {"action": "code-review", "dispatch_id": "999-mac-99", "session_id": "s1"}
+    async with Client(mcp_server.build_server(seeded, "manager")) as client:
+        refused = await client.call_tool("dispatch", {**args, "dry_run": True})
+        monkeypatch.setattr(ops, "dispatch_code_review", fake_review)
+        normal = await client.call_tool("dispatch", args)
+
+    message = _text(refused)
+    assert refused.is_error and "code-review" in message and "dry_run" in message
+    assert "999-mac-99" not in message
+    assert snapshot() == before
+    assert len(fake_claude.calls()) == 0
+    assert normal.is_error is False, _text(normal)
+    assert [k["dispatch_id"] for k in seen] == ["999-mac-99"]
