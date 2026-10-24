@@ -23,6 +23,11 @@ from agent_cli.dispatch.state import dispatches_dir
 SID = "4b1c2d3e-0000-4000-8000-00000000c1a0"
 ROOT = Path(__file__).resolve().parents[1]
 PLAN = "# Plan\n\n## Context\n\nThe owner wants X.\n\n## Steps\n\n1. Build X.\n"
+# A real reviewer's structured result, byte for byte: blocking findings labelled B1-B3, unbulleted, each
+# after a blank line.
+MAC_43 = json.loads(
+    r"""{"summary":"VERDICT: revise\n\nBlocking:\n\nB1 — src/agent_cli/push_review.py:144: Repository discovery inherits the pushing worktree’s GIT_DIR. Git queries against other registered checkouts consequently resolve to the pushing repository, and repo_of selects the first registry entry. Probe: an unreviewed beta-web branch pushed successfully from a linked manager worktree while alpha-api was registered first. Normal discovery identified beta-web; discovery with the hook’s GIT_DIR identified alpha-api. Adding the worktree to beta’s dispatch restored refusal. Isolate repository discovery from inherited Git location variables. This violates acceptance 1’s repository scope and permits unreviewed pushes.\n\nB2 — src/agent_cli/push_review.py:193: The authoritative gate falls back to a clean round under a guarding dispatch’s branch instead of requiring one under the pushed branch’s name. Probe: code_review.clean for feature/renamed returned false, problems returned no refusal, and an installed-hook push from agent/001-x to feature/renamed succeeded. The source branch alone had a clean round. Acceptance 1 explicitly requires the pushed branch’s name; preserve any legacy early-warning behavior separately.\n\nB3 — src/agent_cli/push_review.py:83: Annotated-tag refusals report the peeled commit ID instead of the local object ID supplied by Git. Probe: a real push with push.followTags=true refused refs/tags/v1, but its distinct tag object ID appeared nowhere in stderr; the refusal substituted its commit ID. Preserve the incoming object ID in the diagnostic, alongside the peeled commit if useful. This violates acceptance 4 on the annotated-tag path expressly required by acceptance 7.\n\nOptional: tests/test_push_review.py:263: The quoted-variable case gives push-guard the \"$B\" text but executes Git with BRANCH substituted directly at line 271. Thus it does not exercise shell expansion end to end. An additional real-shell probe was denied before execution; no variable-specific runtime failure was established.\n\nOptional: src/agent_cli/hooks/repo_guards.py:149: The detached-HEAD denial returns before appending AUTHORITY, so this denial omits the pre-push authority statement required by acceptance 5. Read-based finding; ordinary unreviewed-ref denials include it.\n\nValidation: The pinned HEAD matched. Requested checks passed: 827 tests passed and two skipped; ruff and pyright passed. All 19 new push-review tests also passed. Executed push probes reproduced B1–B3. No repository file was changed.\n\nUnreadable state: pre-push refuses unreadable or malformed registry state, unreadable or malformed round records, unreadable/noncommit guarded objects, malformed stdin, and override-note failures. Missing registry state does not automatically refuse, and corrupt JSON dispatch records are skipped. Push-guard allows unresolved source objects and unreadable round JSON, but denies malformed readable rounds. An unreadable registry leaves repository identity unknown rather than automatically denying; corrupt dispatch JSON is skipped. Its outer hook wrapper fails open on exceptions, and override-note failures are ignored there.\n\nPrecedents:\n\n| New mechanism | Sibling | Treatment |\n|---|---|---|\n| Per-ref review gate | push_records.problems | Copied iteration and deletion handling; deviated to review rounds and per-ref override notes. |\n| Object resolution | push_records.commit | Copied annotated-tag peeling; B3 concerns retaining the original diagnostic identity. |\n| Shared scope, round checks and notes | Former repo_guards helpers | Copied into push_review; deviated to strict unreadable-round handling in pre-push. The copied branch fallback causes B2. |\n| Product hook loader | gitgate.script | Deviated to a pinned harness root because product clones have no backlink; copied POSIX and Windows interpreter selection. |\n| Product hook installation and reporting | gitgate.install, inspect and setup.git_hooks | Copied foreign-hook preservation; deviated to leave externally managed hooksPath directories untouched. |\n| Early warning | Existing push_guard | Deviated so unenumerable pushes reach Git, exact override prefixes are recognized, and installed hooks write override notes. |\n\nAfter landing, the owner runs setup from the harness checkout:\n\n```sh\nbin/agent setup\n```"}"""
+)["summary"]
 
 
 class Launcher:
@@ -469,6 +474,47 @@ def test_closing_prose_after_the_last_finding_is_no_new_finding():
 
     summary = "VERDICT: revise\nBlocking:\n1. Step 2 has no test.\n\nI checked every step.\nAll else holds.\n"
     assert findings_of(summary) == ["Step 2 has no test."]
+
+
+def test_labelled_findings_after_blank_lines_are_each_one_finding():
+    from agent_cli.ops.plan_review import findings_of
+
+    found = findings_of(MAC_43)
+    assert [f.split(":")[0] for f in found] == [
+        "B1 — src/agent_cli/push_review.py",
+        "B2 — src/agent_cli/push_review.py",
+        "B3 — src/agent_cli/push_review.py",
+        "tests/test_push_review.py",
+        "src/agent_cli/hooks/repo_guards.py",
+    ]
+    paragraphs = MAC_43.split("\n\n")
+    assert found[:3] == paragraphs[2:5]
+    assert found[3:] == [p.removeprefix("Optional: ") for p in paragraphs[5:7]]
+
+    summary = (
+        "VERDICT: revise\n"
+        "Blocking:\n"
+        "\n"
+        "B1: Step 2 has no test.\n"
+        "Probe: ran it.\n"
+        "\n"
+        "B2 — The gate reads the wrong file.\n"
+        "  read plan_gate.py.\n"
+        "\n"
+        "I checked every step.\n"
+    )
+    assert findings_of(summary) == [
+        "B1: Step 2 has no test. Probe: ran it.",
+        "B2 — The gate reads the wrong file. read plan_gate.py.",
+    ]
+
+
+def test_an_unbulleted_first_finding_after_a_blank_line_is_kept():
+    from agent_cli.ops.plan_review import findings_of
+
+    summary = "VERDICT: revise\nBlocking:\n\nStep 2 has no test.\n\nOptional: none\n"
+    assert findings_of(summary) == ["Step 2 has no test."]
+    assert findings_of("VERDICT: agree\nBlocking:\n\nNone found.\n\nI checked every step.\n") == []
 
 
 @pytest.mark.parametrize(

@@ -269,6 +269,25 @@ def test_owner_lines_list_verified_blocking_findings_then_disputes(tmp_root: Pat
     ]
 
 
+def test_every_finding_of_a_labelled_return_is_its_own_ledger_item(tmp_root: Path):
+    from agent_cli.ops.plan_review import findings_of
+    from test_plan_review import MAC_43
+
+    plan = _plan(tmp_root)
+    texts = findings_of(MAC_43)
+    assert _round(tmp_root, plan, 1, "codex", texts) == ["F1", "F2", "F3", "F4", "F5"]
+    table = "\n".join(
+        f"| F{n} | kept | {'blocking' if n <= 3 else 'optional'} | read it |" for n in range(1, 6)
+    )
+    assert ledger.record_verifier(tmp_root, plan, round_no=1, summary=table, dispatch_id="001-mac-09") == []
+    findings = ledger.load(tmp_root, plan)["findings"]
+    assert [f["text"] for f in findings] == texts
+    assert [f["verifier"]["label"] for f in findings] == ["blocking"] * 3 + ["optional"] * 2
+    assert [line.split(":")[0] for line in ledger.owner_lines(ledger.load(tmp_root, plan))] == [
+        f"F{n} (round 1, blocking)" for n in (1, 2, 3)
+    ]
+
+
 def test_the_verifier_needs_the_frozen_snapshot(tmp_root: Path):
     plan = _plan(tmp_root)
     _round(tmp_root, plan, 1, "codex", ["x"])
