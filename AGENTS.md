@@ -38,12 +38,15 @@ Every incoming task goes through this loop, in order:
    branch, and owner decision; the worker evaluates findings. Never edit a worker worktree.
    Every dispatch names a row from [[harness/dispatch-rubric]] and why it fits. Keep vendor effort
    defaults unless the rubric's Effort section gives a reason. One manager owns the
-   feature, plans it, and dispatches every node. Review is one fresh, short-lived reviewer per
-   artifact: a subagent, or a reviewer worker on the other client where practical. Give it only
-   the artifact and contract; require executed probes. No second reviewer or wording-only re-review.
+   feature, plans it, and dispatches every node. Review of a plan or branch head is one blind round
+   (`dispatch` actions `plan-review` and `code-review`): two fresh reviewers, Codex and Claude,
+   then one verifier; see [[harness/sessions#Plan review]]. Never show a reviewer the ledger or
+   earlier findings; require executed probes. No wording-only re-review. An owner's ask for a
+   review on a named client goes through a review dispatch, never a peer message.
    Peer managers handle cross-feature conflicts only. Write the work order at launch against
    its pinned base. For messages, one lead across machines and evidence files, see [[harness/sessions]].
-   The route is one implementer, its scoped checks, one fresh reviewer, then `agent land` (the
+   The route is one implementer, its scoped checks, a clean `code-review` round on its head,
+   then `agent land` (the
    `harness` tool's `land` action), the only way main moves. Every landing, prose included, runs
    the full suite (ADR-0062), reusing a full pass record for the same tree; a pushed tip needs one.
    Dispatch never runs full; batch ready branches with `land`'s `batch` to share a certificate.
@@ -51,14 +54,16 @@ Every incoming task goes through this loop, in order:
    disjoint task at once; when you serialise ready tasks, record why. Park or close an idle feature.
    **Small changes** (about 50 non-test lines or fewer, no hooks, permissions, land, verify, push
    or peer-net code) skip dispatch: edit in a manager worktree (`worktree_new`), run the targeted
-   tests, ruff and pyright, get one fresh review on the other client, then `land`. Record it as a
+   tests, ruff and pyright, get a clean `code-review` round on the committed head, then `land`.
+   Record it as a
    task on an existing feature. A work order sets acceptance. A reviewer separates blocking
    findings from optional ones; a blocking finding needs a path real use takes. Only blocking
-   ones send work back. An unset bar is optional. A plan reaches the owner once a fresh review
-   on the other client agrees to its exact bytes (`dispatch` action `plan-review`), unless it says
+   ones send work back. An unset bar is optional. A plan reaches the owner once a complete
+   `plan-review` round on its exact bytes keeps no finding as blocking, unless it says
    `review: small — <reason>` or `review: none — <reason>` near the top; see [[harness/sessions#Plan review]].
-   That review asks first whether each step serves the plan's Context and whether a client or vendor already
-   provides it. A task added after the owner approved the plan needs the owner's sign-off, and an
+   At the complete-round cap, show the ledger for the owner's decision. Before review, the manager
+   checks that each step serves the plan's Context and that no client or vendor already provides it.
+   A task added after the owner approved the plan needs the owner's sign-off, and an
    autonomy grant ("approve the dispatches overnight") covers only the approved plan. Probe a new
    contract against its validator and renderer before the first round of work against it.
 6. **Log as it happens.** Use the `log` tool for findings and decisions. Measure numbers
@@ -104,8 +109,9 @@ and are loaded by the relevant skills.
 - **2026-09-03 — review feedback belongs to the implementer.** Send PR reviews, failing checks,
   and owner comments on a worker branch back through `/dispatch`.
 - **2026-09-24 — reviewed changes may commit locally** (reworded 2026-10-11). A manager may
-  commit its own small change on a branch after one fresh cross-client reviewer approves the
-  diff. Stage only that feature's paths. When ready, ask once: push and merge `<branch>` now?
+  commit its own small change on a branch for review. Its committed head must have a clean
+  `code-review` round before landing. Stage only that feature's paths. When ready, ask once:
+  push and merge `<branch>` now?
   Use `AskUserQuestion` or Codex's `owner_question`. On yes, run it; hand over commands only if the client refuses, and say why.
 - **2026-09-24 — check client-specific recommendations.** Before recommending Claude-only or
   Codex-only behavior to the owner, ask a manager running that client to check it.
