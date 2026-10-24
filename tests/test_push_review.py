@@ -10,7 +10,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -284,14 +284,53 @@ def test_a_refusal_names_the_call_that_makes_the_pushed_ref_clean(side: Side):
         assert push_review.problems(side.root, side.checkout, [update], {}) == [], shape
 
 
+def test_refusal_selects_build_dispatch_by_typed_row_before_description(side: Side):
+    """The build call remains the remedy when a review is first or descriptions are arbitrary."""
+    side.dispatch("001-01", row="review", choice_reason="build row: misleading text", branch=BRANCH)
+    side.dispatch("001-02", row="build", choice_reason="review row: misleading text", branch=BRANCH)
+    [text] = side.problems((BRANCH, BRANCH))
+    assert 'code-review` with dispatch_id="001-02"' in text
+
+
+def test_refusal_uses_generated_rubric_wording_for_legacy_rows(side: Side):
+    """Legacy records use the actual resolver's choice_reason wording when no typed row exists."""
+    from types import SimpleNamespace
+
+    from agent_cli.dispatch import rubric
+
+    repo = cast("Any", SimpleNamespace(dispatch={}, short="alpha"))
+    reason_review = rubric.resolve(repo, "codex", rubric.ROWS["review"], None, None, None)[2]
+    reason_build = rubric.resolve(repo, "codex", rubric.ROWS["build"], None, None, None)[2]
+    side.dispatch("001-01", choice_reason=reason_review, branch=BRANCH)
+    side.dispatch("001-02", choice_reason=reason_build, branch=BRANCH)
+    [text] = side.problems((BRANCH, BRANCH))
+    assert 'code-review` with dispatch_id="001-02"' in text
+    for legacy_review in (
+        "rubric row review: legacy plain form",
+        "owner context; rubric row review: legacy semicolon form",
+        "review row: legacy description",
+    ):
+        side.dispatch("001-01", choice_reason=legacy_review, branch=BRANCH)
+        [text] = side.problems((BRANCH, BRANCH))
+        assert 'code-review` with dispatch_id="001-02"' in text, legacy_review
+
+
 def test_the_hook_entry_points_run_the_gate(side: Side, run, monkeypatch: pytest.MonkeyPatch):
     """The harness's `git pre-push` runs it after the pass-record gate; a product clone's hook
     runs `git push-review <checkout>`."""
     monkeypatch.setattr(push_records, "problems", lambda root, updates: [])
+    side.dispatch(
+        "001-02",
+        row="review",
+        branch=BRANCH,
+        summary="VERDICT: revise — another pass is needed",
+        finished="2099-01-01T00:00:00-07:00",
+    )
     stdin = f"refs/heads/{BRANCH} {side.head()} refs/heads/{BRANCH} {ZERO}\n"
     argv = ["git", "pre-push"] if side.checkout == side.root else ["git", "push-review", str(side.checkout)]
     refused = run(["--root", str(side.root), *argv, "origin", "url"], stdin=stdin)
     assert refused.code != 0 and push_review.REFUSED in refused.err and f"{BRANCH} at" in refused.err
+    assert 'code-review` with dispatch_id="001-01"' in refused.err
     side.round(side.head())
     assert run(["--root", str(side.root), *argv, "origin", "url"], stdin=stdin).code == 0
 

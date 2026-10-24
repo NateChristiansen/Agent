@@ -248,10 +248,12 @@ def _two_tasks(root: Path) -> None:
     f.save()
 
 
-def _finished(root: Path, ident: str, *, at: str = "feature", task: int = 1, **extra: Any) -> dict[str, Any]:
+def _finished(
+    root: Path, ident: str, *, at: str = "feature", task: int = 1, sha: str | None = None, **extra: Any
+) -> dict[str, Any]:
     """A done dispatch on `feature` whose committed attempt ended at `at`, as its terminal commit
     saves it."""
-    sha = git(root, "rev-parse", at)
+    sha = sha or git(root, "rev-parse", at)
     d = {
         **next((r for r in state.load_all(root) if r["id"] == ident), {}),
         "id": ident,
@@ -392,9 +394,10 @@ def test_only_a_committed_result_with_work_on_the_branch_is_accepted_by_the_land
     harness: Path, certified, other: dict[str, Any]
 ):
     _two_tasks(harness)
-    _finished(harness, "001-mac-01")
-    head = {reconcile.RESULT_HEAD: {"attempt": 1, "sha": git(harness, "rev-parse", "feature")}}
-    _finished(harness, "001-mac-02", task=2, **{**head, **other})
+    first = _finished(harness, "001-mac-01")
+    observed_sha = first[reconcile.RESULT_HEAD]["sha"]
+    head = {reconcile.RESULT_HEAD: {"attempt": 1, "sha": observed_sha}}
+    _finished(harness, "001-mac-02", task=2, sha=observed_sha, **{**head, **other})
     land.land(harness, "feature", strategy="ff")
     assert _owed(harness) == [("accept:001-mac-01", "task#1")]
 

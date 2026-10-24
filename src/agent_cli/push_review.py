@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from .repos import Repo
 
 OVERRIDE_ENV = "AGENT_PUSH_UNREVIEWED"
-REVIEW_REASON_RE = re.compile(r"^\s*review(?=[:,]|\s+row\b)|(?:^|;\s*)rubric row review:", re.I)
+REVIEW_REASON_RE = re.compile(r"^\s*review(?=[:,]|\s+row\b)|(?:^|;\s*)rubric row review(?=[:\s]|$)", re.I)
 HEADS = "refs/heads/"
 REFUSED = "push refused: every guarded ref needs a clean code-review round on the commit it pushes (ADR-0063)"
 
@@ -269,9 +269,15 @@ def remedy(records: list[dict[str, Any]], ref: str, head: str, *, checkout: Path
     reviews what its branch name resolves to in the clone, so a pushed name that does not resolve
     to the pushed commit there is made to first; a name other than the build dispatch's branch
     takes the call's `branch` form."""
-    build = next(
-        (d for d in records if not REVIEW_REASON_RE.search(str(d.get("choice_reason") or ""))), records[0]
-    )
+
+    def is_build(d: dict[str, Any]) -> bool:
+        row = d.get("row")
+        if row:
+            return row != "review"
+        reason = str(d.get("choice_reason") or "")
+        return not REVIEW_REASON_RE.search(reason)
+
+    build = next((d for d in records if is_build(d)), records[0])
     full = ref if ref.startswith("refs/") else HEADS + ref
     first = "Run"
     if git_line(checkout, ["rev-parse", "--verify", "--quiet", f"{full}^{{commit}}"]) != head:

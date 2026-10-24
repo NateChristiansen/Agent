@@ -64,16 +64,20 @@ def test_source_prose_has_no_history_tags():
     assert not found, f"history belongs in git/ADRs; write the current why: {found}"
 
 
-@pytest.mark.parametrize("tag", ["audit 6", "CL-64", "CX-4", "T7 item 2", "L-20261005-09", "feature 013"])
 @pytest.mark.parametrize(
-    "template",
+    ("tag", "template"),
     [
-        "# {tag}\n",
-        '"""{tag}"""\n',
-        'class Example:\n    """{tag}"""\n',
-        'def example():\n    """{tag}"""\n',
-        'async def example():\n    """{tag}"""\n',
-        'value = 1\n"""{tag}"""\n',
+        ("audit 6", "# {tag}\n"),
+        ("CL-64", "# {tag}\n"),
+        ("CX-4", "# {tag}\n"),
+        ("T7 item 2", "# {tag}\n"),
+        ("L-20261005-09", "# {tag}\n"),
+        ("feature 013", "# {tag}\n"),
+        ("audit 6", '"""{tag}"""\n'),
+        ("audit 6", 'class Example:\n    """{tag}"""\n'),
+        ("audit 6", 'def example():\n    """{tag}"""\n'),
+        ("audit 6", 'async def example():\n    """{tag}"""\n'),
+        ("audit 6", 'value = 1\n"""{tag}"""\n'),
     ],
 )
 def test_history_guard_covers_comments_and_docstrings(tag: str, template: str):

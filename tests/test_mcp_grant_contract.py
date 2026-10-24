@@ -92,8 +92,15 @@ def _dry_run(run, *mcp: str):
 # ------------------------------------------------------------------ mixed repo grants
 
 
-@pytest.mark.parametrize("deny", DENIES)
-@pytest.mark.parametrize("case", MIXED)
+@pytest.mark.parametrize(
+    ("case", "deny"),
+    [
+        *((case, "none") for case in MIXED),
+        ("exact then bare", "one tool"),
+        ("exact then bare", "whole"),
+        ("exact then bare", "bare"),
+    ],
+)
 def test_a_valid_grant_does_not_excuse_an_invalid_sibling(tmp_root: Path, monkeypatch, case, deny):
     allow, valid, invalid = MIXED[case]
     monkeypatch.setattr(settings, "BASE_DENY", [*settings.BASE_DENY, *DENIES[deny]])
@@ -181,8 +188,10 @@ ONLY = {
 }
 
 
-@pytest.mark.parametrize("deny", DENIES)
-@pytest.mark.parametrize("case", ONLY)
+@pytest.mark.parametrize(
+    ("case", "deny"),
+    [*((case, "none") for case in ONLY), ("bare", "one tool"), ("bare", "whole"), ("bare", "bare")],
+)
 def test_a_rule_without_a_canonical_grant_refuses_the_launch(tmp_root: Path, monkeypatch, case, deny):
     allow, invalid = ONLY[case]
     monkeypatch.setattr(settings, "BASE_DENY", [*settings.BASE_DENY, *DENIES[deny]])

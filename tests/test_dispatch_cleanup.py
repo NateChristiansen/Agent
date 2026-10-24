@@ -58,6 +58,11 @@ def _two(droot: Path, fake_claude) -> tuple[dict, dict]:
     return d1, d2
 
 
+def _one(droot: Path, fake_claude) -> dict:
+    fake_claude.scenario([one(envelope(), commit="T-42 one")])
+    return _new_fast(droot)
+
+
 def _ctx(root: Path) -> Ctx:
     return Ctx(root=root, profile="manager")
 
@@ -83,7 +88,7 @@ def test_one_dispatch_cleanup_ignores_a_running_sibling_and_deletes_only_its_lan
 
 
 def test_an_unlanded_branch_is_never_deleted(droot, fake_claude):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     result = specs_dispatch.dispatch(
         _ctx(droot), action="cleanup", dispatch_id=d1["id"], force=True, delete_branches=True
     ).data
@@ -93,7 +98,7 @@ def test_an_unlanded_branch_is_never_deleted(droot, fake_claude):
 
 
 def test_blocked_unfinished_work_holds_even_when_its_tip_landed(droot, fake_claude):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _land(droot, d1["id"])
     _set(droot, d1["id"], state="blocked")
     result = ops.dispatch_cleanup(droot, dispatch_id=d1["id"], delete_branches=True).data
@@ -104,7 +109,7 @@ def test_blocked_unfinished_work_holds_even_when_its_tip_landed(droot, fake_clau
 
 @pytest.mark.parametrize("kind", ["staged", "unstaged", "untracked"])
 def test_real_edits_hold_a_landed_tree(droot, fake_claude, kind):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _land(droot, d1["id"])
     wt = Path(d1["worktree"])
     target = next(p for p in sorted(wt.iterdir()) if p.is_file() and p.name != ".git")
@@ -120,7 +125,7 @@ def test_real_edits_hold_a_landed_tree(droot, fake_claude, kind):
 
 
 def test_a_commit_during_cleanup_is_rechecked_under_the_lock(droot, fake_claude, monkeypatch):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _land(droot, d1["id"])
     wt = Path(d1["worktree"])
     real = tidy.resolved
@@ -141,7 +146,7 @@ def test_a_commit_during_cleanup_is_rechecked_under_the_lock(droot, fake_claude,
 
 @pytest.mark.parametrize("kind", ["staged", "unstaged", "untracked"])
 def test_edits_made_after_the_first_check_are_rechecked_under_the_lock(droot, fake_claude, monkeypatch, kind):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _land(droot, d1["id"])
     wt = Path(d1["worktree"])
     target = next(p for p in sorted(wt.iterdir()) if p.is_file() and p.name != ".git")
@@ -164,7 +169,7 @@ def test_edits_made_after_the_first_check_are_rechecked_under_the_lock(droot, fa
 
 
 def test_a_record_change_after_the_first_check_is_rechecked_under_the_lock(droot, fake_claude, monkeypatch):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _land(droot, d1["id"])
     real, calls = tidy.active_holds, []
 
@@ -192,7 +197,7 @@ def _state_link(wt: Path, outside: Path) -> None:
 
 
 def test_a_locked_registration_holds_before_any_link_is_unlinked(droot, fake_claude, tmp_path):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _land(droot, d1["id"])
     wt = Path(d1["worktree"])
     _state_link(wt, tmp_path / "outside-state")
@@ -203,7 +208,7 @@ def test_a_locked_registration_holds_before_any_link_is_unlinked(droot, fake_cla
 
 
 def test_a_link_inside_the_tree_is_unlinked_and_its_external_target_survives(droot, fake_claude, tmp_path):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _land(droot, d1["id"])
     wt = Path(d1["worktree"])
     _state_link(wt, tmp_path / "outside-state")
@@ -275,7 +280,7 @@ def test_an_abandoned_workers_scratch_is_discarded_only_by_its_confirmed_preview
 def test_a_missing_directory_is_reported_then_reconciled_separately_and_repeatably(
     droot, fake_claude, capsys
 ):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     wt, main = Path(d1["worktree"]), droot / MAIN
     _lose(wt)
     result = dispatch.cleanup(droot, dispatch_id=d1["id"])
@@ -310,7 +315,7 @@ def test_an_unavailable_root_is_not_proof_of_deletion(droot, fake_claude, tmp_pa
 
 
 def test_restore_puts_an_unfinished_checkout_back_at_its_recorded_head_only(droot, fake_claude):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _set(droot, d1["id"], state="blocked")
     wt, main = Path(d1["worktree"]), droot / MAIN
     head = git(["rev-parse", "HEAD"], wt).strip()
@@ -346,7 +351,7 @@ def test_restore_puts_an_unfinished_checkout_back_at_its_recorded_head_only(droo
 def test_default_restore_is_bound_to_the_lost_head_not_the_branchs_current_tip(
     droot, fake_claude, reconciled
 ):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _set(droot, d1["id"], state="blocked")
     wt, main = Path(d1["worktree"]), droot / MAIN
     lost_at = git(["rev-parse", "HEAD"], wt).strip()
@@ -362,7 +367,7 @@ def test_default_restore_is_bound_to_the_lost_head_not_the_branchs_current_tip(
 
 
 def test_default_restore_needs_a_head_when_only_the_branch_records_it(droot, fake_claude):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     _set(droot, d1["id"], state="blocked")
     wt = Path(d1["worktree"])
     head = git(["rev-parse", "HEAD"], wt).strip()
@@ -376,7 +381,7 @@ def test_default_restore_needs_a_head_when_only_the_branch_records_it(droot, fak
 
 
 def test_restore_refuses_finished_resolved_work(droot, fake_claude):
-    d1, _ = _two(droot, fake_claude)
+    d1 = _one(droot, fake_claude)
     head = _land(droot, d1["id"])
     _lose(Path(d1["worktree"]))
     result = worktrees.restore(droot, dispatch_id=d1["id"], head=head, apply=True)
@@ -498,7 +503,7 @@ def test_a_held_candidate_is_reported_kept_and_removed_at_a_later_allocation(dro
 
 
 def test_a_failed_cleanup_leaves_the_landing_successful_and_is_retried(droot, fake_claude, monkeypatch):
-    d1, _ = _landable(droot, monkeypatch, fake_claude)
+    d1 = _landable(droot, monkeypatch, fake_claude, count=1)[0]
     real = worktrees.cleanup
 
     def broken(root, **kw):
@@ -520,7 +525,7 @@ def test_a_failed_cleanup_leaves_the_landing_successful_and_is_retried(droot, fa
 def test_a_landing_stopped_after_done_is_cleaned_at_the_next_opportunity(droot, fake_claude, monkeypatch):
     from agent_cli import land
 
-    d1, _ = _landable(droot, monkeypatch, fake_claude)
+    d1 = _landable(droot, monkeypatch, fake_claude, count=1)[0]
     _set(droot, d1["id"], setup=[{"exit": 1}])  # never reused, so allocation may clean it
     real = land.followups.retry_cleanup
     monkeypatch.setattr(land.followups, "retry_cleanup", lambda root, **kw: None)  # stopped here
@@ -536,7 +541,7 @@ def test_failed_aborted_previewed_and_legacy_landings_queue_no_cleanup(droot, fa
     from agent_cli import land
     from agent_cli import land_journal as jn
 
-    d1, _ = _landable(droot, monkeypatch, fake_claude)
+    d1 = _landable(droot, monkeypatch, fake_claude, count=1)[0]
     calls: list[dict] = []
     monkeypatch.setattr(worktrees, "cleanup", lambda root, **kw: calls.append(kw) or {})
 

@@ -331,6 +331,7 @@ def test_push_guard_needs_a_clean_round_on_the_pushed_head(
         repo=ALPHA,
         branch="agent/001-x",
         choice_reason="review row: read the branch",
+        summary="VERDICT: revise — the change needs another pass",
         finished="2099-01-01T00:00:00-07:00",
         start_sha=head,
     )

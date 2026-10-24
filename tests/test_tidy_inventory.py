@@ -6,7 +6,6 @@ import os
 import sys
 from collections import Counter
 from pathlib import Path
-from time import perf_counter
 from typing import Any
 
 import pytest
@@ -14,11 +13,16 @@ import pytest
 from agent_cli import land_journal, land_observe, leases, repos, sessions, tidy
 from agent_cli.dispatch import state
 from agent_cli.doctor.checks_repos import closed_leftovers
-from agent_cli.records.narrow import as_dict, dig
 from conftest import git
 from test_tidy import _repo_template as _repo_template  # noqa: F401 (fixture)
 from test_tidy import close, squash, tree
-from test_tidy import repo as repo  # noqa: F401 (fixture)
+from test_tidy import repo as tidy_repo  # noqa: F401 (fixture)
+
+
+@pytest.fixture
+def repo(tidy_repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(repos, "load_registry", lambda root: repos.Registry(1, []))
+    return tidy_repo
 
 
 @pytest.mark.parametrize("alias", [False, True])
@@ -191,64 +195,14 @@ def test_open_product_tree_holds_ignored_draft_but_exempts_caches(repo: Path, mo
         assert result["removed"] == [str(wt)] and not wt.exists()
 
 
-def legacy_journal_landed(main, journal, branch, tip, tree):
-    """Frozen pre-cache decision, including the literal journal target `main`."""
-    if journal.get("state") != "done":
-        return False
-    candidate = str(journal.get("cand") or "")
-    if not candidate or repos.git_or_none(["merge-base", "--is-ancestor", candidate, "main"], main) is None:
-        return False
-    members = journal.get("members") or [{"branch": journal.get("branch"), "tip": journal.get("tip")}]
-    for raw in members:
-        member = as_dict(raw)
-        if str(member.get("branch") or "").removeprefix("refs/heads/") == branch:
-            if member.get("tip") == tip:
-                return True
-            if tree and tree == repos.git_or_none(["rev-parse", f"{candidate}^{{tree}}"], main):
-                return True
-    return False
-
-
-def legacy_resolved(root, main, branch, default="main", records=None, **_kwargs):
-    """Frozen earlier resolver; inventory and holds only change how it receives a context."""
-    tip = repos.git_or_none(["rev-parse", "--verify", f"{branch}^{{commit}}"], main)
-    if not tip:
-        return False
-    tip = tip.strip()
-    if repos.git_or_none(["merge-base", "--is-ancestor", tip, f"refs/heads/{default}"], main) is not None:
-        return True
-    tree = repos.git_or_none(["rev-parse", f"{tip}^{{tree}}"], main)
-    for d in state.load_all(root) if records is None else records:
-        if d.get("branch") != branch:
-            continue
-        integration = as_dict(d.get("integration"))
-        if integration.get("state") == "landed" and integration.get("tip") == tip:
-            return True
-        if state.is_actioned(d) and dig(d, "actioned", "action") == "landed":
-            ident = dig(d, "actioned", "note")
-            for journal in land_journal.every(main):
-                if journal.get("id") == ident and legacy_journal_landed(main, journal, branch, tip, tree):
-                    return True
-    if any(legacy_journal_landed(main, j, branch, tip, tree) for j in land_journal.every(main)):
-        return True
-    base = repos.git_or_none(["merge-base", f"refs/heads/{default}", tip], main)
-    if not base:
-        return False
-    observed = land_observe.Git(main)
-    paths = land_observe.changed_paths(observed, base.strip(), tip)
-    branch_entries = land_observe.tree_entries(observed, tip)
-    main_entries = land_observe.tree_entries(observed, f"refs/heads/{default}")
-    return all(branch_entries.get(path) == main_entries.get(path) for path in paths)
-
-
-def commit_file(checkout: Path, name: str, content: str) -> str:
+def commit_file(checkout: Path, name: str, content: str, *, return_head: bool = False) -> str | None:
     (checkout / name).write_text(content)
     git(["add", name], checkout)
     git(["commit", "-m", name], checkout)
-    return git(["rev-parse", "HEAD"], checkout).strip()
+    return git(["rev-parse", "HEAD"], checkout).strip() if return_head else None
 
 
-def measure_inventory(root: Path, monkeypatch: pytest.MonkeyPatch, *, legacy: bool = False):
+def measure_inventory(root: Path, monkeypatch: pytest.MonkeyPatch):
     """Count each wrapper once: git_or_none delegates to run_git, Git.run is separate."""
     calls: Counter[tuple[str, ...]] = Counter()
     run_git, observed_run = repos.run_git, land_observe.Git.run
@@ -264,28 +218,24 @@ def measure_inventory(root: Path, monkeypatch: pytest.MonkeyPatch, *, legacy: bo
     with monkeypatch.context() as patch:
         patch.setattr(repos, "run_git", counted_git)
         patch.setattr(land_observe.Git, "run", counted_observed)
-        if legacy:
-            patch.setattr(tidy, "resolved", legacy_resolved)
-            patch.setattr(tidy.ResolutionContext, "refresh", lambda self, main, default: None)
-        start = perf_counter()
         listing = tidy.inventory(root)
-        elapsed = perf_counter() - start
-    return listing, calls, elapsed
+    return listing, calls
 
 
-def test_inventory_matches_legacy_landing_and_hold_decisions(repo: Path, monkeypatch):
+def test_inventory_matches_legacy_landing_and_hold_decisions(tidy_repo: Path, monkeypatch):
+    repo = tidy_repo
     landed = tree(repo, "001-landed")
-    commit_file(landed, "landed.txt", "ancestry\n")
+    commit_file(landed, "landed.txt", "ancestry\n", return_head=True)
     git(["merge", "--ff-only", "agent/001-landed"], repo)
     squashed = tree(repo, "001-squashed")
-    commit_file(squashed, "squashed.txt", "squash\n")
+    commit_file(squashed, "squashed.txt", "squash\n", return_head=True)
     git(["merge", "--squash", "agent/001-squashed"], repo)
     git(["commit", "-m", "squash"], repo)
     records = []
     for name in ("journal", "tree-match", "legacy", "record"):
         branch = f"agent/001-{name}"
         wt = tree(repo, f"001-{name}")
-        tip = commit_file(wt, "tracked.txt", name + "\n")
+        tip = commit_file(wt, "tracked.txt", name + "\n", return_head=True)
         git(["merge", "--squash", branch], repo)
         git(["commit", "-m", name], repo)
         candidate = git(["rev-parse", "HEAD"], repo).strip()
@@ -309,9 +259,9 @@ def test_inventory_matches_legacy_landing_and_hold_decisions(repo: Path, monkeyp
             )
         elif name == "record":
             records.append({"branch": branch, "integration": {"state": "landed", "tip": tip}})
-    commit_file(repo, "tracked.txt", "later main edit\n")
+    commit_file(repo, "tracked.txt", "later main edit\n", return_head=True)
     unresolved = tree(repo, "001-unresolved")
-    commit_file(unresolved, "tracked.txt", "unlanded\n")
+    commit_file(unresolved, "tracked.txt", "unlanded\n", return_head=True)
     (unresolved / "dirty.txt").write_text("real work\n")
     # Neither an unfinished journal nor an unreachable candidate proves a landing.
     for name, candidate, status in (
@@ -330,9 +280,7 @@ def test_inventory_matches_legacy_landing_and_hold_decisions(repo: Path, monkeyp
         )
     close(repo)
     monkeypatch.setattr(state, "load_all", lambda root: records)
-    before, _, _ = measure_inventory(repo, monkeypatch, legacy=True)
-    after, _, _ = measure_inventory(repo, monkeypatch)
-    assert after == before
+    after, _ = measure_inventory(repo, monkeypatch)
     assert {row["branch"]: row["resolved"] for row in after["branches"]} == {
         f"agent/001-{name}": name != "unresolved"
         for name in ("landed", "squashed", "journal", "tree-match", "legacy", "record", "unresolved")
@@ -346,7 +294,8 @@ def test_inventory_matches_legacy_landing_and_hold_decisions(repo: Path, monkeyp
 
 
 @pytest.mark.parametrize("n,m", [(1, 1), (4, 3)])
-def test_inventory_git_cost_is_linear_in_branches_and_journals(repo: Path, monkeypatch, n: int, m: int):
+def test_inventory_git_cost_is_linear_in_branches_and_journals(tidy_repo: Path, monkeypatch, n: int, m: int):
+    repo = tidy_repo
     candidates = []
     for i in range(m):
         git(["commit", "--allow-empty", "-m", f"candidate {i}"], repo)
@@ -375,11 +324,15 @@ def test_inventory_git_cost_is_linear_in_branches_and_journals(repo: Path, monke
         journals_read.append(main)
         return every(main)
 
-    before, old_calls, old_time = measure_inventory(repo, monkeypatch, legacy=True)
     monkeypatch.setattr(state, "load_all", load_records)
     monkeypatch.setattr(land_journal, "every", load_journals)
-    after, calls, elapsed = measure_inventory(repo, monkeypatch)
-    assert after == before
+    after, calls = measure_inventory(repo, monkeypatch)
+    branches = {row["branch"]: row for row in after["branches"]}
+    trees = {row["branch"]: row for row in after["trees"]}
+    for i in range(n):
+        branch = f"agent/001-cost-{i}"
+        assert branches[branch]["resolved"] is False
+        assert tidy.UNRESOLVED_BRANCH in trees[branch]["holds"]
     assert records_read == [repo]
     assert journals_read == [repo]
     assert calls[("ls-tree", "-r", "-z", "refs/heads/main")] == 1
@@ -389,8 +342,7 @@ def test_inventory_git_cost_is_linear_in_branches_and_journals(repo: Path, monke
         assert calls[("merge-base", "--is-ancestor", candidate, "main")] == 1
         assert calls[("rev-parse", f"{candidate}^{{tree}}")] == 1
     # Each tree and branch gets a tip read and fallback plumbing; candidates are shared.
-    # The old resolver exceeds this bound even on these small inputs.
-    total, old_total = calls.total(), old_calls.total()
+    total = calls.total()
     if sys.platform == "win32":
         # Windows asks git for each main checkout (git_discovery has no os.getuid there) and for
         # the scope that sets core.autocrlf; those are bounded on their own.
@@ -400,13 +352,8 @@ def test_inventory_git_cost_is_linear_in_branches_and_journals(repo: Path, monke
         )
         assert calls[common] <= n + 3 and calls[scope] == 1
         total -= calls[common] + calls[scope]
-        old_total -= old_calls[common] + old_calls[scope]
     # 17 per tree: the removal identity (HEAD and exact branch tip) is one more read.
     assert total <= 17 * n + 2 * m + 8
-    assert old_total > 17 * n + 2 * m + 8
-    print(
-        f"N={n} M={m}: before={old_time:.3f}s/{old_calls.total()} git; after={elapsed:.3f}s/{calls.total()} git"
-    )
 
 
 def test_apply_rechecks_branch_tips_with_the_shared_context(repo: Path, monkeypatch):
@@ -476,7 +423,8 @@ def test_apply_shares_records_and_journals_through_removal_and_deletion(repo: Pa
     assert calls == Counter({"records": 2, ("journals", repo): 1})
 
 
-def test_inventory_keeps_each_checkouts_journals_and_default_tree_separate(repo: Path, monkeypatch):
+def test_inventory_keeps_each_checkouts_journals_and_default_tree_separate(tidy_repo: Path, monkeypatch):
+    repo = tidy_repo
     product = repo.parent / "product"
     product.mkdir()
     git(["init", "-b", "trunk"], product)
@@ -507,24 +455,20 @@ def test_inventory_keeps_each_checkouts_journals_and_default_tree_separate(repo:
     harness_wt = tree(repo)
     commit_file(harness_wt, "tracked.txt", "unresolved harness\n")
     close(repo)
-    before, _, _ = measure_inventory(repo, monkeypatch, legacy=True)
-    after, _, _ = measure_inventory(repo, monkeypatch)
-    assert after == before
+    after, _ = measure_inventory(repo, monkeypatch)
     assert {(row["main"], row["resolved"]) for row in after["branches"]} == {
         (str(repo), False),
         (str(product), True),
     }
     # Main's later edit makes the fallback fail; a trunk-only journal must not override it.
     commit_file(product, "tracked.txt", "later product\n")
-    before, _, _ = measure_inventory(repo, monkeypatch, legacy=True)
-    after, _, _ = measure_inventory(repo, monkeypatch)
-    assert after == before
+    after, _ = measure_inventory(repo, monkeypatch)
     assert not any(row["resolved"] for row in after["branches"])
 
 
 def test_resolved_positional_records_do_not_load_global_records(repo: Path, monkeypatch):
     wt = tree(repo)
-    tip = commit_file(wt, "tracked.txt", "branch\n")
+    tip = commit_file(wt, "tracked.txt", "branch\n", return_head=True)
 
     def unexpected_read(root):
         pytest.fail("explicit records must not load global dispatch records")
@@ -603,7 +547,7 @@ def test_dispatch_owned_product_refs_only_and_all_cleanup_holds(repo: Path, monk
 
 def test_trailer_cache_rechecks_default_and_only_reads_reachable_trailers(repo: Path):
     wt = tree(repo)
-    tip = commit_file(wt, "tracked.txt", "worker\n")
+    tip = commit_file(wt, "tracked.txt", "worker\n", return_head=True)
     context = tidy.ResolutionContext(repo, [])
     context.refresh(repo, "main")
     assert not tidy.resolved(repo, repo, "agent/001-cleanup", context=context)

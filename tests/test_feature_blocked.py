@@ -14,8 +14,6 @@ from agent_cli.core import AgentError
 from agent_cli.doctor import checks_state
 from agent_cli.hooks import session as session_hook
 
-pytestmark = pytest.mark.usefixtures("notes_remote")
-
 
 def _dispatch(root: Path, ident: str, **fields: object) -> None:
     base = root / ".agent" / "dispatches"
@@ -25,7 +23,7 @@ def _dispatch(root: Path, ident: str, **fields: object) -> None:
 
 
 @pytest.fixture
-def feature(tmp_root: Path, run) -> features.Feature:
+def feature(tmp_root: Path, run, notes_remote: Path) -> features.Feature:
     run(["feature", "new", "alpha-work", "--title", "Alpha work"])
     return features.resolve(tmp_root, "1")
 
@@ -177,7 +175,7 @@ def test_a_tick_on_a_blocked_feature_is_logged_and_flagged(tmp_root: Path, run, 
     assert len(work) == 1 and work[0].startswith("task #1 ticked ")
 
 
-def test_a_block_set_before_the_log_existed_counts_only_running_work(tmp_root: Path, run):
+def test_a_block_set_before_the_log_existed_counts_only_running_work(tmp_root: Path, run, notes_remote: Path):
     run(["feature", "new", "beta", "--title", "Beta", "--status", "blocked"])
     f = features.resolve(tmp_root, "1")
     assert blocked.since(f) is None
@@ -252,21 +250,52 @@ def test_status_json_carries_the_flag_for_the_dashboard(tmp_root: Path, run, fea
         {"resume_when": "first\rsecond"},
     ],
 )
-def test_invalid_block_refuses_before_any_write(tmp_root, feature, initial, invalid):
+def test_invalid_block_refuses_before_any_write(tmp_root: Path, initial: str, invalid: dict[str, str | None]):
+    feature_dir = tmp_root / "features" / "001-alpha-work"
+    feature_dir.mkdir(parents=True)
+    feature = features.Feature(
+        id=1,
+        slug="alpha-work",
+        dir=feature_dir,
+        meta={
+            "id": 1,
+            "slug": "alpha-work",
+            "title": "Alpha work",
+            "status": initial,
+            "tags": ["feature"],
+            "tickets": [],
+            "repos": [],
+            "adrs": [],
+            "decisions": [],
+            "closed": None,
+        },
+        body="## Tasks\n",
+    )
+    feature.save()
+    feature.log_path.write_text("# Log\n", encoding="utf-8")
     valid = {"reason": "Waiting", "waits_on": "owner", "resume_when": "Approved"}
     if initial == "blocked":
+        from datetime import datetime
+
+        log.append(
+            feature,
+            "blocker",
+            "status active → blocked: Waiting\nnext: owner\nresume: Approved",
+            when=datetime.fromisoformat("2026-10-20T10:00:00+00:00"),
+        )
+    before = {p.name: p.read_bytes() for p in feature.dir.iterdir() if p.is_file()}
+    meta = dict(feature.meta)
+    candidate: dict[str, str | None] = valid | invalid
+    with pytest.raises(AgentError):
         features.set_fields(
             tmp_root,
             feature,
             status="blocked",
-            reason=valid["reason"],
-            waits_on=valid["waits_on"],
-            resume_when=valid["resume_when"],
+            title="Must not change",
+            reason=candidate["reason"],
+            waits_on=candidate["waits_on"],
+            resume_when=candidate["resume_when"],
         )
-    before = {p.name: p.read_bytes() for p in feature.dir.iterdir() if p.is_file()}
-    meta = dict(feature.meta)
-    with pytest.raises(AgentError):
-        features.set_fields(tmp_root, feature, status="blocked", title="Must not change", **(valid | invalid))
     assert feature.meta == meta
     assert {p.name: p.read_bytes() for p in feature.dir.iterdir() if p.is_file()} == before
 
