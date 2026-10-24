@@ -45,8 +45,15 @@ class Launcher:
         return {"id": dispatch_id, "state": "queued"}
 
     def write(
-        self, dispatch_id: str, *, state: str, prompt: str | None = None, summary: str | None = None
+        self,
+        dispatch_id: str,
+        *,
+        state: str,
+        prompt: str | None = None,
+        summary: str | None = None,
+        verdict: Any = "from summary",
     ) -> None:
+        """Old test summaries supply the typed field by default; None leaves it absent."""
         path = dispatches_dir(self.root) / f"{dispatch_id}.json"
         d: dict[str, Any] = (
             json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"id": dispatch_id}
@@ -55,6 +62,11 @@ class Launcher:
             d["thread"] = [{"from": "manager", "text": prompt}]
         d["state"] = state
         d["result"] = {"status": state, "summary": summary} if summary is not None else None
+        if verdict == "from summary":
+            first = (summary or "").strip().split("\n")[0]
+            verdict = {plan_review.AGREE: "agree", plan_review.REVISE: "revise"}.get(first)
+        if d["result"] is not None and verdict is not None:
+            d["result"]["verdict"] = verdict
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(d))
 
@@ -155,8 +167,8 @@ Blocking rules:
 would. A failure needing tampering, stacked faults, or input no one produces is optional unless you \
 show it is likely.
 
-Reply: the first line of your returned summary is exactly `VERDICT: agree` or `VERDICT: revise`. \
-Revise only for blocking findings. List each blocking finding under `Blocking:`, and label every \
+Reply: set the return's `verdict` field to `agree` or `revise`; the summary's wording is not read as \
+one. Revise only for blocking findings. List each blocking finding under `Blocking:`, and label every \
 other point `Optional:`. Each finding states its path and the read or probe behind it. Put the \
 whole review in your returned summary.
 
@@ -598,13 +610,56 @@ def test_the_two_verdicts_combine(
     seen = plan_review.verdict(tmp_root, rec)
     assert (seen.state, seen.dispatch_id) == (state, named)
     if state == "none":
-        assert seen.detail == "reviewer 001-mac-02 (claude sonnet): it ended done without a verdict line"
+        assert seen.detail == "reviewer 001-mac-02 (claude sonnet): it ended done without a typed verdict"
+
+
+@pytest.mark.parametrize("typed", [None, "Agree", "VERDICT: agree", ["agree"], {"verdict": "agree"}, 1])
+def test_current_round_rejects_missing_or_malformed_typed_verdict(
+    tmp_root: Path, launch: Launcher, typed: Any
+):
+    plan = _plan(tmp_root)
+    rec = _review(tmp_root, plan)
+    launch.write("001-mac-01", state="done", summary="VERDICT: agree", verdict=typed)
+    launch.write("001-mac-02", state="done", summary="No blocking findings.", verdict="agree")
+    assert plan_review.verdict(tmp_root, rec).state == "none"
+    rec = _review(tmp_root, plan)
+    assert rec["phase"] == "reviewing" and rec["reviewers"][0]["relaunch_of"] == "001-mac-01"
+    assert not plan_review.complete(tmp_root, rec) and _denied(_gate(tmp_root, plan))
+
+
+@pytest.mark.parametrize("typed", ["agree", "revise"])
+def test_typed_verdict_controls_round_despite_summary_wording(tmp_root: Path, launch: Launcher, typed: str):
+    plan = _plan(tmp_root)
+    rec = _review(tmp_root, plan)
+    launch.write(
+        "001-mac-01", state="done", summary="Read every step.\nBlocking: Step 1 has no test.", verdict=typed
+    )
+    launch.write("001-mac-02", state="done", summary="VERDICT: revise", verdict="agree")
+    assert plan_review.verdict(tmp_root, rec).state == typed
+    rec = _review(tmp_root, plan)
+    assert rec["phase"] == "verifying" and rec["findings"] == ["F1"]
+    assert len(launch.calls) == 3 and _denied(_gate(tmp_root, plan))
+
+
+def test_completed_round_without_typed_verdict_remains_inspectable(tmp_root: Path, launch: Launcher):
+    plan = _plan(tmp_root)
+    rec = _review(tmp_root, plan)
+    for slot in rec["reviewers"]:
+        launch.write(slot["dispatch_id"], state="done", summary="VERDICT: agree", verdict=None)
+    rec.update(phase="complete", blocking=[])
+    path = plan_review.round_path(tmp_root, rec["sha256"], rec["round"])
+    path.write_text(json.dumps(rec))
+    before = path.read_bytes()
+    [saved] = plan_review.records(tmp_root, rec["sha256"])
+    assert plan_review.complete(tmp_root, saved) and plan_review.clean(tmp_root, saved)
+    assert plan_review.latest_complete(tmp_root, [saved]) == saved
+    assert _gate(tmp_root, plan) == {} and path.read_bytes() == before and len(launch.calls) == 2
 
 
 def test_a_one_reviewer_record_from_before_still_reads(tmp_root: Path, launch: Launcher):
     plan = _plan(tmp_root)
     sha = plan_review.digest(PLAN.encode())
-    launch.write("001-mac-07", state="done", prompt=f"review {sha}", summary="VERDICT: agree")
+    launch.write("001-mac-07", state="done", prompt=f"review {sha}", summary="VERDICT: agree", verdict=None)
     old = {"sha256": sha, "plan_path": str(plan.resolve()), "dispatch_id": "001-mac-07", "provider": "codex"}
     plan_review.reviews_dir(tmp_root).mkdir(parents=True, exist_ok=True)
     (plan_review.reviews_dir(tmp_root) / f"{sha}.json").write_text(json.dumps(old), encoding="utf-8")
@@ -614,7 +669,7 @@ def test_a_one_reviewer_record_from_before_still_reads(tmp_root: Path, launch: L
         and plan_review.rounds_used(tmp_root, str(plan.resolve())) == 1
     )
     assert _gate(tmp_root, plan) == {}
-    launch.write("001-mac-07", state="done", summary="VERDICT: revise\nBlocking: x")
+    launch.write("001-mac-07", state="done", summary="VERDICT: revise\nBlocking: x", verdict=None)
     assert "001-mac-07 asked for revision" in _denied(_gate(tmp_root, plan))
     assert launch.calls == []
     # A call on the same bytes starts round 2 beside it; the legacy record was round 1.
@@ -635,7 +690,7 @@ def test_a_legacy_agreement_opens_until_a_newer_round_completes_with_a_blocking_
 ):
     plan = _plan(tmp_root)
     sha = plan_review.digest(PLAN.encode())
-    launch.write("001-mac-07", state="done", prompt=f"review {sha}", summary="VERDICT: agree")
+    launch.write("001-mac-07", state="done", prompt=f"review {sha}", summary="VERDICT: agree", verdict=None)
     old = {"sha256": sha, "plan_path": str(plan.resolve()), "dispatch_id": "001-mac-07"}
     plan_review.reviews_dir(tmp_root).mkdir(parents=True, exist_ok=True)
     (plan_review.reviews_dir(tmp_root) / f"{sha}.json").write_text(json.dumps(old), encoding="utf-8")
@@ -766,7 +821,7 @@ def test_a_reviewer_without_a_verdict_is_relaunched_once_then_the_round_stays_in
     _review(tmp_root, plan)
     _finish(launch, "Looks fine.\nVERDICT: agree")
     op = ops.dispatch_plan_review(tmp_root, paths=[str(plan)], session_id=SID)
-    assert "relaunched 001-mac-03 once (001-mac-01: it ended done without a verdict line)" in op.text
+    assert "relaunched 001-mac-03 once (001-mac-01: it ended done without a typed verdict)" in op.text
     relaunch = launch.calls[2]
     assert (relaunch["provider"], relaunch["model"]) == ("codex", "gpt-6.1-sol")
     assert relaunch["prompt"] == launch.calls[0]["prompt"]

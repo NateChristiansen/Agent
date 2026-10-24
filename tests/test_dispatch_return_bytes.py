@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from agent_cli import dispatch
+from agent_cli import dispatch, features
 from agent_cli.dispatch import codex_normalize
 from dispatch_helpers import _new_fast, droot, one  # noqa: F401 -- droot is a pytest fixture
 
@@ -80,6 +80,10 @@ def measure(root: Path, fake_claude: Any) -> dict[str, int]:
     d = _new_fast(root)
     assert d["state"] == "done", d.get("error")
     saved = json.loads(dispatch.file(root, d["id"], ".json").read_text(encoding="utf-8"))
+    for verdict in ("agree", "revise"):
+        review = {**ret, "verdict": verdict, "summary": "Read all callers.\n\nOptional: none."}
+        rendered = dispatch.render_handoff(root, {**d, "result": review}, features.resolve(root, "1"))
+        assert json.dumps(review, indent=2, ensure_ascii=False) in rendered
     return {
         "schema_bytes": _size(dispatch.RETURN_SCHEMA),
         "codex_schema_bytes": _size(codex_normalize.codex_output_schema(dispatch.RETURN_SCHEMA)),

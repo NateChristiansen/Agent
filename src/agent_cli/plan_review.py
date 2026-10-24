@@ -40,6 +40,9 @@ REVIEWS_DIR = agent_path(Path(), "plan-reviews")
 ROUND_CAP = 3
 AGREE = "VERDICT: agree"
 REVISE = "VERDICT: revise"
+VERDICT_FIELD = (
+    "set the return's `verdict` field to `agree` or `revise`; the summary's wording is not read as one."
+)
 MARKER_LINES = 15
 #: `review: small — <reason>` or `review: none: <reason>` near the top: the plan opts out, and
 #: says why. A bare `review: small` with no reason does not count.
@@ -194,7 +197,7 @@ def rounds_used(root: Path, plan_path: str) -> int:
 class Verdict:
     """Where a review stands: `agree`, `revise`, `running`, or `none` (ended without a verdict,
     or its dispatch is missing). `dispatch_id` names the reviewers the state comes from; `detail`
-    is the dispatch state or the summary's first line."""
+    is the verdict as read, or why there is none."""
 
     state: str
     dispatch_id: str
@@ -216,7 +219,7 @@ def verdict(root: Path, rec: dict[str, Any]) -> Verdict:
     ids = reviewer_ids(rec)
     if not ids:
         return Verdict("none", "", "its record names no reviewer")
-    seen = [reviewer_verdict(root, dispatch_id, sha) for dispatch_id in ids]
+    seen = [reviewer_verdict(root, dispatch_id, sha, historical=not is_round(rec)) for dispatch_id in ids]
     if len(seen) == 1:
         return seen[0]
     for state in ("running", "revise"):
@@ -237,9 +240,9 @@ def verdict(root: Path, rec: dict[str, Any]) -> Verdict:
     )
 
 
-def reviewer_verdict(root: Path, dispatch_id: str, sha: str) -> Verdict:
-    """Read one reviewer's dispatch. A dispatch whose work order does not carry the record's sha
-    is not that review, whatever the record says."""
+def reviewer_verdict(root: Path, dispatch_id: str, sha: str, *, historical: bool = False) -> Verdict:
+    """Read the typed verdict, or a legacy summary line for a historical record. A dispatch whose
+    work order does not carry the record's sha is not that review, whatever the record says."""
     from .dispatch.state import load
 
     try:
@@ -252,13 +255,15 @@ def reviewer_verdict(root: Path, dispatch_id: str, sha: str) -> Verdict:
     state = str(d.get("state") or "")
     if state in RUNNING_STATES:
         return Verdict("running", dispatch_id, state)
-    summary = str((as_dict_or_none(d.get("result")) or {}).get("summary") or "")
+    result = as_dict_or_none(d.get("result")) or {}
+    typed = result.get("verdict")
+    if state == "done" and typed in ("agree", "revise"):
+        return Verdict(str(typed), dispatch_id, str(typed))
+    summary = str(result.get("summary") or "")
     first = summary.strip().splitlines()[0].strip() if summary.strip() else ""
-    if state == "done" and first == AGREE:
-        return Verdict("agree", dispatch_id, first)
-    if state == "done" and first == REVISE:
-        return Verdict("revise", dispatch_id, first)
-    return Verdict("none", dispatch_id, f"it ended {state or 'unknown'} without a verdict line")
+    if historical and state == "done" and first in (AGREE, REVISE):
+        return Verdict("agree" if first == AGREE else "revise", dispatch_id, first)
+    return Verdict("none", dispatch_id, f"it ended {state or 'unknown'} without a typed verdict")
 
 
 def launch_warning(root: Path, *, feature: int | None, row: str | None) -> str:

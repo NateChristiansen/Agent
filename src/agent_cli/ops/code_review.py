@@ -45,10 +45,9 @@ def work_order(base: str, head: str, acceptance: str) -> str:
         "Blocking rules:\n"
         f"{plan_review.blocking_rules(BAR, ACCEPTANCE)}\n\n"
         "Run probes where they settle a finding.\n\n"
-        f"Return: the first line of your summary is exactly `{plan_review.AGREE}` or "
-        f"`{plan_review.REVISE}`. Revise only for blocking findings. List each blocking finding under "
-        "`Blocking:`, and label every other point `Optional:`. Each finding states its file and line and "
-        "the read or probe behind it. Put the whole review in your returned summary.\n\n"
+        f"Return: {plan_review.VERDICT_FIELD} Revise only for blocking findings. List each blocking "
+        "finding under `Blocking:`, and label every other point `Optional:`. Each finding states its file "
+        "and line and the read or probe behind it. Put the whole review in your returned summary.\n\n"
         f"{_acceptance_block(acceptance)}"
     )
 
