@@ -1461,7 +1461,7 @@ def description_problems(descriptions: dict[str, str]) -> list[str]:
 
 
 def hook_config_problems(path: Path) -> list[str]:
-    """Every `agent ...` a client's hook config runs (`agent hook <name>`, `agent status line`)."""
+    """Every `agent hook <name>` command a client's hook config runs."""
     commands: list[str] = []
 
     def walk(node: Any) -> None:

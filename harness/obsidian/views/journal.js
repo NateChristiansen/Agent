@@ -6,8 +6,7 @@
 // table the live views use: percentage widths, wrapping cells, no horizontal scroll. Index.md reuses this view over a longer date window.
 //
 // Reads frontmatter only, written by `bin/agent journal` (`src/agent_cli/journal/block.py`):
-// `spend_usd` dispatched workers, `manager_usd` the owner's own sessions as Claude Code priced
-// them, `dispatches`, `session_tokens`. Dataview re-runs the block when a note changes, so it
+// `spend_usd` dispatched workers, `manager_usd` estimates for the owner's own sessions, `dispatches`, `session_tokens`. Dataview re-runs the block when a note changes, so it
 // needs no timer.
 
 const days = (input && input.days) || 7;

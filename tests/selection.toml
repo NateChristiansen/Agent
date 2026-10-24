@@ -232,11 +232,11 @@ tests = ["tests/test_ending_matrix.py", "tests/test_attention_matrix.py", "tests
 name = "dispatch"
 paths = [
   "src/agent_cli/dispatch/*.py", "src/agent_cli/ops/dispatch*.py", "src/agent_cli/cli/dispatch.py",
-  "src/agent_cli/prices.py", "src/agent_cli/worker_mcp.py", "src/agent_cli/cli/worker_mcp.py",
+  "src/agent_cli/prices.py", "src/agent_cli/codex_rollouts.py", "src/agent_cli/worker_mcp.py", "src/agent_cli/cli/worker_mcp.py",
   "src/agent_cli/maintenance.py", "src/agent_cli/append_log.py",
 ]
 tests = [
-  "tests/test_dispatch_launch*.py", "tests/test_dispatch_mcp_launch.py", "tests/test_dispatch_resume*.py",
+  "tests/test_manager_cost.py", "tests/test_prices.py", "tests/test_dispatch_launch*.py", "tests/test_dispatch_mcp_launch.py", "tests/test_dispatch_resume*.py",
   "tests/test_dispatch_verification_preflight.py", "tests/test_dispatch_spend.py", "tests/test_ops_behaviour.py",
   "tests/test_maintenance.py", "tests/test_policy_corpus.py", "tests/test_dispatch_attempt_limit.py",
   "tests/test_request_dispatch.py", "tests/test_docs_refs.py", "tests/test_prose_rules.py",
@@ -470,7 +470,7 @@ tests = [
   "tests/test_hook_fixes.py", "tests/test_dispatch_runtime_records.py",
   "tests/test_ops_malformed_records.py", "tests/test_journal_vault_malformed_records.py",
   "tests/test_journal_tokens.py", "tests/test_telemetry_health.py", "tests/test_managers.py", "tests/test_live.py",
-  "tests/test_peer_wake_policy.py", "tests/test_status_line.py",
+  "tests/test_peer_wake_policy.py", "tests/test_manager_cost.py",
   "tests/test_config_malformed_records.py",
   "tests/test_doctor_malformed_records.py", "tests/test_mcp_malformed_records.py",
   "tests/test_worker_mcp.py", "tests/test_repos.py", "tests/test_verification_config.py",

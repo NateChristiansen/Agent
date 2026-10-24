@@ -109,7 +109,7 @@ from .notes import notes_init, notes_link, notes_root, notes_status
 from .repos import repos_list, repos_status, repos_sync
 from .scratch import scratch_path
 from .session import session_get, session_list, session_prune, session_set
-from .status import status_check, status_line, status_render
+from .status import status_check, status_render
 from .worker_mcp import worker_mcp_exec, worker_mcp_list
 from .worktree import worktree_link, worktree_list, worktree_new, worktree_remove
 
@@ -189,7 +189,6 @@ __all__ = [
     "session_set",
     # status
     "status_check",
-    "status_line",
     "status_render",
     # worker_mcp
     "worker_mcp_exec",

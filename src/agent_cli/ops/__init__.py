@@ -124,7 +124,6 @@ from .status import (
     obsidian_search,
     obsidian_setup,
     status_check,
-    status_line,
     status_render,
 )
 from .worktree import (
@@ -175,7 +174,6 @@ __all__ = [
     "obsidian_search",
     "obsidian_setup",
     "status_check",
-    "status_line",
     "status_render",
     # repos
     "PULLED_KEY",

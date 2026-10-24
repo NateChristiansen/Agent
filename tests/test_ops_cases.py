@@ -203,7 +203,6 @@ CASES = [
         True,
     ),
     ("scratch_path", {}, ["scratch", "path"], False),
-    ("status_line", {}, ["status", "line"], False),
     (
         "journal_write",
         {"date": "2026-09-03", "file": "{BLOCK}"},
@@ -280,7 +279,7 @@ def _seed(run, root: Path) -> None:
     run([*r, "feature", "use", "1", "--session-id", "s1"])
     run([*r, "adr", "new", "a", "--title", "A", "--feature", "1"])
     run([*r, "log", "1", "--kind", "note", "first entry"])
-    # one lease, so `lease list` and `status line` have something to report
+    # One lease for `lease list` to report.
     run([*r, "lease", "take", "repo:beta", "--session-id", "s1"])
     run([*r, "status", "render"])
 

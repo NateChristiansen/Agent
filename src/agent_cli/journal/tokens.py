@@ -20,8 +20,7 @@ def short_model(model: str) -> str:
 
 
 def compact(count: int) -> str:
-    """`1_200_000` reads as `1.2M`. Also the status line's token figure for a running worker,
-    which is why this is not private."""
+    """`1_200_000` reads as `1.2M` in usage summaries."""
     if count >= 1_000_000_000:
         return f"{count / 1_000_000_000:.1f}B"
     if count >= 1_000_000:

@@ -148,8 +148,7 @@ def build_options(
         # The address a human or another session sends to. A worker binds an inbox socket and
         # reads peer messages between tool calls, so `@<dispatch-id>` from the owner's own
         # terminal reaches it directly instead of being relayed through the manager. The dispatch
-        # id is the name because it is what they already see in every
-        # status line.
+        # id is the name because it is what they already see in the Workers view.
         "extra_args": {"name": d["id"], **extra_args},
     }
     # Bound tool loops independently of budget and wall time. Store the cap on the dispatch so

@@ -72,21 +72,3 @@ def test_shim_lease_list(tmp_path: Path):
     for lease in leases:
         # the module's own list: `resting` passed this test by luck for five commits
         assert lease["status"] in LEASE_STATUSES
-
-
-def test_shim_status_line(tmp_root: Path):
-    """`status line` through the real shim.
-
-    Empty stdin (piped, so not a TTY) on an isolated `--root` with nothing recorded gives
-    empty output and exit 0."""
-    env = {k: v for k, v in os.environ.items() if k != "AGENT_ROOT"}
-    proc = subprocess.run(
-        [str(SHIM), "--root", str(tmp_root), "status", "line"],
-        cwd=tmp_root,
-        input="",
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == ""

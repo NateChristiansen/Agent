@@ -5,11 +5,6 @@
   "outputStyle": "caveman-lite",
   "plansDirectory": "./.agent/scratch/plans",
   "enabledMcpjsonServers": ["agent"],
-  "statusLine": {
-    "type": "command",
-    "command": "node -e \"require(require('path').join(process.env.CLAUDE_PROJECT_DIR||require('child_process').execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim(),'bin','agent-hook.cjs'))\" agent status line",
-    "refreshInterval": 15
-  },
   "hooks": {
     "SessionStart": [
       {

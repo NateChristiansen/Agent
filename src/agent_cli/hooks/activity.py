@@ -154,6 +154,18 @@ def activity(root: Path, payload: dict[str, Any]) -> str:
     if not session_id:
         return ""
     record = sessions.get(root, session_id) or {}
+    if (
+        payload.get("hook_event_name") == "Stop"
+        and not record.get("dispatch_id")
+        and record.get("provider") != "codex"
+    ):
+        from ..prices import price_claude_session
+
+        transcript = payload.get("transcript_path")
+        amount = (
+            price_claude_session(Path(transcript)) if isinstance(transcript, str) and transcript else None
+        )
+        _record_estimate(root, session_id, record, amount)
     if record.get("dispatch_id"):
         return ""
     # The inbox address a peer wakes this session through. On Windows it is a named pipe with a
@@ -291,18 +303,18 @@ def codex_activity(root: Path, payload: dict[str, Any]) -> str:
     if event in ("SessionStart", "UserPromptSubmit", "Stop"):
         day = core.today().isoformat()
         if event == "Stop":
-            from ..prices import PRICED_AT, price_rollout
+            from ..codex_rollouts import session_rollouts
+            from ..prices import price_rollout
 
             transcript = payload.get("transcript_path")
-            amount = price_rollout(Path(transcript)) if isinstance(transcript, str) and transcript else None
-            if amount is None:
-                sessions.mark_cost_unknown(
-                    root, session_id, day, force=record.get("cost_source") == "price-estimate"
-                )
-            else:
-                sessions.record_cost(
-                    root, session_id, amount, day, source="price-estimate", priced_at=PRICED_AT
-                )
+            amount = None
+            if isinstance(transcript, str) and transcript:
+                try:
+                    paths = session_rollouts(root, Path(transcript), session_id)
+                    amount = price_rollout(Path(transcript), children=paths)
+                except OSError, ValueError, UnicodeError:
+                    pass
+            _record_estimate(root, session_id, record, amount)
         else:
             sessions.mark_cost_unknown(root, session_id, day)
     if event == "PostToolUse" and tool.endswith("request_user_input_async"):
@@ -311,6 +323,19 @@ def codex_activity(root: Path, payload: dict[str, Any]) -> str:
         # owner's next prompt ends it, through `activity` like every other route.
         raise_question(root, session_id, "async")
     return activity(root, payload)
+
+
+def _record_estimate(root: Path, session_id: str, record: dict[str, Any], amount: float | None) -> None:
+    from ..prices import PRICED_AT
+
+    day = core.today().isoformat()
+    if amount is None:
+        if record.get("cost_source") in ("price-estimate", "provider-result"):
+            sessions.mark_cost_unknown(root, session_id, day, force=True)
+        else:
+            sessions.mark_cost_unknown(root, session_id, day)
+    else:
+        sessions.record_cost(root, session_id, amount, day, source="price-estimate", priced_at=PRICED_AT)
 
 
 CLAIM_FIELD = "tab_claim"

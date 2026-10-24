@@ -47,7 +47,7 @@ def meta_for(
     """Build ordered journal properties, preserving owner-added fields. Replace computed values only
     when supplied; otherwise preserve them, defaulting to zero for a new note.
 
-    spend_usd is worker spend; manager_usd is client-priced manager spend from
+    spend_usd is worker spend; manager_usd is estimated manager spend from
     sessions.record_cost. session_tokens covers managers and their subagents. Retain tokens
     alongside dollars because some client records cannot supply a price.
     """

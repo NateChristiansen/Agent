@@ -1,8 +1,8 @@
 """A running worker's token count.
 
 Dollars for a dispatch exist once, in the SDK's result message, so a worker half an hour in
-read `$0.00` on the status line. The reader counts `AssistantMessage.usage` instead and writes
-the total to the record, throttled, for the status line and the Workers view.
+needs a token count while running. The reader counts `AssistantMessage.usage` and writes
+the total to the record, throttled, for the Workers view.
 """
 
 from __future__ import annotations
@@ -48,8 +48,7 @@ def test_the_running_total_reaches_the_record(tmp_root: Path):
 
 
 def test_writes_are_throttled_but_the_count_keeps_climbing(tmp_root: Path):
-    """The status line runs on every assistant message. One record write per message is a cost
-    with no reader: the line redraws every 15s anyway."""
+    """Streamed usage keeps climbing between record writes. Throttling avoids a write per message."""
     _write_dispatch(tmp_root, "001-01")
     state: dict[str, object] = {"tokens": 0, "tokens_written": 0.0}
     usage_mod.count(tmp_root, "001-01", {"input_tokens": 400}, state)

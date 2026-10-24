@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import io
-import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +9,6 @@ import pytest
 from agent_cli import dispatch, ops, sessions
 from agent_cli import peers as peers_mod
 from agent_cli.cli import feature as cli_feature
-from agent_cli.cli import status as cli_status
 from agent_cli.core import AgentError, Output
 from agent_cli.dispatch import reverify as reverify_mod
 from agent_cli.ops import infra, peer_remote, peer_wake, peer_wake_policy
@@ -158,28 +154,3 @@ def test_an_activity_that_is_not_an_object_reads_as_not_ended(tmp_root: Path, mo
     sessions.set_field(tmp_root, SID, "activity", "junk")
     assert [r["session_id"] for r in ops_peers.addressable_peers(tmp_root)] == [SID]
     assert [r["session_id"] for r in ops_peers.quiet_codex(tmp_root)] == [SID]
-
-
-@pytest.mark.parametrize(
-    ("raw", "shown"), [("33", "033"), ("033", "033"), ("abc", "—"), (33.5, "—"), (True, "—")]
-)
-def test_the_status_line_shows_a_feature_id_that_is_not_an_int_as_its_digits_or_a_placeholder(
-    tmp_root: Path, raw: object, shown: str
-):
-    sessions.set_record(tmp_root, SID, feature={"id": raw, "slug": "x"})
-    assert ops.status_line(tmp_root, session_id=SID).text.startswith(f"[{shown} x")
-
-
-def test_a_session_cost_that_is_not_a_number_reads_as_absent(monkeypatch: pytest.MonkeyPatch):
-    seen: dict[str, Any] = {}
-
-    def status_line(root: Path, *, session_id: str | None, cost_usd: float | None) -> ops.Op:
-        seen.update(session_id=session_id, cost_usd=cost_usd)
-        return ops.Op({}, "")
-
-    monkeypatch.setattr(cli_status.ops, "status_line", status_line)
-    monkeypatch.setattr(
-        sys, "stdin", io.StringIO(json.dumps({"session_id": "s", "cost": {"total_cost_usd": "1.5"}}))
-    )
-    cli_status.status_line(Path("."), argparse.Namespace(), Output())
-    assert seen == {"session_id": "s", "cost_usd": None}

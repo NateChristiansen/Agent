@@ -15,7 +15,7 @@ from ..prices import price_claude_usage
 from ..records.narrow import as_dict, as_int, as_list
 
 # how often the running count reaches the record. Every assistant message would be a
-# read-modify-write of the record per message; the status line only redraws every 15s anyway.
+# read-modify-write of the record; the Workers view needs only periodic updates.
 FLUSH_SECONDS = 15.0
 
 

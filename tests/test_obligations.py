@@ -500,31 +500,6 @@ def test_session_start_keeps_working_through_compact_and_resume(
         assert (desired_label(tmp_root, MGR, record) or ("", "", ""))[2].startswith("⚙️")
 
 
-def test_the_status_line_shows_nothing_for_a_consumed_read_only_review(tmp_root: Path):
-    """F3: the status line used `is_live` and still said "1 waiting on you"."""
-    manager(tmp_root, MGR)
-    worker(tmp_root, writes=[], chat_pending=True)
-    assert ops.status_line(tmp_root).data["waiting"][0]["id"] == DID  # unread: still owed
-    ops.dispatch_consume(tmp_root, dispatch_id=DID, session_id=MGR)
-    assert live.obligations(tmp_root)["manager_action"] == {}
-    for session in (None, MGR, "other"):
-        line = ops.status_line(tmp_root, session_id=session)
-        assert line.data["waiting"] == [] and "waiting on you" not in line.text
-
-
-def test_the_status_line_shows_a_pending_owner_question_with_no_worker(tmp_root: Path, run):
-    """F3: a question with no worker had no waiting indication. Also through Claude's own
-    statusLine command, which reads the session id from stdin."""
-    manager(tmp_root, MGR)
-    sessions.set_field(tmp_root, MGR, "owner_question_pending", True)
-    sessions.set_field(tmp_root, MGR, "owner_question", "Choose A or B.")
-    line = ops.status_line(tmp_root, session_id=MGR)
-    assert line.data["asks"] == [{"session_id": MGR, "name": f"{MGR}-name", "reason": "question"}]
-    assert f"✋ {MGR}-name question waiting on you" in line.text
-    out = run(["status", "line"], stdin=json.dumps({"session_id": MGR, "cwd": str(tmp_root)}))
-    assert out.code == 0 and "question waiting on you" in out.out
-
-
 # ----------------------------------------------------------------
 def _next_attempt(root: Path) -> None:
     """A second attempt finishes and its terminal notice lands: a new attempt and generation."""

@@ -95,7 +95,7 @@ def _bases_and_dashboard(tmp_root: Path, run):
         "file.name",
         "note.spend_usd",
         "note.spend_complete",
-        # what the owner's own sessions cost, priced by Claude Code; spend_usd is workers
+        # what the owner's own sessions cost, estimated on Stop; spend_usd is workers
         "note.manager_usd",
         "note.manager_complete",
         "note.dispatches",

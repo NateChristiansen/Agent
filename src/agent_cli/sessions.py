@@ -337,9 +337,7 @@ def record_cost(
     source: str = "provider-result",
     priced_at: str | None = None,
 ) -> dict[str, Any] | None:
-    """What this manager session has cost so far, from Claude Code's statusLine payload.
-    Claude Code hands over `cost.total_cost_usd`; Codex passes an estimate computed from its
-    rollout by `prices`. This function only records the given total and its provenance.
+    """Record a manager's running total and provenance, estimated from its session files on Stop.
 
     Two fields. `cost_usd` is that running total. `cost_by_day` is `{YYYY-MM-DD: usd}`, built
     from the increase since the last call, so a session working past midnight splits across the
@@ -349,9 +347,12 @@ def record_cost(
     running before this was ever called: the day it is first seen takes what earlier days
     spent. That is the transition, not the steady state.
 
-    Returns None when the total has not moved by a cent, and writes nothing: the status line
-    runs on every assistant message and on a 15s timer, and a record rewrite per tick is a
-    write Claude Code is waiting on."""
+    A forced unknown clears that session's earlier daily amounts. A lower estimate replacing
+    a higher provider-result total keeps the old days. A forked session's first Stop books its
+    copied history again. These are accepted effects of recording cumulative session totals.
+
+    Returns None and writes nothing when the total and provenance have not moved by a cent.
+    """
     previous = 0.0
     record = get(root, session_id)
     if record:

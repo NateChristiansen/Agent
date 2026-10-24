@@ -123,7 +123,6 @@ PERSON_ONLY: dict[str | tuple[str, str | None], str] = {
     ("session", "list"): "debugging; peer list covers live sessions",
     ("raw", "redact"): "capture redaction, run by a person",
     ("status", "check"): "CI and doctor call it",
-    ("status", "line"): "Claude Code's status line command",
     ("dispatch", "open"): "opens a worker in a terminal for a person",
     ("dispatch", "run"): "the supervisor's own entry point",
     ("peer-net", "receive"): (

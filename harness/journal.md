@@ -44,9 +44,8 @@ by hand survives every write. All of them are sums over every machine's usage re
 - `spend_usd` and `dispatches`: dispatched worker spend and count, by each dispatch's `finished`
   local day. Worker spend and nothing else, which is why the Base labels it "Workers ($)".
 - `manager_usd`: what the owner's own sessions cost that day, stored on each session record as
-  a per-local-day split. Claude's figure is priced by Claude Code and read off its statusLine
-  payload (`cost.total_cost_usd`) by `bin/agent status line`; a Codex session is priced locally
-  from its rollout at each Stop ([[adrs/0022-price-codex-manager-sessions-in-dollars|ADR-0022]]).
+  a per-local-day split. Both clients price locally at each `Stop`: Claude from its transcript and
+  subagent files, Codex from its root and child rollouts. These are estimates ([[adrs/0022-price-codex-manager-sessions-in-dollars|ADR-0022]]).
   Session records are pruned at 14 days, so an older day keeps the figure it was written with.
 - `spend_complete` and `manager_complete`: `true` when every expected machine's record carries a
   full figure for `spend_usd` or `manager_usd`; `false` means the day's figure is a lower bound.
