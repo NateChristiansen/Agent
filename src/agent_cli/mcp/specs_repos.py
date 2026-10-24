@@ -115,8 +115,8 @@ def peer(
     expect_reply: bool = False,
     reply_timeout: float = 600,
 ) -> Op:
-    """One tool over `ops.peer_send|inbox|list`, shaped like `lease` (a manager with no peer tool reached for SendMessage, #67). Plan pairing is gone: a plan's review is
-    one fresh worker on the other client (`dispatch` action `plan-review`)."""
+    """One tool over `ops.peer_send|inbox|list`, shaped like `lease` (a manager with no peer tool reached for SendMessage, #67). Plan pairing is gone: a review runs
+    as a dispatch (`plan-review`, `code-review`, or a `review`-row worker), never through a peer."""
     if action == "list":
         return ops.peer_list(ctx.root)
     sid = ctx.session_id(session_id, required=True)
@@ -211,7 +211,8 @@ REPO_TOOLS: dict[str, ToolSpec] = {
         "queues to its inbox and wakes it; set expect_reply=True for a request you wait on, with "
         "reply_timeout in seconds (default 600). The wait clears on a message from that peer or "
         "its deadline. Use this, not SendMessage, for any manager. `list` names "
-        "who is reachable; `inbox` reads yours (peek=True keeps them). A plan's cross-client review "
-        "is the `dispatch` tool's `plan-review` action, not a peer. " + SESSION_ARG,
+        "who is reachable; `inbox` reads yours (peek=True keeps them). A review the owner asks of a "
+        "client is a `dispatch`, never a peer: `plan-review` for a plan, `code-review` for a branch "
+        "head, else a `review`-row `new` with that provider. " + SESSION_ARG,
     ),
 }
