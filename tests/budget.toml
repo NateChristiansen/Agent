@@ -15,6 +15,20 @@ to = 142
 reason = "039 result-generation test: two real landings measured 129 processes; owner approved ceiling 142"
 approved_by = "owner"
 
+[[raise]]
+date = 2026-10-23
+from = 8970
+to = 8978
+reason = "023 local prompt-lock repair: one-time suite admission up to 8978 tests and 66000 spawns; permanent caps unchanged"
+approved_by = "owner"
+
+[[raise]]
+date = 2026-10-23
+from = 62490
+to = 66000
+reason = "023 local prompt-lock repair: one-time suite admission up to 8978 tests and 66000 spawns; permanent caps unchanged"
+approved_by = "owner"
+
 # Tests allowed more than the per-test ceiling of 100 call-phase spawns (tests/suite_cost.py),
 # each at ceil(measured * 1.1) from pass record 523d7c15.
 [slow]
