@@ -8,6 +8,7 @@ disagree, so change both together.
 
 Effort normally stays omitted, so the model runs at its vendor's default. Owner policy pins
 Codex `review` and `build` to `medium`; recheck it with the owner when changing a row's model.
+Plan and code review rounds pin their own models and effort (Review rounds below).
 Leave the default only with `--effort` and a choice reason that says why (see Effort below). A
 repo that pins its own model (`dispatch.model`) wins over the row, and its `dispatch.effort`
 over the default. Escalation keeps the parent's recorded effort, including omission, unless
@@ -44,6 +45,18 @@ step needs a reason in `choice_reason`:
 Duration is never an effort reason: a long job gets a longer `timeout_minutes`, and higher
 effort makes a run slower. A level the model does not support is refused by its provider when
 the worker starts.
+
+## Review rounds
+
+The `dispatch` actions `plan-review` and `code-review` do not use these defaults. Their round is
+the owner's measured review policy, passed explicitly on every launch: two blind reviewers,
+Codex `gpt-6.1-sol` at `high` and Claude `sonnet` at `high`, then one Codex `gpt-6.1-sol`
+verifier at `high`, all on the `review` row's budget and with no preview. A repo's
+`dispatch.model` pin does not replace them, and the row's `codex: medium` policy and the vendor
+defaults above do not apply. The reviewers are told to return every finding, in full in the
+structured return with no cap, and every finding goes to the verifier. The process is in [[harness/sessions#Plan review]]. A
+`review`-row worker launched with `new` (a claim to check, a measurement) still follows the row
+and the Effort rules.
 
 Calibration rows live in the owner's private `harness/owner/calibration.md` (ADR-0012); `/retro`
 appends them for a finished feature's dispatches and fills in each row's note.

@@ -77,8 +77,9 @@ Read `references/lessons.md` before writing the work order or choosing a rubric 
 4. Choose the row from `harness/dispatch-rubric.md` and say in one line why this job is that
    shape. That line is `choice_reason`. `row` sets the model and budget; effort normally stays
    at the model's vendor default. Owner policy sets Codex `review` and `build` to `medium`.
-   Explicit and inherited parent effort take precedence. Leave the default only with `effort`
-   and a reason from the rubric's Effort section (`high` for reasoning burden such as
+   Explicit and inherited parent effort take precedence. The `plan-review` and `code-review`
+   actions pin their own reviewers and effort (the rubric's Review rounds). Leave the default
+   only with `effort` and a reason from the rubric's Effort section (`high` for reasoning burden such as
    concurrency, protocol or cross-module design work). Duration is never an effort reason: a
    job expected to run long gets `timeout_minutes`, and the preview shows the applied limit and
    its source. On Claude, a repo that pins its own model (`dispatch.model`) wins over the row,
@@ -202,21 +203,34 @@ Manager handoff and restart notes follow [[harness/continuity]] and end with `Fi
 
 ## Before the push
 
-A branch that will become a PR gets one review dispatch before anyone outside sees it: one
-fresh probe reviewer, with no second reviewer. It gets the artifact, the contract and a
-requirement to run executed probes against behaviour, because executed probes find real defects
-that reading misses. No peer-manager review round runs on top of it. Write the
-work order at launch time against the pinned base, never as an earlier draft.
+A branch that will become a PR or land gets a blind code-review round on its head before anyone
+outside sees it: the `dispatch` tool with `action="code-review"` and the build `dispatch_id` (or
+`branch`, `base` and `paths=[<acceptance file>]` for a manager branch). The round is the one in
+[[harness/sessions#Plan review]]: two fresh read-only reviewers, Codex `gpt-6.1-sol` and Claude
+`sonnet`, both at `high`, then one Codex verifier, all pinned to the head sha with the base as
+comparison. Those models and that effort are the owner's measured review policy, passed
+explicitly; the `review` row's defaults do not apply to them. Each reviewer is told to return
+every finding and to run probes, in full in its structured return's summary, which is what the
+round reads; no length guidance caps a review's findings. Neither reviewer sees the other's findings or the ledger, and every
+finding goes to the verifier. No peer-manager review runs on top of it.
 
-The reviewer judges against the acceptance the build work order stated. It lists blocking
-findings (the contract is not met, or a real defect) apart from optional ones, and only blocking
-findings go back to the implementer. A blocking finding needs a path real use takes or plausibly
-would; one needing tampering, stacked faults or input no one produces is optional unless the
-reviewer shows it is likely. Each finding states its path. A threshold the work order did not set, or a wording
-preference, is optional and does not start another round.
+Call `code-review` again on the same branch each time the supervisor reports a return; each call
+moves the round one step (reviewing, verifying, complete). The round judges against the frozen
+acceptance, the build work order, by its blocking rules: a blocking finding needs a path real use
+takes or plausibly would, and a threshold the acceptance did not set is optional. Only verified
+blocking findings go back to the build worker with `dispatch resume`; record each disposition
+with `code-ledger` (`fixed` with the change, or `rejected` with the reason; a rejected one goes to
+the owner), and relay the ledger's disputes. A new commit is a new head and needs a new round. A
+complete round on the same head is reported, never rerun. After three complete rounds of a
+branch, `code-review` launches no more and the owner decides with the ledger shown.
 
-The review dispatch uses the `review` row (sonnet at vendor default, or gpt-6.1-sol on Codex
-at the owner's `medium` row policy, $3-6), same repo, its own branch
+A separate review dispatch, for an artifact that is not a plan or a branch head, or when the
+owner asks for one on top of the round, uses the `review` row (sonnet at vendor default, or
+gpt-6.1-sol on Codex at the owner's `medium` row policy, $3-6) with that `provider`. It gets the
+artifact, the contract and a requirement to run executed probes against behaviour, because
+executed probes find real defects that reading misses. Write the work order at launch time
+against the pinned base, never as an earlier draft. It lists blocking findings apart from optional
+ones, each with its path, and runs in the same repo on its own branch
 cut from the artifact's resolved SHA, passed explicitly as `base`. `target=<artifact branch>`
 also defaults a review's checkout base to that branch's pinned tip. Keep the comparison base
 separate from the checkout SHA: pass it as `compare`, pinned to its commit at launch, and pass
@@ -241,13 +255,21 @@ and line; nothing is fixed on that branch. Findings go to the build worker with
 before pushing. Anything the review misses gets found after the PR is up, where each finding
 costs a public round.
 
-The `push-guard` hook holds this: a `git push` of a branch some dispatch record names, or any
-push from a dispatch's worktree, is denied unless a `review`-row dispatch on that branch
-finished after its last commit, or a `done` review whose `start_sha` equals the pushed head
-(branches with no dispatch record, including the manager's own, are not guarded unless the
-push is from a dispatch's worktree). The override is
-`AGENT_PUSH_UNREVIEWED=1 git push ...`, and it writes a `note` to the feature saying the branch
-went out unreviewed.
+The push gate holds this (ADR-0063): git's `pre-push` hook, with `push-guard` as its early
+warning, refuses a guarded ref unless the latest `code-review` round on exactly the commit it
+publishes is complete with no verified blocking finding. A ref is guarded when a dispatch record
+names its source or destination branch, and every ref pushed from a dispatch's worktree is. The
+override is `AGENT_PUSH_UNREVIEWED=1 git push ...`, and it writes a `note` to the feature saying
+the branch went out unreviewed. `land` refuses a member with no clean round on its tip unless
+it is given `review_override=<the owner's reason>`, which is logged to the feature.
+
+## Review on a named client
+
+When the owner asks for a review by a client ("have Claude review your plan", "get Codex to
+check this branch"), dispatch it; never ask another manager through `peer`. A plan goes to
+`plan-review`, whose round always has a Claude and a Codex reviewer; a branch head goes to
+`code-review`; anything else is a `review`-row `new` with `provider` set to the client named.
+`peer` stays for cross-feature conflicts between managers.
 
 ## Requests
 
