@@ -110,8 +110,10 @@ every dispatch, Claude or Codex.
   in `next_steps`. A partial commit beats a lost one. A budget hit is not a failure; the
   owner resumes you with more if the work deserves it.
 - Put actionable findings in `findings`; an empty list means none.
-- `summary` has no hard cap. Aim for a few hundred characters; the handoff keeps all of it and
-  notifications show the first 400. Do not spend turns shortening it.
+- `summary` has no hard cap; the handoff keeps all of it and notifications show the first 400
+  characters. Outside a review, aim for a few hundred. A reviewer or verifier puts its whole review
+  in `summary`: every finding with its path and evidence, uncapped and unshortened. Do not point
+  only to another message or transcript. Do not spend turns shortening it.
 - Do not list your branch, commits, files or commands in the return: the supervisor reads
   them from git and runs the repo's checks itself. Run the checks the work order names
   anyway; a `done` that fails them comes back `blocked`.

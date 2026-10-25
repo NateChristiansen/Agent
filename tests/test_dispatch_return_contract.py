@@ -81,6 +81,28 @@ def test_findings_are_optional_and_typed():
     assert check_schema(parsed, RETURN_SCHEMA) == []
 
 
+def test_verdict_validates_normalizes_and_preserves_the_whole_review_in_handoff():
+    assert "verdict" not in RETURN_SCHEMA["required"]
+    strict = codex_output_schema(RETURN_SCHEMA)
+    field = strict["properties"]["verdict"]
+    assert field["type"] == ["string", "null"] and field["enum"] == ["agree", "revise", None]
+    nullable: dict[str, Any] = dict(comments=None, conventions=None, findings=None)
+    assert check_schema(_ret(verdict=None, **nullable), strict) == []
+    assert structured_return(json.dumps(_ret(verdict=None))) == _ret()
+    summary = "Read every path.\n\nBlocking:\n- a.py:3 loses the input; probe reproduced it.\n\nChecked: all callers."
+    for verdict in ("agree", "revise"):
+        ret = _ret(summary=summary, verdict=verdict)
+        assert verify_return({"nonce": "n-1"}, ret) == []
+        assert check_schema({**ret, **nullable}, strict) == []
+        assert structured_return(json.dumps(ret)) == ret
+        assert verify_return({"nonce": "other"}, ret)[0].startswith("nonce mismatch")
+        text = "\n".join(handoffs.return_lines(result_of({"result": ret}), None))
+        assert " ".join(summary.split()) in text
+    for invalid in (None, "Agree", "VERDICT: agree", "", ["agree"], {"verdict": "agree"}, 1):
+        assert check_schema(_ret(verdict=invalid), RETURN_SCHEMA)
+    assert "whole review" in RETURN_SCHEMA["properties"]["summary"]["description"]
+
+
 def test_handoff_lists_git_facts_from_the_record_not_the_return():
     d = {
         "result": _ret(),

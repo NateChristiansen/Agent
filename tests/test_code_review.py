@@ -45,9 +45,9 @@ likely.
 
 Run probes where they settle a finding.
 
-Return: the first line of your summary is exactly `VERDICT: agree` or `VERDICT: revise`. Revise only \
-for blocking findings. List each blocking finding under `Blocking:`, and label every other point \
-`Optional:`. Each finding states its file and line and the read or probe behind it. Put the whole \
+Return: set the return's `verdict` field to `agree` or `revise`; the summary's wording is not read as \
+one. Revise only for blocking findings. List each blocking finding under `Blocking:`, and label every \
+other point `Optional:`. Each finding states its file and line and the read or probe behind it. Put the whole \
 review in your returned summary.
 
 """
@@ -152,6 +152,27 @@ def _clean(root: Path, head: str, branch: str = "agent/widget") -> bool:
 
 
 # --- the worker branch ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("typed", [None, "Agree"])
+def test_code_round_requires_typed_verdict(tmp_root: Path, launch: Launcher, clone: Path, typed: Any):
+    _worker(tmp_root, clone)
+    rec = _review(tmp_root)
+    first, second = (r["dispatch_id"] for r in rec["reviewers"])
+    launch.write(first, state="done", summary="VERDICT: agree", verdict=typed)
+    launch.write(second, state="done", summary="Checked the diff.", verdict="agree")
+    rec = _review(tmp_root)
+    assert rec["phase"] == "reviewing" and rec["reviewers"][0]["relaunch_of"] == first
+    assert not _clean(tmp_root, rec["head"], rec["branch"])
+
+
+def test_code_round_reads_typed_verdict_with_prose_summary(tmp_root: Path, launch: Launcher, clone: Path):
+    _worker(tmp_root, clone)
+    rec = _review(tmp_root)
+    for slot in rec["reviewers"]:
+        launch.write(slot["dispatch_id"], state="done", summary="Checked the diff.", verdict="agree")
+    rec = _review(tmp_root)
+    assert rec["phase"] == "complete" and rec["blocking"] == [] and len(launch.calls) == 2
 
 
 def test_a_worker_round_pins_both_reviewers_to_the_head(tmp_root: Path, launch: Launcher, clone: Path):

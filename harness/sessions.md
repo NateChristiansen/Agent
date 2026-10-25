@@ -141,7 +141,8 @@ uncommitted changes.
   - Send one message per decision, with findings batched.
   - Reply only when a message asks for something.
   - Message a peer manager only for a cross-feature conflict, such as overlapping files or a
-    shared contract.
+    shared contract. A review the owner asks of the other client is a dispatch, not a peer
+    message (see Plan review).
   - The `peer` tool enforces the ringing half: a message that is only an acknowledgement
     ("ack", "thanks", "got it") is stored but never wakes its recipient, and a question,
     decision or request wakes it at once. With `peers.defer_nonurgent_s` set in agent.yaml,
@@ -158,28 +159,67 @@ uncommitted changes.
 
 ## Plan review
 
-A plan reaches the owner after one fresh reviewer on the other client agrees to its exact
-bytes. The owner wants Claude and Codex to review each other's plans; small plans are exempt.
+A plan reaches the owner after a complete blind review round on its exact bytes keeps no
+finding as blocking. Small plans are exempt.
+
+A round is two fresh, read-only reviewers on one work order, Codex `gpt-6.1-sol` at `high` and
+Claude `sonnet` at `high`, then one Codex `gpt-6.1-sol` verifier at `high`. That pairing is the
+owner's measured review policy, passed explicitly at launch; it is not the rubric's `review` row
+default, and a repo's `dispatch.model` pin does not replace it. Each reviewer is told to bring
+back every finding, not a sample, in full in its structured return's summary, which is what the
+round reads; no length guidance caps a review's findings. A reviewer sees neither the other's findings nor the manager's
+ledger: earlier findings anchor a reviewer toward agreement. Every finding either reviewer lists
+goes to the verifier, by id and text only. The verifier refutes a finding only with a concrete
+reason, keeps it when unsure, and labels each kept one blocking or optional.
 
 1. Write the plan. A small one (a few steps, nothing hard to reverse) may say
    `review: small — <reason>` in its first lines and skip review; a user with only one client
    says `review: none — <reason>`.
-2. Otherwise launch the `dispatch` tool with `action="plan-review"` and `paths=[<plan file>]`.
-   The harness freezes the plan's bytes, embeds them in a read-only review on the other client,
-   and records the sha. The reviewer answers `VERDICT: agree` or `VERDICT: revise`, with blocking
-   findings separate from optional ones.
-3. On `revise`, weigh each blocking finding: does it reproduce, does real use take that path,
-   and is it worth building around? Fix the real ones. Answer a theoretical one with reasons
-   in the revised plan; the next reviewer judges that answer. Launch again. Any edit needs a
-   new review; a verdict covers only the bytes it read. After three reviews of one plan file
-   the owner decides.
-4. When presenting a reviewed plan, name the agreeing review's dispatch id and its frozen copy,
-   `.agent/plan-reviews/<sha>.md`, so the owner can open the exact bytes that were reviewed.
+2. Otherwise call the `dispatch` tool with `action="plan-review"` and `paths=[<plan file>]`. The
+   harness reads the plan once, freezes the bytes as `.agent/plan-reviews/<sha>.md`, embeds them
+   in the work order, and launches the round's two reviewers (phase `reviewing`).
+3. Call `plan-review` again on the same plan each time the supervisor reports a return. Nothing
+   calls back in; each call moves the round one step. Once both reviewers returned, their
+   `Blocking:` and `Optional:` items go to the plan's ledger and the verifier launches
+   (`verifying`); no finding at all completes the round clean. Once the verifier returned, its
+   table goes to the ledger and the round is `complete`. A reviewer or verifier without a usable
+   return is relaunched once; a second failure leaves the round incomplete for the owner.
+4. A complete round with verified blocking findings keeps the gate shut on those bytes. Weigh
+   each: does it reproduce, does real use take that path, and is it worth building around? Fix
+   the real ones and record `fixed` with the changed section through `plan-ledger`, or record
+   `rejected` with the reason. Then call `plan-review` again: an edited plan gets a new round, and
+   so do unchanged bytes after a complete round. A round covers only the bytes it read.
+5. When presenting a reviewed plan, name the clean round, its reviewer dispatch ids and the
+   frozen copy, `.agent/plan-reviews/<sha>.md`, so the owner can open the exact bytes reviewed,
+   and relay the round's disputes.
 
-Claude's `ExitPlanMode` is held by `plan-gate` until one of those holds. Codex has no approval
-tool and no plan hook: a Codex manager follows the same steps before it asks for approval in chat.
-`dispatch new` adds a warning, never a refusal, when a `build`, `design` or `max` launch's feature
-has no agreed plan review on record.
+The ledger, one per plan file, holds every finding across rounds with its reviewer, round,
+verifier result and the manager's disposition. Never show it to a reviewer. `plan-ledger` reads
+it and lists the disputes the owner should see: a Claude reviewer's finding the verifier refuted
+or called optional, and a later finding that re-raises one the manager rejected (linked with
+`reraise_of`, or the same text).
+
+Claude's `ExitPlanMode` is held by `plan-gate` until the latest complete round on the presented
+sha kept no finding as blocking, or the plan is exempt. After three complete rounds of one plan
+file (each record from before rounds counts as one), the gate stops denying and adds a note with
+the ledger's verified blocking findings and disputes; the owner's own approval prompt decides.
+`plan-review` itself has no cap and keeps launching rounds. Codex has no approval tool and no
+plan hook: a Codex manager follows the same steps before it asks for approval in chat.
+`dispatch new` adds a warning, never a refusal, when a `build`, `design` or `max` launch's
+feature has no clean plan-review round on record.
+
+A branch head gets the same round through `action="code-review"` (a build `dispatch_id`, or
+`branch`, `base` and `paths=[<acceptance file>]`): both reviewers and the verifier are pinned to
+the head sha read at launch, with the base as comparison, and `code-ledger` is the branch's
+ledger. A complete round on the same head is reported, not rerun; a new commit starts a new
+round, and an older head's round never reads as clean for it. After three complete rounds of a
+branch, `code-review` launches no more and the owner decides with the ledger shown. `land` and
+the push gate want a clean round on exactly the head (ADR-0063).
+
+An owner's ask for a review on a named client ("have Claude review your plan", "get Codex to
+look at this branch") is a dispatch, never a `peer` message to another manager: `plan-review`
+for a plan (its round always has a Claude and a Codex reviewer), `code-review` for a branch
+head, or a `review`-row worker launched with that `provider` for anything else.
 On Claude, `plan-mode-allow` lets `peer`, `feature_use`, `session_get` and the
 `plan-review` dispatch action through without a prompt; every other dispatch action and agent
 tool still asks in plan mode.

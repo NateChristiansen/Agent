@@ -9,6 +9,20 @@ spawns_max = 62490
 headroom_pct = 3
 
 [[raise]]
+date = 2026-10-24
+from = 8970
+to = 9021
+reason = "038 final docs and review-return fixes: one-time local admission up to 9021 tests and 68000 spawns; permanent caps unchanged"
+approved_by = "owner"
+
+[[raise]]
+date = 2026-10-24
+from = 62490
+to = 68000
+reason = "038 final docs and review-return fixes: one-time local admission up to 9021 tests and 68000 spawns; permanent caps unchanged"
+approved_by = "owner"
+
+[[raise]]
 date = 2026-10-22
 from = 100
 to = 142

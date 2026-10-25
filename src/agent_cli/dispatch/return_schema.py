@@ -29,9 +29,10 @@ RETURN_SCHEMA: dict[str, Any] = {
         # under it. The handoff keeps it whole. Displays trim it.
         "summary": {
             "type": "string",
-            "description": "One or two sentences on what was done. Aim for under 400 characters; "
-            "a longer summary is kept in full and only trimmed for display, never rejected.",
+            "description": "What was done, led by the point. A review puts the whole review here. Kept in full.",
         },
+        # Codex makes optional fields nullable; its enum must allow that null too.
+        "verdict": {"type": "string", "enum": ["agree", "revise", None]},
         "open_questions": {"type": "array", "items": {"type": "string"}},
         "next_steps": {"type": "array", "items": {"type": "string"}},
         "notes": {"type": "string"},
