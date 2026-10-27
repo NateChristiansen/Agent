@@ -54,6 +54,8 @@ ACTIONS = {
 SELF_RETRYING = ("offline", "busy")
 #: An undelivered peer message is normal retrying until it is this old.
 PAIRING_GRACE_S = 10 * 60
+#: A last successful notes sync older than this no longer reads as ok (owner, 2026-10-27).
+NOTES_STALE_S = 6 * 3600
 OPEN_SENDS = ("pending", "sending", "unconfirmed")
 STATE_ORDER = {"action": 0, "unknown": 1, "ok": 2}
 SOURCES = {"events": "event log", "plugin_metrics": "tab metrics", "pane_metrics": "pane metrics"}
@@ -225,7 +227,24 @@ def _notes(fact: dict[str, Any], machine: str, moment: datetime) -> dict[str, An
             f"{status}; no successful sync recorded",
             action="Ask the manager to check notes sync with agent doctor.",
         )
-    return _row("notes_sync", machine, "ok", str(fact.get("attempt_status") or "current"), ages=last_sync)
+    synced = parse_ts(fact.get("last_ok_at"))
+    stale = _row(
+        "notes_sync",
+        machine,
+        "unknown",
+        f"no successful sync in the last {NOTES_STALE_S // 3600}h",
+        ages=last_sync,
+        action="Nothing, if no manager ran here. Otherwise ask the manager to check notes sync "
+        "with agent doctor.",
+    )
+    if synced and (moment - synced).total_seconds() > NOTES_STALE_S:
+        return stale
+    row = _row("notes_sync", machine, "ok", str(fact.get("attempt_status") or "current"), ages=last_sync)
+    if synced:
+        # an open pane turns the row stale on the clock, without a new snapshot
+        row["stale_at"] = core.iso(synced + timedelta(seconds=NOTES_STALE_S))
+        row["stale"] = {key: stale[key] for key in ("state", "headline", "action")}
+    return row
 
 
 def _pairing(fact: dict[str, Any], machine: str, observed: datetime | None) -> dict[str, Any] | None:
@@ -382,6 +401,10 @@ def machine_rows(record: dict[str, Any], moment: datetime, *, local: bool = Fals
             }
         else:
             row["expired"] = None
+        stale_at, stale = parse_ts(row.pop("stale_at", None)), row.pop("stale", None)
+        deadline = parse_ts(row["valid_until"])
+        if stale_at and (deadline is None or stale_at < deadline):
+            row["valid_until"], row["expired"] = core.iso(stale_at), stale
     if local and observed:
         return rows
     problems = sum(row["state"] != "ok" for row in rows)
@@ -399,7 +422,8 @@ def machine_rows(record: dict[str, Any], moment: datetime, *, local: bool = Fals
         action=f"Nothing, if {machine} is off. Otherwise open a manager there so it reports.",
     )
     silent["title"] = silent["brief"] = machine
-    silent["meaning"] = f"Whether {machine} has sent a health report in the last 15 minutes."
+    span = f"in the last {FRESH_S // 60} minutes" if observed else "today"
+    silent["meaning"] = f"Whether {machine} has sent a health report {span}."
     silent["updated"] = record.get("updated")
     silent["show_after"] = until
     silent["valid_until"] = None

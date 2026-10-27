@@ -486,6 +486,35 @@ def test_a_silent_machine_is_one_line_and_keeps_its_problems_as_history(tmp_root
     assert not any(k.startswith(("verify_queue", "spend_today", "telemetry")) for k in rows)
 
 
+def test_a_notes_sync_over_six_hours_old_is_unknown_not_ok(tmp_root: Path):
+    def notes(age: timedelta) -> dict:
+        fact = {"last_ok_at": core.iso(core.now() - age), "attempt_status": "deferred"}
+        return _rows(_record("mac", _facts(notes_sync=fact)))["notes_sync"]
+
+    assert notes(timedelta(hours=5))["state"] == "ok"
+    stale = notes(timedelta(hours=13))
+    assert stale["state"] == "unknown"
+    assert stale["headline"] == "no successful sync in the last 6h"
+    assert stale["ages"][0]["prefix"] == " · last sync "
+    assert stale["action"]
+    # an open pane turns the ok row stale at six hours, before the report's own deadline
+    near = notes(timedelta(hours=5, minutes=59))
+    assert near["state"] == "ok"
+    assert _at(near["valid_until"]) < core.now() + timedelta(minutes=2)
+    assert near["expired"]["state"] == "unknown"
+    assert near["expired"]["headline"] == "no successful sync in the last 6h"
+    assert "stale_at" not in near and "stale" not in near
+
+
+def test_the_no_report_row_explains_the_window_it_shows(tmp_root: Path):
+    [missing] = machine_rows({"machine": "windows"}, core.now())
+    assert missing["headline"] == "no report today"
+    assert missing["meaning"] == "Whether windows has sent a health report today."
+    [*_, silent] = machine_rows(_record("windows", _facts(), age=timedelta(hours=3)), core.now())
+    assert silent["headline"] == "no report"
+    assert silent["meaning"] == "Whether windows has sent a health report in the last 15 minutes."
+
+
 def test_a_machine_with_no_record_today_is_unknown(tmp_root: Path):
     (tmp_root / "agent.local.yaml").write_text("machine: mac\n", encoding="utf-8")
     checkpoint = tmp_root / "usage/machines/windows.md"

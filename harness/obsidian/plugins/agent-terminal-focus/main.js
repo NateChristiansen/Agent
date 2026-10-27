@@ -693,19 +693,22 @@ class LivePane {
     this.makeGroup('tasks', 'Open tasks', ['Task']);
     // Rows that need action or are unknown stay open; healthy ones collapse into one line.
     this.healthHeading = root.createEl('h2', { text: 'Health' });
-    this.makeGroup('health', '', ['Signal', 'Status']);
+    this.makeGroup('health', '', ['Signal', 'Status'], this.root, ['12em']);
     this.healthDetails = root.createEl('details');
     this.healthSummary = this.healthDetails.createEl('summary');
-    this.makeGroup('health_ok', '', ['Signal', 'Status'], this.healthDetails);
+    this.makeGroup('health_ok', '', ['Signal', 'Status'], this.healthDetails, ['12em']);
   }
 
-  makeGroup(key, title, headers, parent = this.root) {
+  makeGroup(key, title, headers, parent = this.root, widths = []) {
     const heading = title ? parent.createEl('h2', { text: title }) : null;
     const table = parent.createEl('table', { cls: 'agent-live-table' });
     table.style.width = '100%';
     table.style.tableLayout = 'fixed';
     const head = table.createEl('thead').createEl('tr');
-    headers.forEach((text) => head.createEl('th', { text }));
+    headers.forEach((text, i) => {
+      const th = head.createEl('th', { text });
+      if (widths[i]) th.style.width = widths[i];
+    });
     const body = table.createEl('tbody');
     const empty = parent.createEl('p');
     this.groups.set(key, { table, body, empty, heading, columns: headers.length, rows: new Map() });
