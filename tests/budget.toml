@@ -288,6 +288,16 @@ reason = "Node executes LivePane"
 expires = 2027-01-22
 
 [[skip]]
+node = "tests/test_live_pane.py::test_a_signal_failing_on_one_machine_is_never_named_ok_without_its_machine"
+reason = "Node executes LivePane"
+expires = 2027-01-22
+
+[[skip]]
+node = "tests/test_live_pane.py::test_a_signal_unknown_on_one_machine_is_never_named_ok_without_its_machine"
+reason = "Node executes LivePane"
+expires = 2027-01-22
+
+[[skip]]
 node = "tests/test_live_pane.py::test_a_stale_remote_report_is_one_line_plus_its_problem_history"
 reason = "Node executes LivePane"
 expires = 2027-01-22

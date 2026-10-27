@@ -886,7 +886,10 @@ class LivePane {
       ? `Health: ${[need && `${need} need${need === 1 ? 's' : ''} action`, unknown && `${unknown} unknown`].filter(Boolean).join(', ')}`
       : 'Health: all clear';
     if (this.healthHeading.textContent !== heading) this.healthHeading.setText(heading);
-    const summary = `${ok.length} ok: ${ok.map((r) => r.brief || r.title).join(', ')}`;
+    // A signal is named once only while every machine's row for it is ok; otherwise each ok row keeps its machine.
+    const mixed = new Set(open.map((r) => r.group).filter(Boolean));
+    const named = [...new Set(ok.map((r) => (r.group && !mixed.has(r.group) ? r.brief : r.title) || r.title))];
+    const summary = `${named.length} ok: ${named.join(', ')}`;
     if (this.healthSummary.textContent !== summary) this.healthSummary.setText(summary);
     for (const age of this.ages) {
       const text = `${age.prefix}${liveAge(age.at, nowMs)}${age.suffix}`;

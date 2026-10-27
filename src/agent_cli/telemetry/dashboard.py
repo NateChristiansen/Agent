@@ -37,10 +37,10 @@ MEANINGS = {
     "notes_sync": "Whether the machine's work records reach your notes repo.",
     "peer_link": "Whether the last message to the other machine was accepted. "
     "It does not show that the other machine is reachable now.",
-    "hook_errors": "A harness hook raised; its work (tab icon, usage, notes sync) may not have happened.",
-    "vault_display": "Manager tab icons, generated views and this pane render.",
+    "hook_errors": "Whether harness hooks ran without raising. A hook that raised may have skipped "
+    "its work (tab icon, usage, notes sync).",
+    "vault_display": "Whether manager tab icons, generated views and this pane render.",
     "lessons": "Findings with no open feature, waiting to be routed. At 10, feature close refuses.",
-    "machine": "This machine's last health report is older than 15 minutes.",
 }
 ACTIONS = {
     "notes_sync": "Ask the manager to resolve the sync failure; for a halt, run the clear command it names "
@@ -164,12 +164,13 @@ def _row(
         "signal": signal,
         "machine": machine,
         "title": title,
-        "brief": title,
+        "group": signal,
+        "brief": LABELS[signal],
         "state": state,
         "headline": headline,
         "ages": ages or [],
         "note": note,
-        "meaning": MEANINGS[signal],
+        "meaning": MEANINGS.get(signal),
         "action": None if state == "ok" else action or ACTIONS.get(signal),
     }
 
@@ -398,6 +399,7 @@ def machine_rows(record: dict[str, Any], moment: datetime, *, local: bool = Fals
         action=f"Nothing, if {machine} is off. Otherwise open a manager there so it reports.",
     )
     silent["title"] = silent["brief"] = machine
+    silent["meaning"] = f"Whether {machine} has sent a health report in the last 15 minutes."
     silent["updated"] = record.get("updated")
     silent["show_after"] = until
     silent["valid_until"] = None

@@ -124,15 +124,77 @@ def _health(nodes: list[list[str]]) -> list[str]:
     return shown[next(i for i, t in enumerate(shown) if t.startswith("Health")) :]
 
 
+HOOKS_MEANING = (
+    "Whether harness hooks ran without raising. A hook that raised may have skipped its work "
+    "(tab icon, usage, notes sync)."
+)
+DISPLAY_MEANING = "Whether manager tab icons, generated views and this pane render."
+
+
+def _windows(root: Path, **health: dict) -> None:
+    """This machine's fresh record published again as windows, with `health` merged in."""
+    from agent_cli.telemetry.summary import summary_rel
+
+    remote = json.loads(
+        core.agent_path(root, "usage", "telemetry", f"{core.today()}.mac.json").read_text(encoding="utf-8")
+    )
+    remote["machine"] = "windows"
+    for key, fields in health.items():
+        remote["health"][key].update(fields)
+    path = root / summary_rel(core.today(), "windows")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(remote), encoding="utf-8")
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node executes LivePane")
 def test_a_normal_day_is_one_line_with_the_lesson_count(tmp_root: Path, monkeypatch):
     _stop(tmp_root, monkeypatch)
     _queue(tmp_root, 6)
     shown = _health(view(tmp_root, None, 0, live.build(tmp_root)))
     assert shown[0] == "Health: all clear"
-    assert "4 ok: Notes sync · mac, Hooks · mac, Vault display · mac, lessons: 6 open" in shown
+    assert "4 ok: Notes sync, Hooks, Vault display, lessons: 6 open" in shown
     assert "ok · no errors today" in shown and "ok · lessons: 6 open" in shown
+    assert shown[shown.index("ok · no errors today") + 1] == HOOKS_MEANING
+    assert shown[shown.index("ok · tabs and views painting") + 1] == DISPLAY_MEANING
     assert not any(t.startswith("→") for t in shown)
+    _windows(tmp_root)
+    both = _health(view(tmp_root, None, 0, live.build(tmp_root)))
+    assert both[0] == "Health: all clear"
+    assert "4 ok: Notes sync, Hooks, Vault display, lessons: 6 open" in both, "each signal named once"
+    assert "Hooks · windows" in both and "Hooks · mac" in both
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node executes LivePane")
+def test_a_signal_failing_on_one_machine_is_never_named_ok_without_its_machine(tmp_root: Path, monkeypatch):
+    _stop(tmp_root, monkeypatch)
+    _queue(tmp_root, 6)
+    _windows(
+        tmp_root,
+        notes_sync={
+            "error_current": True,
+            "last_error_status": "conflict",
+            "last_error_at": core.iso(core.now()),
+        },
+        hook_errors={"count": 2, "last": {"hook": "activity", "at": core.iso(core.now())}},
+    )
+    shown = _health(view(tmp_root, None, 0, live.build(tmp_root)))
+    assert shown[0] == "Health: 2 need action"
+    assert "Notes sync · windows" in shown and "Hooks · windows" in shown
+    assert "4 ok: Notes sync · mac, Hooks · mac, Vault display, lessons: 6 open" in shown
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node executes LivePane")
+def test_a_signal_unknown_on_one_machine_is_never_named_ok_without_its_machine(tmp_root: Path, monkeypatch):
+    _stop(tmp_root, monkeypatch)
+    _queue(tmp_root, 6)
+    _windows(tmp_root, coverage={"events": False})
+    shown = _health(view(tmp_root, None, 0, live.build(tmp_root)))
+    assert shown[0] == "Health: 2 unknown"
+    hooks = shown.index(
+        "unknown · no errors counted, but telemetry incomplete (event log missing or unreadable)"
+    )
+    assert shown[hooks + 1] == HOOKS_MEANING
+    assert "4 ok: Notes sync, Hooks · mac, Vault display · mac, lessons: 6 open" in shown
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node executes LivePane")
@@ -154,15 +216,15 @@ def test_action_and_unknown_rows_say_what_they_mean_and_what_to_do(
         t for t in shown if t.startswith("needs action · 1 error today · last: activity (OSError), ")
     )
     after = shown[shown.index(hooks) + 1 :]
-    assert after[0].startswith("A harness hook raised")
+    assert after[0] == HOOKS_MEANING
     assert after[1] == '→ Ask the manager: "show today\'s hook errors and what failed".'
     assert line in shown
     if count == 10:
         assert "→ Run /lesson review in a manager." in shown
-        assert "3 ok: Notes sync · mac, Vault display · mac" not in shown
-        assert "2 ok: Notes sync · mac, Vault display · mac" in shown
+        assert "3 ok: Notes sync, Vault display" not in shown
+        assert "2 ok: Notes sync, Vault display" in shown
     else:
-        assert "3 ok: Notes sync · mac, Vault display · mac, lessons: 9 open" in shown
+        assert "3 ok: Notes sync, Vault display, lessons: 9 open" in shown
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node executes LivePane")
@@ -244,7 +306,7 @@ def test_a_stale_remote_report_is_one_line_plus_its_problem_history(tmp_root: Pa
         "→ Open a manager on windows to refresh this report; if the problem remains: "
     )
     assert not any("Notes sync · windows" in t for t in shown)
-    assert "4 ok: Notes sync · mac, Hooks · mac, Vault display · mac, lessons: 0 open" in shown
+    assert "4 ok: Notes sync, Hooks · mac, Vault display · mac, lessons: 0 open" in shown
 
 
 def test_dashboard_embeds_live_pane_and_keeps_static_views(tmp_path: Path):
