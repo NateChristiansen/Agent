@@ -2978,6 +2978,63 @@ def test_a_slow_fact_store_shows_unknown_then_the_hand(tmp_root: Path, monkeypat
     nothing now; they start a runner. The runner's derivation runs in one thread with a
     deadline (`DERIVE_DEADLINE_S`): past it the facts are unknown, so it paints `✅?`, and
     while the read stays stuck no second derivation starts. Once the store answers, ✋."""
+    titles = _slow_fact_store_shows_unknown_then_the_hand(tmp_root, monkeypatch, force_takeover=False)
+    assert titles == [f"✋ {DISPLAY}"]
+
+
+@NODE
+def test_a_stalled_runner_is_replaced_and_the_replacement_paints_the_hand(tmp_root: Path, monkeypatch):
+    """The same slow store, with the first runner, after it painted `✅?`, held on its next view until
+    its derivation mark is older than `DERIVE_STALL_S`: the guard replaces it, it exits on its gone
+    token, and the replacement, run as the detached launch would be, paints ✋ once the store answers."""
+    titles = _slow_fact_store_shows_unknown_then_the_hand(tmp_root, monkeypatch, force_takeover=True)
+    assert titles == [f"✋ {DISPLAY}"]
+
+
+def _test_threads_gone() -> list[str]:
+    owned = ("writer", "watchdog", "runner", "replacement-", "tab-derive-")
+    return [t.name for t in threading.enumerate() if t.name.startswith(owned)]
+
+
+@NODE
+def test_a_successor_deriving_again_while_blocked_fails_the_slow_store_test(tmp_root: Path, monkeypatch):
+    """A control for the successor check: a replacement whose derivation is dropped on every pass
+    reads the stuck store again, and the test says so, and still stops every thread it started."""
+    derive = tab_drain._derive
+
+    def forgetful(root):
+        if threading.current_thread().name.startswith("replacement-"):
+            with tab_drain._derivations_lock:
+                tab_drain._derivations.pop((root, threading.get_ident()), None)
+        return derive(root)
+
+    monkeypatch.setattr(tab_drain, "_derive", forgetful)
+    with pytest.raises(AssertionError, match="exactly one derivation while blocked"):
+        _slow_fact_store_shows_unknown_then_the_hand(tmp_root, monkeypatch, force_takeover=True)
+    _until(lambda: not _test_threads_gone(), 10, "threads outlived the failed test")
+
+
+@NODE
+def test_an_early_failure_in_the_slow_store_test_still_stops_every_thread(tmp_root: Path, monkeypatch):
+    """A control for cleanup: the failure comes at the first wait on the runner, with the writer,
+    watchdog and runner running and the store held."""
+    wait = _until
+
+    def failing(check, timeout, what):
+        if what.startswith("the runner never painted"):
+            raise AssertionError("injected")
+        return wait(check, timeout, what)
+
+    monkeypatch.setitem(_slow_fact_store_shows_unknown_then_the_hand.__globals__, "_until", failing)
+    with pytest.raises(AssertionError, match="injected"):
+        _slow_fact_store_shows_unknown_then_the_hand(tmp_root, monkeypatch, force_takeover=True)
+    _until(lambda: not _test_threads_gone(), 10, "threads outlived the failed test")
+
+
+def _slow_fact_store_shows_unknown_then_the_hand(
+    tmp_root: Path, monkeypatch, *, force_takeover: bool
+) -> list[str]:
+    """The slow-store scenario, asserting as it goes; the tab titles it painted."""
     import threading
 
     from agent_cli import features
@@ -2995,6 +3052,7 @@ def test_a_slow_fact_store_shows_unknown_then_the_hand(tmp_root: Path, monkeypat
     monkeypatch.setattr(tab_drain, "_eval", _batch_on(titles))
     original = features.load_all
     release, stop = threading.Event(), threading.Event()
+    held, resume = threading.Event(), threading.Event()
     readers: list[str] = []
     errors: list[BaseException] = []
     hook: list[tuple[str, int]] = []
@@ -3027,6 +3085,38 @@ def test_a_slow_fact_store_shows_unknown_then_the_hand(tmp_root: Path, monkeypat
         clock[0] += seconds
         threading.Event().wait(0.05)
 
+    replacements: list[threading.Thread] = []
+    launch = tab_drain._spawn
+
+    def spawn(argv, root):
+        # the first launch is the runner the test starts itself; each later one is a takeover,
+        # run here as the detached process would be
+        proc = launch(argv, root)
+        if _is_runner(argv) and len(launches) > 1:
+            token, rest = argv[4], argv[5:]
+            not_before, rearms = (float(rest[0]), int(rest[1])) if rest else (None, 0)
+            replacement = threading.Thread(
+                target=guarded(lambda: tab_drain.run(tmp_root, token, not_before, rearms)),
+                name=f"replacement-{len(launches)}",
+            )
+            replacements.append(replacement)
+            replacement.start()
+        return proc
+
+    monkeypatch.setattr(tab_drain, "_spawn", spawn)
+    view_now = tab_drain._view_now
+
+    def view_then_hold(root):
+        # forced takeover: once `✅?` is up, the first runner holds its next view, still marked as
+        # deriving, until resumed
+        view = view_now(root)
+        painted = titles == [f"✅? {DISPLAY}"]
+        if force_takeover and painted and threading.current_thread().name == "runner" and not held.is_set():
+            held.set()
+            assert resume.wait(60), "the test did not resume the first runner"
+        return view
+
+    monkeypatch.setattr(tab_drain, "_view_now", view_then_hold)
     writing = threading.Thread(target=guarded(writer), name="writer")
     writing.start()
     watching = runner = None
@@ -3052,19 +3142,47 @@ def test_a_slow_fact_store_shows_unknown_then_the_hand(tmp_root: Path, monkeypat
         runner.start()
         took = _until(lambda: titles == [f"✅? {DISPLAY}"], 12, "the runner never painted the unknown form")
         assert took < tab_drain.DERIVE_DEADLINE_S + 3
+        if force_takeover:
+            _until(held.is_set, 10, "the first runner never got its view after painting")
+            # held mid-derivation, its mark only ages: the guard replaces it once past the stall
+            _until(
+                lambda: not tab_drain._awake(tab_drain._state(tmp_root)),
+                10,
+                "the held runner never counted as stalled",
+            )
+            tab_drain.on_snapshot_failure(tmp_root)
+            assert len(launches) == 2
+            resume.set()
         # the read stays stuck across retries: one derivation, not one per pass
         threading.Event().wait(tab_drain.DERIVE_DEADLINE_S + 1)
         derives = [t for t in threading.enumerate() if t.name == "tab-derive-runner"]
         assert len(derives) == 1 and readers.count("tab-derive-runner") == 1
+        for successor in replacements:  # a successor holds its own derivation, one at a time
+            mine = f"tab-derive-{successor.name}"
+            assert readers.count(mine) == 1, (
+                f"{successor.name} did not hold exactly one derivation while blocked"
+            )
+            assert sum(t.name == mine for t in threading.enumerate()) == 1
         assert titles == [f"✅? {DISPLAY}"]
-    finally:
         release.set()
-    try:
         _until(lambda: titles == [f"✋ {DISPLAY}"], 15, "the hand was never painted")
     finally:
+        resume.set()
+        release.set()
         stop.set()
         for thread in (writing, watching, runner):
             if thread is not None:
                 thread.join(30)
+        joined = 0
+        while joined < len(replacements):  # a joined thread may have launched another
+            replacements[joined].join(30)
+            joined += 1
+    assert not [t.name for t in (writing, watching, runner, *replacements) if t is not None and t.is_alive()]
+    _until(
+        lambda: not [t for t in threading.enumerate() if t.name.startswith("tab-derive-")],
+        10,
+        "a derivation thread outlived the test",
+    )
     assert not errors and len(hook) == 1 and hook[0][1] == 0
     assert live.build(tmp_root)["needs_you"][0]["reason"] == "approval"
+    return list(titles)
