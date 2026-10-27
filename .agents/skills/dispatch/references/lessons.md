@@ -126,5 +126,14 @@ fence and added a decision, then launched the new preview without asking again, 
 the change only after launch. When a preview's bytes change after the owner's yes, show the new
 preview and ask again before launching.
 
+## Look at a rendered UI change before review
+
+A dashboard health section passed its scoped tests, review and the full suite twice. Both of
+the owner's live checks still found visual defects: a per-machine summary printed twice, a
+healthy hook row labelled "A harness hook raised", a stale sync shown as ok, a status and its
+explanation naming different time windows, and a label column wide enough to wrap the status.
+The tests checked the data, not the rendered page. An order that changes what the owner sees
+asks for a screenshot with realistic data, and the manager looks at it before the review round.
+
 The publishing lessons (a force-push does not remove a commit from GitHub; a pre-publish audit
 reads every added line) are in the Publication section of `harness/safety.md`.

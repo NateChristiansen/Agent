@@ -142,6 +142,9 @@ Read `references/lessons.md` before writing the work order or choosing a rubric 
      files, not directories: a directory claim blocks every other feature's writer under it, and
      the preview warns about one.
    - A numeric limit in the order (lines, seconds, counts) matches the approved plan.
+   - An order that changes what the owner sees (a view, a pane, a dashboard section) asks for a
+     rendered screenshot of it with realistic data, at a path declared in `writes`. Look at it
+     before the review round.
    - Commands go in `sh` fences, anything else in `text` fences; inline backticks are prose.
    - Full repo-relative paths; each SHA, id and command in backticks with spaces around it.
    - Inline the excerpt a worker needs; never point it at another worktree, `.agent/verify` or
