@@ -5,7 +5,7 @@ const { existsSync } = require('fs');
 const { join, resolve } = require('path');
 const { spawnSync } = require('child_process');
 
-function main(args = process.argv.slice(1)) {
+function main(args = process.argv.slice(require.main === module ? 2 : 1)) {
   const root = resolve(__dirname, '..');
   const probe = args.includes('--probe');
   const hook = args[0] === 'agent' && args[1] === 'hook';

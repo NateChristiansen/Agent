@@ -33,15 +33,19 @@ def test_slow_cli_preserves_bytes_and_exit_past_four_seconds(tmp_path: Path):
     )
     cli.chmod(0o755)
     payload = b'{"stdin":"passed"}\n\xff'
-    result = subprocess.run(
-        ["node", "-e", "require(" + json.dumps(str(launcher)) + ")", "agent", "hook", "capture"],
-        input=payload,
-        capture_output=True,
-        timeout=10,
-    )
-    assert result.returncode == 7
-    assert result.stdout == payload
-    assert result.stderr == b"error bytes\xff"
+    for command in (
+        ["node", "-e", "require(" + json.dumps(str(launcher)) + ")"],
+        ["node", str(launcher)],
+    ):
+        result = subprocess.run(
+            [*command, "agent", "hook", "capture"],
+            input=payload,
+            capture_output=True,
+            timeout=10,
+        )
+        assert result.returncode == 7
+        assert result.stdout == payload
+        assert result.stderr == b"error bytes\xff"
 
 
 def test_strict_probe_exposes_handler_exception(tmp_root: Path, run, monkeypatch):
@@ -109,17 +113,22 @@ def test_launcher_selects_the_native_cli_and_preserves_exit(platform, installed)
     script = r"""
 const fs = require('fs'), vm = require('vm'), path = require('path');
 const [file, platform, installed] = process.argv.slice(1);
+const results = [];
+for (const direct of [false, true]) {
 let called;
-const fake = {argv: ['node', 'agent', 'hook', 'capture'], platform, execPath: '/node', env: {KEEP: 'yes'}, stderr: {write() {}}};
+const module = {};
+const fake = {argv: ['node', ...(direct ? [file] : []), 'agent', 'hook', 'capture', 'argument with spaces'], platform, execPath: '/node', env: {KEEP: 'yes'}, stderr: {write() {}}};
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
-  __dirname: path.join('/vault with spaces', 'bin'), process: fake,
-  require(name) {
+  __dirname: path.join('/vault with spaces', 'bin'), process: fake, module,
+  require: Object.assign(function(name) {
     if (name === 'fs') return {existsSync: () => installed === 'true'};
     if (name === 'child_process') return {spawnSync(exe, args, options) {called = {exe, args, options}; return {status: 7};}};
     return require(name);
-  },
+  }, {main: direct ? module : undefined}),
 });
-console.log(JSON.stringify({...called, exit: fake.exitCode}));
+results.push({...called, exit: fake.exitCode});
+}
+console.log(JSON.stringify(results));
 """
     node = shutil.which("node")
     assert node is not None, "Node is a setup requirement"
@@ -136,7 +145,9 @@ console.log(JSON.stringify({...called, exit: fake.exitCode}));
         text=True,
         check=True,
     )
-    out = json.loads(result.stdout)
+    inline, direct = json.loads(result.stdout)
+    assert direct == inline
+    out = direct
     assert out["exit"] == (7 if installed else 0)
     assert out["options"]["stdio"] == ("inherit" if installed else ["inherit", "pipe", "pipe"])
     assert "timeout" not in out["options"], "the client's configured hook timeout governs"
@@ -146,9 +157,19 @@ console.log(JSON.stringify({...called, exit: fake.exitCode}));
         # Windows runs the venv's python, never the agent.exe shim.
         assert out["exe"].endswith("python.exe" if platform == "win32" else "agent")
         module = ["-I", "-m", "agent_cli"] if platform == "win32" else []
-        assert out["args"] == [*module, "hook", "capture"]
+        assert out["args"] == [*module, "hook", "capture", "argument with spaces"]
     else:
-        assert out["exe"] == "uv" and out["args"][:2] == ["run", "--no-sync"]
+        assert out["exe"] == "uv"
+        assert out["args"] == [
+            "run",
+            "--no-sync",
+            "--project",
+            out["options"]["env"]["AGENT_ROOT"],
+            "agent",
+            "hook",
+            "capture",
+            "argument with spaces",
+        ]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="native Windows shells")
