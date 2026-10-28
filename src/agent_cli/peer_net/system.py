@@ -16,6 +16,7 @@ import subprocess
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from functools import cache
 from pathlib import Path
 
 from .authorized import fingerprint
@@ -103,6 +104,12 @@ def refuse_root() -> None:
 
 
 def user_sid() -> str:
+    _budget(10.0)
+    return _user_sid()
+
+
+@cache
+def _user_sid() -> str:
     line = _whoami("/user", "/fo", "csv", "/nh").strip().splitlines()[-1]
     return line.split(",")[-1].strip().strip('"')
 
