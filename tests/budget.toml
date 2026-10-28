@@ -12,6 +12,20 @@ headroom_pct = 3
 date = 2026-10-28
 from = 62490
 to = 65000
+reason = "128 tooling hygiene: corrected test-count retry up to 65000 spawns; permanent caps unchanged"
+approved_by = "owner"
+
+[[raise]]
+date = 2026-10-27
+from = 62490
+to = 65000
+reason = "128 tooling hygiene: one-time local admission up to 65000 spawns; permanent caps unchanged"
+approved_by = "owner"
+
+[[raise]]
+date = 2026-10-28
+from = 62490
+to = 65000
 reason = "070 radon pin and Codex preflight runner: one-time local admission up to 8990 tests and 65000 spawns; permanent caps unchanged"
 approved_by = "owner"
 
@@ -20,13 +34,6 @@ date = 2026-10-28
 from = 8970
 to = 8990
 reason = "070 radon pin and Codex preflight runner: one-time local admission up to 8990 tests and 65000 spawns; permanent caps unchanged"
-approved_by = "owner"
-
-[[raise]]
-date = 2026-10-27
-from = 62490
-to = 65000
-reason = "128 tooling hygiene: one-time local admission up to 65000 spawns; permanent caps unchanged"
 approved_by = "owner"
 
 [[raise]]

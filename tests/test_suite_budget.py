@@ -122,45 +122,44 @@ def test_a_raise_must_match_a_new_raise_entry_by_reason():
     assert suite_budget.check(_record(), BASE, BASE, "seed")  # an unneeded raise still has to match
 
 
-def test_a_matching_raise_lets_an_over_budget_record_land():
+def test_a_matching_raise_bounds_records_even_when_the_candidate_raises_limits():
     assert suite_budget.check(_record(tests=101), BASE, BASE + RAISE)
     assert suite_budget.check(_record(tests=101), BASE, BASE + RAISE, "probe growth") == []
     assert suite_budget.check(_record(tests=150), BASE, BASE + RAISE, "probe growth") == [
         "suite.tests 150 exceeds [[raise]] 'probe growth' to 101 by 49"
     ]
-
-
-@pytest.mark.parametrize("spawns, admitted", [(64139, True), (65000, True), (65001, False)])
-def test_a_matching_raise_keeps_the_record_within_its_spawn_ceiling(spawns: int, admitted: bool):
-    main = _edit("spawns_max = 1000", "spawns_max = 62490")
-    raised = RAISE.replace("from = 100", "from = 62490").replace("to = 101", "to = 65000")
-    problems = suite_budget.check(_record(spawns=spawns), main, main + raised, "probe growth")
-    assert (not problems) == admitted
-
-
-@pytest.mark.parametrize("spawns, admitted", [(64139, True), (65000, True), (65001, False)])
-def test_the_repository_raise_keeps_the_record_within_its_spawn_ceiling(spawns: int, admitted: bool):
-    candidate = (Path(__file__).parent / "budget.toml").read_text()
-    prefix, entry, rest = candidate.split("\n[[raise]]\n", 2)
-    main = prefix + "\n[[raise]]\n" + rest
-    budget = suite_budget.parse(candidate)
-    assert budget.limits["tests_max"] == 8970
-    assert budget.limits["spawns_max"] == 62490
-    assert budget.raises[0]["from"] == 62490 and budget.raises[0]["to"] == 65000
-    reason = str(suite_budget.parse(prefix + "\n[[raise]]\n" + entry).raises[0]["reason"])
-    record = _record(tests=8970, spawns=spawns)
-    assert suite_budget.check(record, main, candidate)
-    assert suite_budget.check(record, main, candidate, "other reason")
-    assert suite_budget.check(record, candidate, candidate, reason)
-    assert (not suite_budget.check(record, main, candidate, reason)) == admitted
-
-
-def test_raise_bounds_use_main_s_limits_even_when_the_candidate_raises_them():
     candidate = _edit("tests_max = 100", "tests_max = 200") + RAISE
     assert suite_budget.check(_record(tests=101), BASE, candidate, "probe growth") == []
     assert suite_budget.check(_record(tests=102), BASE, candidate, "probe growth") == [
         "suite.tests 102 exceeds [[raise]] 'probe growth' to 101 by 1"
     ]
+
+
+def test_matching_raises_keep_records_within_their_spawn_ceilings():
+    main = _edit("spawns_max = 1000", "spawns_max = 62490")
+    raised = RAISE.replace("from = 100", "from = 62490").replace("to = 101", "to = 65000")
+    cases = [(main, main + raised, "probe growth", 100)]
+    candidate = (Path(__file__).parent / "budget.toml").read_text()
+    prefix, *entries = candidate.split("\n[[raise]]\n")
+    budget = suite_budget.parse(candidate)
+    assert budget.limits["tests_max"] == 8970
+    assert budget.limits["spawns_max"] == 62490
+    for index in (0, 1):
+        entry = budget.raises[index]
+        assert entry["from"] == 62490 and entry["to"] == 65000, entry
+        candidate = prefix + "".join("\n[[raise]]\n" + text for text in entries[index:])
+        main = prefix + "".join("\n[[raise]]\n" + text for text in entries[index + 1 :])
+        cases.append((main, candidate, str(entry["reason"]), 8970))
+    for main, candidate, reason, tests in cases:
+        for spawns, admitted in ((64139, True), (65000, True), (65001, False)):
+            scenario = (reason, spawns)
+            record = _record(tests=tests, spawns=spawns)
+            assert suite_budget.check(record, main, candidate), scenario
+            assert suite_budget.check(record, main, candidate, "other reason"), scenario
+            assert suite_budget.check(record, candidate, candidate, reason), scenario
+            if reason == str(budget.raises[0]["reason"]):
+                assert suite_budget.check(record, main, candidate, str(budget.raises[1]["reason"])), scenario
+            assert (not suite_budget.check(record, main, candidate, reason)) == admitted, scenario
 
 
 def test_matching_raise_entries_bound_each_metric():
@@ -169,17 +168,18 @@ def test_matching_raise_entries_bound_each_metric():
     assert len(suite_budget.check(_record(tests=102, spawns=1002), BASE, BASE + raised, "probe growth")) == 2
 
 
-@pytest.mark.parametrize("ceiling", ['"lots"', "nan", "inf", "true"])
-def test_a_numeric_raise_for_a_suite_metric_needs_a_finite_ceiling(ceiling: str):
-    raised = RAISE.replace("to = 101", f"to = {ceiling}")
-    [problem] = suite_budget.check(_record(tests=101), BASE, BASE + raised, "probe growth")
-    assert "to must be a finite number" in problem
+def test_a_numeric_raise_for_a_suite_metric_needs_a_finite_ceiling():
+    for ceiling in ('"lots"', "nan", "inf", "true"):
+        raised = RAISE.replace("to = 101", f"to = {ceiling}")
+        problems = suite_budget.check(_record(tests=101), BASE, BASE + raised, "probe growth")
+        assert len(problems) == 1, (ceiling, problems)
+        assert "to must be a finite number" in problems[0], (ceiling, problems)
 
 
-@pytest.mark.parametrize("start", ['"old"', "90", "true"])
-def test_other_raise_shapes_keep_the_existing_exception_behavior(start: str):
-    raised = RAISE.replace("from = 100", f"from = {start}")
-    assert suite_budget.check(_record(tests=150), BASE, BASE + raised, "probe growth") == []
+def test_other_raise_shapes_keep_the_existing_exception_behavior():
+    for start in ('"old"', "90", "true"):
+        raised = RAISE.replace("from = 100", f"from = {start}")
+        assert suite_budget.check(_record(tests=150), BASE, BASE + raised, "probe growth") == [], start
 
 
 @pytest.mark.parametrize("kind", TIGHTENINGS)
