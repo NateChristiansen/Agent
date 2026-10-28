@@ -53,6 +53,9 @@ files and the selected tests: `uv run ruff check`, `uv run ruff format --check`,
 (ADR-0045). Run each as its own command. Setup scripts also require tests. Read [[harness/testing]]
 for changes whose correctness depends on ordering. The pre-commit gate is not a replacement
 for the full checks. Tool calls run current source; reconnect MCP only after a tool schema changes.
+Comments and docstrings under `src/` carry no history tag (a feature, task, lesson or audit
+id); only `tests/test_prose_rules.py` states that rule. Run it with the selected tests before
+a small change lands.
 
 A dispatch attempt runs only the tests its diff selects (`tests/selection.toml`, read from the
 attempt's base). A change that adds a source module adds its table entry in the same commit:

@@ -106,7 +106,8 @@ vault is read-only to it. Every run has a dollar budget (a soft cap on Codex), a
 timeout, and a turn cap (Claude) or tool-item cap (Codex). A `done` that skipped required checks
 comes back `blocked`. A fourth attempt needs an explicit `again` or an escalation. Every
 dispatch leaves a record: work order, thread, return, cost. The manager routes and records, the
-worker implements, and the owner approves publishing and pushing.
+worker implements, and the owner approves publishing and pushing. Before handing the owner a
+command that a harness check will judge, read that check's code and predict its result.
 
 Nothing a session or dispatch launches outlives it unless the owner keeps it
 ([[adrs/0017-process-ownership-by-env-tag|ADR-0017]]). Every process inherits an ownership tag
@@ -285,6 +286,9 @@ fetchable by sha. Removal means deleting and recreating the repo. Check with
 A pre-publish audit reads every added line. A search for known private terms misses content
 that a reader going through the diff line by line finds. An audit names its commit range and its
 reader reads every added line. A term search supports that read; it does not replace it.
+
+A PR review comment the manager drafts for the owner is one to three sentences: the problem,
+the evidence in one clause, and a question. Full reasoning stays in the feature log.
 
 ## Export
 
