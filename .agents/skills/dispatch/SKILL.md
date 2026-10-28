@@ -60,6 +60,9 @@ Read `references/lessons.md` before writing the work order or choosing a rubric 
      order names, saying they outrank it and any mirrored sibling. A convention that must
      hold goes in the repo's `dispatch.diff_rules`, where the return is checked against the
      diff; prose in the work order is not a substitute.
+     A constraint of your own on where code lives (move, share, duplicate or keep) is checked
+     against the convention docs the repo notes name before launch. Cite the line that decides it, or raise the conflict
+     with the owner.
    - **Your reasoning is not a comment.** Say why in the work order, never in words the
      worker can paste into code: a rationale phrase in the order tends to come back as a doc
      line. No comment needs a row in the return; the commit check refuses ids and three-file
@@ -140,8 +143,12 @@ Read `references/lessons.md` before writing the work order or choosing a rubric 
      one concurrent dispatch's `writes` only. A review declares `writes=[]` (read-only: it blocks
      nothing and must restore its probe edits); omitting `writes` blocks the whole repo. Name
      files, not directories: a directory claim blocks every other feature's writer under it, and
-     the preview warns about one.
-   - A numeric limit in the order (lines, seconds, counts) matches the approved plan.
+     the preview warns about one. `say` and `resume` cannot widen `writes`, so a file missed
+     here means a relaunch.
+   - A numeric limit in the order (lines, seconds, counts) matches the approved plan, and each
+     invariant the order names has a measurable bar.
+   - Every generator the change needs (a snapshot, a contract file) is one the worker can run;
+     otherwise the order says the manager regenerates it.
    - An order that changes what the owner sees (a view, a pane, a dashboard section) asks for a
      rendered screenshot of it with realistic data, at a path declared in `writes`. Look at it
      before the review round.
@@ -284,8 +291,10 @@ in the request's review rounds; resume a round only to discuss that same artifac
 research omits `repo`: it runs read-only (`writes: []`) in the one registered harness repo with
 that repo's permissions, capabilities and rubric rows, and refuses with what to fix when the
 harness is unregistered or registered twice. A missing capability (Codex network, an MCP profile)
-refuses at preflight as for any dispatch; it is not granted for research. Research text comes back
-in the return; save a standalone artifact to the vault only when the owner asks. Complete the
+refuses at preflight as for any dispatch; it is not granted for research. A brief on changing or
+removing a CI or process control also asks what the control prevents or serialises today and what
+removing it unlocks. Research text comes back in the return; save a standalone artifact to the
+vault only when the owner asks. Complete the
 request with `request` action `complete` once every dispatch is read, landed, acked or abandoned.
 
 ## Sending review feedback back
@@ -324,7 +333,8 @@ command whose output must read a certain way. Before pushing, run that check on 
 yourself; a worker's summary saying "swept" is not the check. A bar the worker cannot measure,
 such as "keep a one-line why when it is non-obvious", leaves the result to taste. A third
 round on the same question is a fresh dispatch with a stricter bar, and a stronger model
-when the owner asks for one.
+when the owner asks for one. When the third round is a third rejection in the same defect
+class, it goes to the owner instead, as a design question: should this approach exist?
 
 Start a new dispatch instead when the follow-up is genuinely different work, when the original
 session is gone, when the cost per turn has climbed past a few rounds, or when that worker's

@@ -135,5 +135,112 @@ explanation naming different time windows, and a label column wide enough to wra
 The tests checked the data, not the rendered page. An order that changes what the owner sees
 asks for a screenshot with realistic data, and the manager looks at it before the review round.
 
+## Split a shared numeric bound before parallel nodes launch
+
+Two parallel branches each added sections to one text report with an 80-line bound. Each sized
+its own sections alone (45 and 30 lines) and passed its own test. The batch landing rendered
+91 lines and failed, and the fix took a follow-up task and four dispatches. When parallel nodes
+share a numeric bound, the plan gives each node its share and adds one combined test before
+they launch.
+
+## Probe the target before an expensive build
+
+An onboarding experiment built an answer key, two runner rounds and a scorecard. The first
+worker launch on the target machine then failed before the worker started. Another build
+cell spent $8.84 on a worker whose MCP tools never loaded; a $0.10 read-only probe later found
+the next blocker before any build hit it. Before a build or experiment on a new machine,
+repo or cell, run one dry run and one cheap probe launch there.
+
+## Name the whole matrix for a preservation contract
+
+A comment-preserving YAML save went through ten reviews in a day. Each build fixed the
+reported case, and the next reviewer found the adjacent container case. The implementers had
+listed some of those cases as known limits. An outside audit later deleted the splicer. For a
+preservation contract, the first build order names every syntax case for every operation,
+and an implementer's stated limit counts as a finding before review. A third rejection in one
+defect class goes to the owner instead of a fresh dispatch: ask whether the approach should
+exist.
+
+## Give a review one lens per hook event a shared emitter serves
+
+A change added a suffix to every hook denial in the shared entry point. The review order named
+lenses only for PreToolUse and Stop. The review passed, and the landing then failed because
+UserPromptSubmit and continuation outputs also changed. It took four rounds across two
+dispatches. When a change touches a function every hook output passes through, the review
+order lists each hook event it serves as a lens.
+
+## Name a probe deletion the worker may run
+
+A work order told a Claude worker to write a probe under `/tmp` and delete it afterwards. The
+worker's `rm` was denied in two attempts, and each handoff asked the manager to clean up.
+Workers may now run a single-file `rm`, but recursive and forced removal stay denied. Keep a
+probe to files the worker can remove one at a time, and name each deletion in the order.
+
+## State a number for every invariant in the first build order
+
+A build order named an invariant ("never inside a hook timeout") with no number. Two reviews
+found nine and then four defects, including a trigger with no total time bound. The escalation
+carried a 2 s worst-case bar and came back clean in one pass. Each invariant a build order
+names gets a measurable bar in the first order, not after review.
+
+## Prose for people carries its own style brief
+
+Chapter work orders for a user manual passed on the manager's own rules: short sentences, a
+caveat on every claim, harness files as sources. The owner found it verbose and condescending,
+"written by ai for ai". A work order for human-facing prose carries a style brief for that
+reader. Read `harness/voice.md` first, and ask the owner for samples when it is empty.
+
+## Public tests use generic fixture identifiers
+
+A work order named a real private repository to reproduce a denial. The implementer copied
+that name into a public regression fixture, and review caught it before landing. Keep the real
+incident in private notes, and give the worker a generic command shape for the public test.
+
+## Stop probing when every remaining cause leads to one decision
+
+Four probes chased one sandbox error. After network and cache were excluded, every remaining
+cause still led to the same three routes the owner had to choose from. Two probes would have
+been enough. Once each remaining cause leads to the same owner decision, stop and present the
+decision.
+
+## Give generated-file regeneration to the manager when the worker cannot run it
+
+A worker stopped on a permission denial for the env-prefixed command that regenerates a
+snapshot. Its resume then failed verification on the stale snapshot, and the manager
+regenerated it on a separate branch. Before launch, check that the worker can run each
+generator its change needs. If it cannot, the work order says the manager regenerates the
+file, and when.
+
+## Check a placement constraint against the repo's convention docs
+
+A build order said "do not move this wrapper into a shared package". The convention doc named
+in the repo notes requires that move for helpers duplicated across packages. Review flagged the
+copy as blocking, which cost one more build and an owner decision. Before writing a constraint
+on where code lives (move, share, duplicate or keep), read the convention docs the repo notes
+name. Cite the deciding line if the constraint stands, and raise a conflict before launch.
+
+## A `say` approval cannot widen a dispatch's writes
+
+A worker asked to edit a test file outside its declared `writes`. The manager approved it with
+`dispatch say`, the worker made the edit, and the supervisor failed the dispatch: "paths outside
+declared writes". `resume` can only narrow `writes`. The order had missed a test that used the
+deleted file as an example. Name every file in `writes` at launch; a file found later means a
+new dispatch.
+
+## A whole-tree sweep that needs judgment is not mechanical
+
+A sweep of about 400 files for private details ran on the mechanical row. The first worker
+lost its forks and hit the turn cap twice, and an opus escalation finished it: $28 against a
+$6-12 band. Each file needed judgment: neutral fixtures, a frozen baseline, remapped ids. Start
+a sweep like that on the build row, or split it by directory.
+
+## A research brief on a process change asks what the control prevents
+
+Research on turning off "require branches to be up to date before merging" studied only stale
+green PRs. Two days later, back-to-back merges ran overlapping deploys that collided, and the
+setting went back on. A research brief on changing or removing a CI or process control asks
+what the control prevents or serialises today, and what removing it unlocks, alongside the
+owner's question.
+
 The publishing lessons (a force-push does not remove a commit from GitHub; a pre-publish audit
 reads every added line) are in the Publication section of `harness/safety.md`.

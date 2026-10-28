@@ -20,7 +20,7 @@ over the default. Escalation keeps the parent's recorded effort, including omiss
 |---|---|---|---|---|---|---|
 | probe | smoke test of the harness, a one-command check, a 'does this flag work' | haiku | gpt-6-luna | vendor default | $0-1 | the answer is a fact, not a judgment; the cheapest model finds it |
 | review | read a PR or a branch and report; verify a claim; measure something in a repo | sonnet | gpt-6.1-sol | codex: medium (owner) | $3-6 | read-only work with a clear question; a cheap review can still find a real defect. Pass --no-checks: a review reads code, it does not build it |
-| mechanical | scaffold from a spec, rename, move, add tests to existing code, apply named review comments | sonnet | gpt-6-luna | vendor default | $6-12 | the shape is known, so a bigger model buys little |
+| mechanical | scaffold from a spec, rename, move, add tests to existing code, apply named review comments; not a whole-tree sweep that needs judgment per file (that is build, or split it by directory) | sonnet | gpt-6-luna | vendor default | $6-12 | the shape is known, so a bigger model buys little |
 | build | a new package or feature from a plan that leaves design choices open; a change across modules | opus | gpt-6.1-sol | codex: medium (owner) | $10-20 | judgment calls inside the work |
 | design | a decision document, options with trade-offs, an ADR draft, an unfamiliar repo | opus | gpt-6-astra | vendor default | $10-20 | the output is reasoning, such as a design document |
 | max | only when the owner says so | fable | gpt-6-astra | vendor default | the owner sets it | owner-only model choice; Codex names Astra and still uses its default effort unless --effort is explicit |
