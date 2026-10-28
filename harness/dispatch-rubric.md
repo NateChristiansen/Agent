@@ -32,6 +32,35 @@ model stays unchanged.
 
 ## Effort
 
+### Opt-in Terra
+
+For a scoped implementation with supplied requirements and executable acceptance checks, use
+the `mechanical` row with `provider="codex"`, `model="gpt-6.1-terra"` and a task-specific
+`choice_reason`. This is an explicit model override, not a new row or a default replacement.
+Keep Luna for probes and routine mechanical work, Sol for broader builds and reviews, and
+the review-round pins below.
+
+Leave effort omitted unless the Effort rules justify an explicit level. Checked 2026-10-27
+with Codex 0.165.0's live `model/list`: Terra's client default is `low`; it advertises `low`,
+`medium`, `high`, `xhigh`, `max` and `ultra`. The API default is `medium`, a separate setting.
+The `review` and `build` rows still apply their `medium` owner policy to an explicit override.
+Terra is outside the automatic escalation ladder; escalation keeps it unchanged unless a
+stronger model is selected explicitly.
+
+Independent results support a trial, not a broad substitution: Artificial Analysis reports
+Terminal-Bench 4.0 at 32% versus Sol's 48% at `medium`, and a rounded 56% tie at `max`.
+Vals reports Terra at 49.49% and $2.04/test versus Sol at 55.05% and $1.72/test, both at `max`.
+Cheaper tokens do not guarantee cheaper tasks. These implementation benchmarks do not establish
+defect-review recall. Before changing defaults, compare matched inputs, effort and checks,
+including retries and reviewer corrections in cost.
+
+Sources checked 2026-10-27: [AA medium](https://artificialanalysis.ai/models/comparisons/gpt-6-1-terra-medium-vs-gpt-6-1-sol-medium),
+[AA max](https://artificialanalysis.ai/models/comparisons/gpt-6-1-terra-vs-gpt-6-1-sol),
+[Vals Terminal-Bench](https://www.vals.ai/benchmarks/terminal-bench-4), and
+[Terra API specifications and pricing](https://developers.openai.com/api/docs/models/gpt-6.1-terra).
+
+### Effort choices
+
 Claude Code runs Opus 5.5, Sonnet 5.5 and Haiku 5.5 at `medium` when effort is omitted. Each
 step needs a reason in `choice_reason`:
 

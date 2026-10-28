@@ -15,7 +15,7 @@ from typing import Any
 
 from .records.narrow import as_dict, as_dict_or_none
 
-PRICED_AT = "2026-10-24"
+PRICED_AT = "2026-10-27"
 LONG_CONTEXT_INPUT = 272_000
 
 
@@ -33,6 +33,10 @@ PRICE_TABLE: dict[str, tuple[Rates, Rates]] = {
     "gpt-6-astra": (Rates(10, 50, 1, 12.5), Rates(20, 75, 2, 25)),
     "gpt-6-sol": (Rates(2, 10, 0.2, 2.5), Rates(4, 15, 0.4, 5)),
     "gpt-6.1-sol": (Rates(2, 10, 0.1, 2.5), Rates(4, 15, 0.2, 5)),
+    # Standard rates checked 2026-10-27: https://developers.openai.com/api/docs/models/gpt-6.1-terra
+    # Cache writes use 30-minute retention ($1.25); the published long-context rule doubles
+    # input and cache rates above 272K input tokens, including writes ($2.50).
+    "gpt-6.1-terra": (Rates(1, 5, 0.05, 1.25), Rates(2, 7.5, 0.1, 2.5)),
     "gpt-6-luna": (Rates(0.1, 0.5, 0.01, 0.125), Rates(0.2, 0.75, 0.02, 0.25)),
     "gpt-5.6-sol": (Rates(4, 20, 0.4, 5), Rates(8, 30, 0.8, 10)),
 }

@@ -254,15 +254,23 @@ def test_codex_policy_uses_the_claude_worker_rules(droot: Path, fake_claude: Any
     assert allowed == "allow"
 
 
+@pytest.mark.parametrize(
+    "row, model, effort, expected_model, expected_effort",
+    [
+        ("build", None, None, "gpt-6.1-sol", "medium"),
+        ("mechanical", "gpt-6.1-terra", None, "gpt-6.1-terra", None),
+        ("mechanical", "gpt-6.1-terra", "high", "gpt-6.1-terra", "high"),
+    ],
+)
 def test_codex_dispatch_uses_supervisor_worktree_and_result_contract(
-    droot: Path, monkeypatch: pytest.MonkeyPatch
+    droot: Path, monkeypatch: pytest.MonkeyPatch, row, model, effort, expected_model, expected_effort
 ) -> None:
     from agent_cli.dispatch import codex_transport
 
     seen: list[dict] = []
 
     def fake_run(root: Path, d: dict, repo: object, **kwargs: object) -> dict:
-        seen.append({"root": root, "id": d["id"], "worktree": d["worktree"], **kwargs})
+        seen.append({**d, "root": root, **kwargs})
         final = envelope(status="question", nonce=d["nonce"])
         final["session_id"] = d["session_id"]
         return {
@@ -272,18 +280,30 @@ def test_codex_dispatch_uses_supervisor_worktree_and_result_contract(
             "timed_out": False,
             "stop_reason": "result",
             "estimated_cost_usd": 0.01,
-            "resolved_model": "gpt-6.1-sol",
+            "resolved_model": d["model"],
             "codex_thread_id": "codex-thread",
         }
 
     monkeypatch.setattr(codex_transport, "run_codex", fake_run)
-    d = _new_fast(droot, provider="codex", row="build", budget_reason="row band")
+    selection = {
+        "provider": "codex",
+        "row": row,
+        "model": model,
+        "effort": effort,
+        "choice_reason": "scoped implementation with executable acceptance checks",
+        "budget_reason": "row band",
+    }
+    preview = _new_fast(droot, **selection, dry_run=True)
+    assert preview["model"] == expected_model
+    assert preview["options"]["effort"] == expected_effort
+    d = _new_fast(droot, **selection)
     assert len(seen) == 1
     assert seen[0]["id"] == d["id"]
     assert seen[0]["worktree"] == d["worktree"]
     assert isinstance(seen[0]["mcp_servers"], dict)
+    assert seen[0]["model"] == expected_model and seen[0]["effort"] == expected_effort
     assert dispatch.load(droot, d["id"])["codex_thread_id"] == "codex-thread"
-    assert dispatch.load(droot, d["id"])["resolved_model"] == "gpt-6.1-sol"
+    assert dispatch.load(droot, d["id"])["resolved_model"] == expected_model
 
 
 @pytest.mark.parametrize("dry_run", [True, False])

@@ -38,10 +38,18 @@ def test_price_usage_separates_cache_and_long_context() -> None:
     assert prices.price_usage("unknown-model", {"input_tokens": 1, "output_tokens": 1}) is None
 
 
-@pytest.mark.parametrize("input_tokens, expected", [(272_000, 0.3595), (272_001, 0.716504)])
-def test_sol_6_1_rates_at_context_boundary(input_tokens: int, expected: float) -> None:
+@pytest.mark.parametrize(
+    "model, input_tokens, expected",
+    [
+        ("gpt-6.1-sol", 272_000, 0.3595),
+        ("gpt-6.1-sol", 272_001, 0.716504),
+        ("gpt-6.1-terra", 272_000, 0.17975),
+        ("gpt-6.1-terra", 272_001, 0.358252),
+    ],
+)
+def test_6_1_rates_at_context_boundary(model: str, input_tokens: int, expected: float) -> None:
     assert prices.price_usage(
-        "gpt-6.1-sol",
+        model,
         {
             "input_tokens": input_tokens,
             "cached_input_tokens": 100_000,
@@ -50,6 +58,7 @@ def test_sol_6_1_rates_at_context_boundary(input_tokens: int, expected: float) -
         },
     ) == pytest.approx(expected)
     assert prices.price_usage("gpt-6.2-sol", {"input_tokens": 1, "output_tokens": 1}) is None
+    assert prices.price_usage("gpt-6.2-terra", {"input_tokens": 1, "output_tokens": 1}) is None
 
 
 def test_price_rollout_uses_each_turns_model_and_checks_coverage(tmp_path: Path) -> None:
