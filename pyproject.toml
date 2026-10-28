@@ -31,6 +31,7 @@ dev = [
     "pytest-timeout>=2.3",
     "ruff>=0.12",
     "pyright>=1.1.400",
+    "radon==6.0.1",
 ]
 
 [build-system]

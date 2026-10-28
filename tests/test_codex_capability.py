@@ -70,6 +70,7 @@ def test_unsupported_codex_operations_are_named_with_a_route(command: str, phras
         "git checkout -- src/x.py",
         "git diff main",
         "uv run pytest -n 0 tests/test_x.py",
+        "uv run radon cc -s src/agent_cli/tidy.py",
         ".venv/bin/python -m pytest tests/test_x.py",
         "odd-tool --version",
         "gh --version",

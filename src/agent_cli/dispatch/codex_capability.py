@@ -145,7 +145,7 @@ def _refusal(command: str, *, network: bool) -> str:
     return ""
 
 
-_RUNNERS = {"pytest", "ruff", "pyright", "mypy", "black"}
+_RUNNERS = {"pytest", "ruff", "pyright", "mypy", "black", "radon"}
 _LOCAL_TOOLS = {"ls", "diff", "which", "echo", "mkdir", "touch", "cp", "mv", "rm", "chmod"}
 _PYTHON = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?$")
 _SUPPORTED_GIT = {
