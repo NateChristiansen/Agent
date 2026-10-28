@@ -56,10 +56,18 @@ def test_require_names_uv_sync_when_exe_missing(tmp_path: Path):
     launcher.require(tmp_path, windows=True)
 
 
-def test_dispatch_new_refuses_before_allocation(droot: Path, windows, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
+def test_dispatch_new_refuses_before_allocation(droot: Path, monkeypatch: pytest.MonkeyPatch):
     def allocate(*args, **kwargs):
         raise AssertionError("allocation reached")
 
+    require = launcher.require
+
+    def require_windows(root: Path) -> None:
+        with monkeypatch.context() as patch:
+            patch.setattr(launcher.sys, "platform", "win32")
+            require(root)
+
+    monkeypatch.setattr(launcher, "require", require_windows)
     monkeypatch.setattr(dispatch.lifecycle.allocation, "allocate", allocate)
     (droot / launcher.WINDOWS_ENTRY).unlink(missing_ok=True)
     clone = Path(repos_mod.load_registry(droot).require("alpha").abs_path(droot))

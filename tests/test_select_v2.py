@@ -176,6 +176,21 @@ def test_an_extending_candidate_maps_the_paths_it_adds(v2: Path):
     assert "tests/test_ledger.py" in selection.tests and "unmapped" not in selection.reason
 
 
+def test_additive_consumer_bundle_keeps_existing_path_coverage_until_landed(v2: Path):
+    base = _git(v2, "rev-parse", "HEAD")
+    extended = (
+        V2 + '\n[[bundle]]\nname = "spend-consumer"\npaths = ["src/agent_cli/dispatch/spend.py"]\n'
+        'tests = ["tests/test_other.py"]\n'
+    )
+    head = _commit(v2, {"tests/selection.toml": extended, "src/agent_cli/dispatch/spend.py": "x = 2\n"})
+    candidate = test_select.select(v2, base, head, 2)
+    assert "tests/test_dispatch_spend.py" in candidate.tests
+    assert "tests/test_other.py" not in candidate.tests
+    next_head = _commit(v2, {"src/agent_cli/dispatch/spend.py": "x = 3\n"})
+    landed = test_select.select(v2, head, next_head, 2)
+    assert {"tests/test_dispatch_spend.py", "tests/test_other.py"} <= set(landed.tests)
+
+
 @pytest.mark.parametrize("shape", ["empty-commit", "change-then-revert"])
 def test_an_empty_diff_with_head_moved_runs_the_fallback(v2: Path, shape: str):
     base = _git(v2, "rev-parse", "HEAD")

@@ -4,6 +4,7 @@ change makes a dispatch run the whole suite."""
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -209,6 +210,45 @@ def test_a_changed_helper_selects_the_tests_that_import_it():
 
     selection = _choose("tests/land_helpers.py", importers=importers)
     assert asked == ["tests/land_helpers.py"] and "tests/test_dispatch_spend.py" in selection.tests
+
+
+def test_hook_runner_selects_direct_reexport_embedded_and_cli_consumers():
+    consumer = re.compile(
+        r"\bhooks(?:_mod)?\.run\s*\(|from agent_cli\.hooks\.run import\b"
+        r"|from agent_cli\.hooks import [^\n;]*\brun\b"
+        r"|\[\s*[\"']hook[\"']\s*,|\*MODULE\s*,\s*[\"']hook[\"']\s*,"
+    )
+    expected = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "tests").glob("test_*.py")
+        if consumer.search(path.read_text(encoding="utf-8"))
+    }
+    assert {
+        "tests/test_peer_route.py",
+        "tests/test_dispatch_notice_hooks.py",
+        "tests/test_peer_wake.py",
+        "tests/test_peer_wake_policy.py",
+        "tests/test_peer_wake_integration.py",
+        "tests/test_cli_route.py",
+        "tests/test_spawn_cost.py",
+        "tests/test_tab_plugin.py",
+        "tests/test_capture_session_start.py",
+        "tests/test_dispatch_cli.py",
+        "tests/test_launcher.py",
+        "tests/test_leases.py",
+        "tests/test_peers.py",
+        "tests/test_prompt_hooks.py",
+        "tests/test_requests.py",
+        "tests/test_session_naming.py",
+        "tests/test_skill_links.py",
+        "tests/test_tasks.py",
+        "tests/test_verify_pipe.py",
+    } <= expected
+    selection = _choose("src/agent_cli/hooks/run.py")
+    assert selection.scope == "scoped"
+    assert expected <= set(selection.tests), f"{len(selection.tests)} selected; missing:\n" + "\n".join(
+        sorted(expected - set(selection.tests))
+    )
 
 
 def test_runtime_changes_add_the_inventory_stress_pass():

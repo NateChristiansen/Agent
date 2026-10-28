@@ -142,6 +142,33 @@ def _native_accounting(monkeypatch: pytest.MonkeyPatch) -> None:
     _real_clock(monkeypatch)
 
 
+def _product_probe_creation(budget_reason: str) -> dict[str, Any]:
+    return {
+        "provider": "codex",
+        "row": "mechanical",
+        "budget": ATTEMPT_CAP_USD,
+        "budget_reason": budget_reason,
+        "timeout_minutes": 2,
+        "max_attempts": 1,
+        "allow_unmatched": True,
+        "prompt": PROMPT,
+    }
+
+
+@pytest.fixture
+def _single_attempt_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    start = lifecycle.start
+
+    def capped_start(root: Path, record: dict[str, Any], *, watch: bool) -> dict[str, Any]:
+        # Explicit resume raises the limit before delegating to the supervisor.
+        if record["attempt"] > 1:
+            record["max_attempts"] = 1
+            state.save(root, record)
+        return start(root, record, watch=watch)
+
+    monkeypatch.setattr(lifecycle, "start", capped_start)
+
+
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
@@ -379,7 +406,7 @@ def test_attempt_still_rejects_cap_or_incomplete_records(
 
 
 def test_product_fixture_reaches_dispatch_without_native_inference(
-    droot: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    droot: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _single_attempt_probe: None
 ) -> None:
     evidence = tmp_path / "product-hook-evidence.jsonl"
     evidence.touch()
@@ -387,30 +414,48 @@ def test_product_fixture_reaches_dispatch_without_native_inference(
     tracked = (clone / ".codex/hooks.json").read_bytes()
     launched: dict[str, Any] = {}
 
-    def stop_before_native_launch(root: Path, record: dict[str, Any], *, watch: bool) -> dict[str, Any]:
-        assert root == droot and watch
+    run_supervisor = supervisor.run
+
+    def stop_before_native_launch(root: Path, *, dispatch_id: str) -> dict[str, Any]:
+        assert root == droot
+        record = dispatch.load(root, dispatch_id)
         launched.update(record)
         return record
 
-    monkeypatch.setattr(lifecycle, "start", stop_before_native_launch)
-    record = _new(
-        droot,
-        provider="codex",
-        row="mechanical",
-        budget=ATTEMPT_CAP_USD,
-        budget_reason="fixture schema probe",
-        timeout_minutes=2,
-        allow_unmatched=True,
-        prompt=PROMPT,
-    )
+    monkeypatch.setattr(supervisor, "run", stop_before_native_launch)
+    record = _new(droot, **_product_probe_creation("fixture schema probe"))
     assert record == launched
     assert record["provider"] == "codex" and record["row"] == "mechanical"
     assert record["model"] and record["budget_usd"] == ATTEMPT_CAP_USD
     assert record["timeout_minutes"] == 2 and record["state"] == "queued"
+    assert dispatch.load(droot, record["id"])["max_attempts"] == 1
     assert record["base"] == "origin/main"
     assert _git(clone, "rev-parse", record["base"]) == base
     worktree = Path(record["worktree"])
     assert (worktree / ".codex/hooks.json").read_bytes() == tracked
+
+    attempts: list[int] = []
+
+    def timeout_without_native_launch(root: Path, current: dict[str, Any], *_args: Any) -> dict[str, Any]:
+        attempts.append(current["attempt"])
+        current.update(state="running", timed_out=True, exit_code=1, allocator_pid=None)
+        state.save(root, current)
+        return current
+
+    monkeypatch.setattr(supervisor, "_launch_attempt", timeout_without_native_launch)
+    first = run_supervisor(droot, dispatch_id=record["id"])
+    assert first["state"] == "blocked" and first["attempt"] == 1
+    assert first["max_attempts"] == 1 and first["auto_resumes"] == []
+    settle(droot, first)
+    monkeypatch.setattr(procs, "snapshot", lambda: [_proc(os.getpid())])
+    dispatch.resume(droot, dispatch_id=record["id"], answer="again", watch=True, allow_unmatched=True)
+    prepared = dispatch.load(droot, record["id"])
+    assert prepared["attempt"] == 2 and prepared["max_attempts"] == 1
+    assert prepared["auto_resumes"] == []
+    second = run_supervisor(droot, dispatch_id=record["id"])
+    assert second["state"] == "blocked" and second["attempt"] == 2
+    assert second["max_attempts"] == 1 and second["auto_resumes"] == []
+    assert attempts == [1, 2]
 
 
 COMMIT = "T-42 probe line"  # a changed worktree, so verification runs and gives the slot back
@@ -490,7 +535,7 @@ def test_native_accounting_stamps_real_launch_time_for_resume(
 
 @pytest.mark.skipif(not PROBE, reason="opt-in live Codex product-hook milestone")
 def test_codex_worker_in_a_product_repo_keeps_its_hooks(
-    droot: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    droot: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _single_attempt_probe: None
 ) -> None:
     raw_home = os.getenv("AGENT_CODEX_PRODUCT_HOOKS_HOME", "")
     home = Path(raw_home).resolve() if raw_home else None
@@ -516,15 +561,10 @@ def test_codex_worker_in_a_product_repo_keeps_its_hooks(
         trusted_config = _sha(home / "config.toml")
         record = _new(
             droot,
-            provider="codex",
-            row="mechanical",
-            budget=ATTEMPT_CAP_USD,
-            budget_reason="live product-hook milestone, one attempt cap",
-            timeout_minutes=2,
-            allow_unmatched=True,
-            prompt=PROMPT,
+            **_product_probe_creation("live product-hook milestone, one attempt cap"),
         )
         d = _attempt(droot, record, 0.0)
+        assert d["max_attempts"] == 1 and d["auto_resumes"] == []
         assert d["start_sha"] == base and d["codex_thread_id"]
         worktree = Path(d["worktree"])
         harness_view = {
@@ -549,6 +589,7 @@ def test_codex_worker_in_a_product_repo_keeps_its_hooks(
         )
         resumed_d = _attempt(droot, d, float(d.get("cost_usd") or 0))
         assert resumed_d["codex_thread_id"] == d["codex_thread_id"] and resumed_d["attempt"] == 2
+        assert resumed_d["max_attempts"] == 1 and resumed_d["auto_resumes"] == []
         assert float(resumed_d["cost_usd"]) <= 2 * ATTEMPT_CAP_USD, resumed_d["cost_usd"]
         resumed = _attempt_evidence(
             droot, resumed_d, evidence, offset, events_from, frozenset(initial["turns"])

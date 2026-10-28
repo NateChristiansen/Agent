@@ -194,6 +194,22 @@ tests = [
   "tests/test_docs_refs.py", "tests/test_prose_rules.py",
 ]
 
+[[bundle]]
+name = "hook-runner-consumers"
+paths = ["src/agent_cli/hooks/run.py"]
+tests = [
+  "tests/test_capture_session_start.py", "tests/test_dispatch_cli.py", "tests/test_launcher.py",
+  "tests/test_leases.py", "tests/test_peers.py", "tests/test_prompt_hooks.py", "tests/test_requests.py",
+  "tests/test_session_naming.py", "tests/test_skill_links.py", "tests/test_tasks.py", "tests/test_verify_pipe.py",
+  "tests/test_docs_refs.py", "tests/test_prose_rules.py",
+  "tests/test_cli_route.py", "tests/test_dispatch_notice_hook_failures.py",
+  "tests/test_dispatch_notice_hooks.py", "tests/test_lease_coordination.py",
+  "tests/test_manager_cost.py", "tests/test_obligations.py", "tests/test_patch_lease.py",
+  "tests/test_peer_inbox_auth.py", "tests/test_peer_route.py", "tests/test_peer_wake*.py",
+  "tests/test_plan_review.py", "tests/test_plan_review_ledger.py", "tests/test_sessions_capture.py",
+  "tests/test_spawn_cost.py", "tests/test_tab_plugin.py",
+]
+
 [[broad]]
 reason = "verification-runtime"
 # A second pass over the real process inventory: its failures are intermittent under churn.
