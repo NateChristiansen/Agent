@@ -18,8 +18,9 @@ every dispatch, Claude or Codex.
 - Run git plainly from where you are: `git status`, `git add -A`, `git commit -m "..."`. The
   `git -C <your worktree>` spelling is allowed too, but only for that exact path and only for
   the verbs you already have, so plain git is the form that always works.
-- Commit as you go, with clear subjects that follow the repo's conventions (T-<id> where
-  the repo uses it). Never push, never open a PR. The manager does that as a separate step.
+- Commit as you go, with clear subjects that follow the repo's conventions. Add a ticket
+  prefix only when the repo's own history already uses one; a feature number is not a ticket
+  id. Never push, never open a PR. The manager does that as a separate step.
 - **You can read history; you cannot move onto it.** `git show <sha>:<path>`, `git log`,
   `git diff <sha>`, `git range-diff`, `git blame` and `git restore --source=<sha> -- <path>`
   are all yours, so any question about what a file looked like at some commit is answerable

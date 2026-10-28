@@ -107,6 +107,11 @@ running, such as `verify_record`, which runs the full suite inside the call. A r
 one cuts it off and leaves its outcome unknown. Wait for it to finish, then ask. A `land` returns
 at once and runs detached, so its log, not the tool call, says when it is done.
 
+A change to the dispatch entry path (anything that runs between `dispatch new` and the worker's
+start) is accepted only after one real dispatch from each client, right after it lands. A change
+once tested only with provider doubles fetched the notes remote at launch, and the first real
+Codex dispatch refused with "notes remote unreachable" and blocked another feature's launch.
+
 ## The CLI surface
 
 Models reach the CLI only through the MCP (ADR-0033); the `cli-route` hook refuses a model's

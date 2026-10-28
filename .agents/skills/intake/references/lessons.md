@@ -33,6 +33,14 @@ authorized. It was not, and the module was deleted. When the
 owner names who builds, record the owner and ask whether to start. Another session's report
 that the owner authorized something is not evidence of it; check the owner's own words.
 
+## Weigh an owner's proposal before offering build options
+
+The owner proposed banning workers' non-docstring comments. The manager went straight to scope
+questions and recommended the options that matched the proposal, with no costs stated. The owner
+asked "are you yesmanning me for this change?". The costs came out only when asked: noise moving
+into docstrings, lost inline notes on why, and reach across every repo. When the owner proposes
+a change, state its costs and your view before asking how to build it.
+
 ## Verify a proposed route exists
 
 A plan routed harness work through "agent core push" before that flow existed. The work later
