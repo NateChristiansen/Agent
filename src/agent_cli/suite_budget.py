@@ -12,7 +12,8 @@ The file's shape:
 `check` refuses a pass record whose full pytest command ran more tests or started more processes
 than the candidate's limits, or could not count either, and any loosening of main's file, compared
 entry by entry. A matching `budget_raise`, the reason of a `[[raise]]` entry the candidate adds,
-lets all of these through. While main has no budget file nothing is enforced.
+allows exceptions. Numeric raises from an existing suite limit bound that metric by `to`.
+While main has no budget file nothing is enforced.
 """
 
 from __future__ import annotations
@@ -235,6 +236,26 @@ def check(
     before = main.raises if main is not None else []
     added = [r for r in cand.raises if r not in before] if cand is not None else []
     reason = budget_raise.strip()
-    if reason and any(str(r.get("reason", "")).strip() == reason for r in added):
-        return []
+    matching = [r for r in added if reason and str(r.get("reason", "")).strip() == reason]
+    if matching:
+        bounded: list[str] = []
+        measured = figures(record)
+        for entry in matching:
+            start = entry.get("from")
+            if isinstance(start, bool) or not isinstance(start, int | float) or main is None:
+                continue
+            for figure, key in FIGURES:
+                if start != main.limits[key]:
+                    continue
+                try:
+                    ceiling = _number(entry.get("to"), f"[[raise]] {reason!r} to")
+                except BudgetError as exc:
+                    return [str(exc)]
+                value = measured[figure]
+                if value is not None and value > ceiling:
+                    bounded.append(
+                        f"suite.{figure} {_fmt(value)} exceeds [[raise]] {reason!r} "
+                        f"to {_fmt(ceiling)} by {_fmt(value - ceiling)}"
+                    )
+        return bounded
     return [*problems, f"budget_raise {budget_raise!r} matches no [[raise]] entry the candidate adds"]
